@@ -9,8 +9,8 @@ license = "GPL-3.0-or-later"
 workspace = true
 
 [dependencies]
-candle-core = { version = "0.9.1", git ="https://github.com/quorp-industries/candle", branch = "9.1-patched" }
-candle-onnx = { version = "0.9.1", git ="https://github.com/quorp-industries/candle", branch = "9.1-patched" }
+candle-core = "0.9.1"
+candle-onnx = "0.9.1"
 log.workspace = true
 
 rodio = { workspace = true, features = ["wav_output"] }

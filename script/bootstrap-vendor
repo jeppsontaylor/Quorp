@@ -1,0 +1,14 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+echo "Vendoring dependencies into $repo_root/vendor ..."
+rm -rf "$repo_root/vendor"
+cargo vendor --locked --versioned-dirs vendor > /tmp/quorp-vendor-config.toml
+
+echo
+echo "Vendor bootstrap complete."
+echo "To run offline commands:"
+echo "  ./script/cargo-offline test -p quorp tui_flow_tests -- --nocapture"

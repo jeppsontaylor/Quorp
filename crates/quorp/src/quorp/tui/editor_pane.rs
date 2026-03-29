@@ -911,7 +911,7 @@ mod tests {
 
     #[test]
     fn gutter_style_differs_when_unfocused() {
-        let theme = crate::quorp::tui::theme::Theme::antigravity();
+        let theme = crate::quorp::tui::theme::Theme::core_tui();
         assert_ne!(gutter_style(true, &theme), gutter_style(false, &theme));
         assert!(!gutter_style(true, &theme).add_modifier.contains(Modifier::DIM));
         assert!(gutter_style(false, &theme).add_modifier.contains(Modifier::DIM));

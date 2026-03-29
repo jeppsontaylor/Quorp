@@ -36,8 +36,9 @@ ctor.workspace = true
 derive_more.workspace = true
 dispatch2 = "0.3.1"
 etagere = "0.2"
-# WARNING: If you change this, you must also publish a new version of quorp-font-kit to crates.io
-font-kit = { git = "https://github.com/quorp-industries/font-kit", rev = "110523127440aefb11ce0cf280ae7c5071337ec5", package = "quorp-font-kit", version = "0.14.1-quorp", optional = true }
+# Prefer crates.io package resolution so restricted CI / sandbox environments
+# can build and run TUI flow tests without git dependency access.
+font-kit = { package = "quorp-font-kit", version = "0.14.1-quorp", optional = true }
 foreign-types = "0.5"
 futures.workspace = true
 image.workspace = true

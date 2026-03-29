@@ -174,7 +174,7 @@ crossterm = "0.28"
 portable-pty.workspace = true
 ratatui = "0.29"
 syntect = "5"
-notify = { git = "https://github.com/quorp-industries/notify.git", rev = "ce58c24cad542c28e04ced02e20325a4ec28a31d" }
+notify = "=8.2.0"
 parking_lot.workspace = true
 paths.workspace = true
 picker.workspace = true
