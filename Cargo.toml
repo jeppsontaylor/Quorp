@@ -2,6 +2,9 @@
 resolver = "2"
 members = [
     "crates/assets",
+    "crates/activity_indicator",
+    "crates/agent_ui",
+    "crates/auto_update_ui",
     "crates/client",
     "crates/clock",
     "crates/collections",
@@ -25,6 +28,14 @@ members = [
     "crates/multi_buffer",
     "crates/node_runtime",
     "crates/paths",
+    "crates/perf",
+    "crates/pet",
+    "crates/pet-conda",
+    "crates/pet-core",
+    "crates/pet-fs",
+    "crates/pet-poetry",
+    "crates/pet-reporter",
+    "crates/pet-virtualenv",
     "crates/project",
     "crates/proto",
     "crates/release_channel",
@@ -37,6 +48,7 @@ members = [
     "crates/sum_tree",
     "crates/telemetry",
     "crates/terminal",
+    "crates/tree-sitter-gowork",
     "crates/text",
     "crates/theme",
     "crates/util",
@@ -61,12 +73,12 @@ unexpected_cfgs = { level = "allow", check-cfg = ['cfg(feature, values("schemars
 acp_thread = { path = "crates/acp_thread" }
 acp_tools = { path = "crates/acp_tools" }
 action_log = { path = "crates/action_log" }
-activity_indicator = "=0.1.0"
+activity_indicator = { path = "crates/activity_indicator" }
 agent = { path = "crates/agent" }
 agent-client-protocol = "=0.10.2"
 agent_servers = { path = "crates/agent_servers" }
 agent_settings = { path = "crates/agent_settings" }
-agent_ui = "=0.1.0"
+agent_ui = { path = "crates/agent_ui" }
 aho-corasick = "=1.1.3"
 ai_onboarding = { path = "crates/ai_onboarding" }
 alacritty_terminal = "=0.25.1"
@@ -89,7 +101,7 @@ async-tungstenite = "=0.31.0"
 async_zip = "=0.0.18"
 audio = { path = "crates/audio" }
 auto_update = { path = "crates/auto_update" }
-auto_update_ui = "=0.1.0"
+auto_update_ui = { path = "crates/auto_update_ui" }
 aws-config = "=1.8.10"
 aws-credential-types = "=1.2.10"
 aws-sdk-bedrockruntime = "=1.113.0"
@@ -156,7 +168,7 @@ debugger_tools = "=0.1.0"
 debugger_ui = "=0.1.0"
 deepseek = { path = "crates/deepseek" }
 derive_more = "=2.1.1"
-derive_refineable = "=0.1.0"
+derive_refineable = { path = "crates/refineable/derive_refineable" }
 dev_container = { path = "crates/dev_container" }
 diagnostics = "=0.1.0"
 dirs = "=6.0.0"
@@ -300,14 +312,14 @@ pathdiff = "=0.2.3"
 paths = { path = "crates/paths" }
 pciid-parser = "=0.8.0"
 percent-encoding = "=2.3.2"
-perf = "=0.1.0"
-pet = "=0.1.0"
-pet-conda = "=0.1.0"
-pet-core = "=0.1.0"
-pet-fs = "=0.1.0"
-pet-poetry = "=0.1.0"
-pet-reporter = "=0.1.0"
-pet-virtualenv = "=0.1.0"
+perf = { path = "crates/perf" }
+pet = { path = "crates/pet" }
+pet-conda = { path = "crates/pet-conda" }
+pet-core = { path = "crates/pet-core" }
+pet-fs = { path = "crates/pet-fs" }
+pet-poetry = { path = "crates/pet-poetry" }
+pet-reporter = { path = "crates/pet-reporter" }
+pet-virtualenv = { path = "crates/pet-virtualenv" }
 picker = "=0.1.0"
 platform_title_bar = "=0.1.0"
 pollster = "=0.4.0"
@@ -428,11 +440,11 @@ tree-sitter-css = "=0.23.2"
 tree-sitter-diff = "=0.1.0"
 tree-sitter-elixir = "=0.3.4"
 tree-sitter-embedded-template = "=0.23.2"
-tree-sitter-gitcommit = "=0.0.1"
+tree-sitter-gitcommit = "=0.5.0"
 tree-sitter-go = "=0.25.0"
-tree-sitter-go-mod = "*"
-tree-sitter-gowork = "=0.0.1"
-tree-sitter-heex = "=0.0.1"
+tree-sitter-go-mod = { package = "tree-sitter-gomod", version = "=1.0.1" }
+tree-sitter-gowork = { path = "crates/tree-sitter-gowork" }
+tree-sitter-heex = "=0.8.1"
 tree-sitter-html = "=0.23.2"
 tree-sitter-jsdoc = "=0.23.2"
 tree-sitter-json = "=0.24.8"

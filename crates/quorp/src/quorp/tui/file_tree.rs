@@ -16,6 +16,7 @@ use unicode_width::UnicodeWidthStr;
 
 use crate::quorp::tui::path_guard::path_within_project;
 use crate::quorp::tui::text_width::truncate_fit;
+use crate::quorp::tui::tui_backend::SharedTuiBackend;
 
 #[derive(Clone, Debug)]
 pub struct TreeChild {
@@ -57,7 +58,7 @@ pub struct FileTree {
     selected_file: Option<PathBuf>,
     last_error: Option<String>,
     viewport_height: usize,
-    project_list_tx: Option<futures::channel::mpsc::UnboundedSender<crate::quorp::tui::bridge::TuiToBackendRequest>>,
+    backend: Option<SharedTuiBackend>,
     pending_loads: HashSet<PathBuf>,
 }
 
@@ -110,7 +111,9 @@ fn file_style(path: &Path, is_dir: bool, palette: &crate::quorp::tui::theme::Pal
         "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" => palette.file_ts_js,
         "py" | "pyi" => palette.file_py,
         "md" | "txt" | "adoc" | "rst" => palette.file_doc,
-        "toml" | "yaml" | "yml" | "json" | "json5" | "ini" | "cfg" | "conf" | "env" => palette.file_cfg,
+        "toml" | "yaml" | "yml" | "json" | "json5" | "ini" | "cfg" | "conf" | "env" => {
+            palette.file_cfg
+        }
         "sh" | "bash" | "zsh" | "fish" | "nu" => palette.file_shell,
         "html" | "htm" | "css" | "scss" | "sass" | "less" => palette.file_orange,
         "png" | "jpg" | "jpeg" | "gif" | "svg" | "ico" | "webp" | "bmp" => palette.text_muted,
@@ -147,7 +150,7 @@ impl FileTree {
             selected_file: None,
             last_error: None,
             viewport_height: 24,
-            project_list_tx: None,
+            backend: None,
             pending_loads: HashSet::new(),
         };
         tree.rebuild_visible_rows();
@@ -170,7 +173,7 @@ impl FileTree {
             selected_file: None,
             last_error: None,
             viewport_height: 24,
-            project_list_tx: None,
+            backend: None,
             pending_loads: HashSet::new(),
         };
         tree.expanded.insert(tree.root.clone());
@@ -178,11 +181,8 @@ impl FileTree {
         tree
     }
 
-    pub fn set_project_list_sender(
-        &mut self,
-        sender: futures::channel::mpsc::UnboundedSender<crate::quorp::tui::bridge::TuiToBackendRequest>,
-    ) {
-        self.project_list_tx = Some(sender);
+    pub fn set_backend(&mut self, backend: SharedTuiBackend) {
+        self.backend = Some(backend);
     }
 
     pub fn apply_project_listing(
@@ -220,18 +220,13 @@ impl FileTree {
         if self.children.contains_key(path) {
             return true;
         }
-        if let Some(ref tx) = self.project_list_tx {
+        if let Some(backend) = &self.backend {
             let path_buf = path.to_path_buf();
             if self.pending_loads.contains(&path_buf) {
                 return false;
             }
             self.pending_loads.insert(path_buf.clone());
-            if tx
-                .unbounded_send(crate::quorp::tui::bridge::TuiToBackendRequest::ListDirectory(
-                    path_buf.clone(),
-                ))
-                .is_err()
-            {
+            if backend.request_list_directory(path_buf.clone()).is_err() {
                 self.pending_loads.remove(&path_buf);
                 self.last_error = Some("file tree bridge disconnected".to_string());
                 return false;
@@ -266,12 +261,7 @@ impl FileTree {
         self.clamp_selection();
     }
 
-    fn visit_node(
-        &mut self,
-        path: &Path,
-        display_name: &str,
-        depth: usize,
-    ) {
+    fn visit_node(&mut self, path: &Path, display_name: &str, depth: usize) {
         let is_dir = path.is_dir();
         let display_label = if is_dir {
             format!("{}/", display_name)
@@ -489,7 +479,13 @@ impl FileTree {
         }
     }
 
-    pub fn render(&mut self, frame: &mut Frame<'_>, inner: Rect, pane_focused: bool, theme: &crate::quorp::tui::theme::Theme) {
+    pub fn render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        inner: Rect,
+        pane_focused: bool,
+        theme: &crate::quorp::tui::theme::Theme,
+    ) {
         if inner.height == 0 || inner.width == 0 {
             return;
         }
@@ -551,10 +547,10 @@ impl FileTree {
 
             let prefix_width = UnicodeWidthStr::width(prefix.as_str());
             let name_budget = content_width.saturating_sub(prefix_width);
-            let label_str = if row.is_dir { 
-                row.display_label.trim_end_matches('/').to_string() 
-            } else { 
-                row.display_label.clone() 
+            let label_str = if row.is_dir {
+                row.display_label.trim_end_matches('/').to_string()
+            } else {
+                row.display_label.clone()
             };
             let label = truncate_fit(&label_str, name_budget);
 
@@ -626,7 +622,7 @@ impl FileTree {
         focused: bool,
         theme: &crate::quorp::tui::theme::Theme,
     ) {
-        use ratatui::widgets::{Widget, StatefulWidget};
+        use ratatui::widgets::{StatefulWidget, Widget};
 
         let tabs = vec![crate::quorp::tui::chrome_v2::LeafTabVm {
             label: "Explorer".to_string(),
@@ -695,10 +691,10 @@ impl FileTree {
 
             let prefix_width = UnicodeWidthStr::width(prefix.as_str());
             let name_budget = content_width.saturating_sub(prefix_width);
-            let label_str = if row.is_dir { 
-                row.display_label.trim_end_matches('/').to_string() 
-            } else { 
-                row.display_label.clone() 
+            let label_str = if row.is_dir {
+                row.display_label.trim_end_matches('/').to_string()
+            } else {
+                row.display_label.clone()
             };
             let label = truncate_fit(&label_str, name_budget);
 
@@ -742,8 +738,12 @@ impl FileTree {
             let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
                 .track_symbol(Some(" "))
                 .thumb_symbol(" ")
-                .style(Style::default().fg(theme.palette.scrollbar_thumb).bg(theme.palette.scrollbar_track));
-            
+                .style(
+                    Style::default()
+                        .fg(theme.palette.scrollbar_thumb)
+                        .bg(theme.palette.scrollbar_track),
+                );
+
             // Render directly into the scrollbar rect
             StatefulWidget::render(scrollbar, rects.scrollbar, buf, &mut scrollbar_state);
         }
@@ -753,7 +753,35 @@ impl FileTree {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::quorp::tui::tui_backend::TuiBackend;
     use std::fs;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct RecordingBackend {
+        requested_dirs: Mutex<Vec<PathBuf>>,
+        fail_requests: bool,
+    }
+
+    impl TuiBackend for RecordingBackend {
+        fn request_list_directory(&self, path: PathBuf) -> Result<(), String> {
+            if self.fail_requests {
+                return Err("offline".to_string());
+            }
+            if let Ok(mut requested_dirs) = self.requested_dirs.lock() {
+                requested_dirs.push(path);
+            }
+            Ok(())
+        }
+
+        fn request_open_buffer(&self, _path: PathBuf) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn request_close_buffer(&self) -> Result<(), String> {
+            Ok(())
+        }
+    }
 
     #[test]
     fn read_children_depth_one_only() {
@@ -875,10 +903,7 @@ mod tests {
         let mut tree = FileTree::with_root(temp.path().to_path_buf());
         tree.selected_index = 2;
         let key = KeyEvent::new(KeyCode::Home, KeyModifiers::NONE);
-        assert_eq!(
-            tree.handle_key_event(&key),
-            FileTreeKeyOutcome::Handled
-        );
+        assert_eq!(tree.handle_key_event(&key), FileTreeKeyOutcome::Handled);
         assert_eq!(tree.selected_index, 0);
     }
 
@@ -890,10 +915,7 @@ mod tests {
         let mut tree = FileTree::with_root(temp.path().to_path_buf());
         tree.selected_index = 0;
         let key = KeyEvent::new(KeyCode::End, KeyModifiers::NONE);
-        assert_eq!(
-            tree.handle_key_event(&key),
-            FileTreeKeyOutcome::Handled
-        );
+        assert_eq!(tree.handle_key_event(&key), FileTreeKeyOutcome::Handled);
         assert!(tree.selected_index > 0);
         assert_eq!(tree.selected_index, tree.visible_rows.len() - 1);
     }
@@ -919,10 +941,7 @@ mod tests {
             .expect("sub dir");
         tree.selected_index = file_idx;
         let key = KeyEvent::new(KeyCode::Left, KeyModifiers::NONE);
-        assert_eq!(
-            tree.handle_key_event(&key),
-            FileTreeKeyOutcome::Handled
-        );
+        assert_eq!(tree.handle_key_event(&key), FileTreeKeyOutcome::Handled);
         assert_eq!(tree.selected_index, parent_idx);
     }
 
@@ -939,5 +958,25 @@ mod tests {
         let style = file_style(Path::new("some_dir"), true, &palette);
         assert_eq!(style.fg, Some(palette.folder_blue));
         assert!(style.add_modifier.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn load_children_uses_backend_request_when_configured() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path().to_path_buf();
+        let child_dir = root.join("child");
+        fs::create_dir(&child_dir).expect("mkdir");
+
+        let backend = Arc::new(RecordingBackend::default());
+        let mut tree = FileTree::with_root(root.clone());
+        tree.set_backend(backend.clone());
+
+        assert!(!tree.load_children(&child_dir));
+        let requests = backend
+            .requested_dirs
+            .lock()
+            .expect("backend request lock")
+            .clone();
+        assert_eq!(requests, vec![child_dir]);
     }
 }

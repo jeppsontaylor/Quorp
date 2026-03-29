@@ -1,0 +1,15 @@
+[package]
+name = "pet-core"
+version = "0.0.1"
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/pet_core.rs"
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }

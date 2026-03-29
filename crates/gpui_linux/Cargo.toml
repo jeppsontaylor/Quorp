@@ -125,7 +125,7 @@ x11rb = { version = "0.13.1", features = [
 ], optional = true }
 # Prefer crates.io package resolution so restricted CI / sandbox environments
 # can build and run TUI flow tests without git dependency access.
-xim = { package = "quorp-xim", version = "0.4.0-quorp", features = [
+xim = { package = "zed-xim", version = "0.4.0-zed", features = [
     "x11rb-xcb",
     "x11rb-client",
 ], optional = true }
