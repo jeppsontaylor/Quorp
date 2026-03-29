@@ -4,9 +4,27 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "$repo_root"
 
-echo "Vendoring dependencies into $repo_root/vendor ..."
-rm -rf "$repo_root/vendor"
-cargo vendor --locked --versioned-dirs vendor > /tmp/quorp-vendor-config.toml
+vendor_dir="$repo_root/vendor"
+temp_vendor_dir="$repo_root/vendor.__tmp__"
+
+cleanup() {
+  rm -rf "$temp_vendor_dir"
+}
+trap cleanup EXIT
+
+echo "Vendoring dependencies into $vendor_dir ..."
+rm -rf "$temp_vendor_dir"
+
+if ! cargo vendor --locked --versioned-dirs "$temp_vendor_dir" > /tmp/quorp-vendor-config.toml; then
+  echo >&2
+  echo "Failed to vendor dependencies." >&2
+  echo "If crates.io is unavailable in your environment, run this script somewhere with registry access," >&2
+  echo "or configure a reachable cargo registry mirror before retrying." >&2
+  exit 1
+fi
+
+rm -rf "$vendor_dir"
+mv "$temp_vendor_dir" "$vendor_dir"
 
 echo
 echo "Vendor bootstrap complete."

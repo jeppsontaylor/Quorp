@@ -26,21 +26,22 @@ pub mod app;
 pub mod buffer_png;
 pub mod chat;
 pub mod chrome;
-pub mod editor_pane;
 pub mod command_runner;
+pub mod editor_pane;
 pub mod file_tree;
 pub mod ssd_moe_tui;
 
+pub mod agent_pane;
+pub mod chrome_v2;
+pub mod hitmap;
+pub mod mention_links;
+pub mod paint;
 pub mod path_guard;
 pub mod path_index;
-pub mod mention_links;
 pub mod terminal_pane;
-pub mod agent_pane;
 pub mod theme;
+pub mod tui_backend;
 pub mod workbench;
-pub mod hitmap;
-pub mod chrome_v2;
-pub mod paint;
 
 pub mod path_index_bridge;
 
@@ -144,9 +145,7 @@ pub fn run(
     command_bridge_tx: Option<
         futures::channel::mpsc::UnboundedSender<command_bridge::CommandBridgeRequest>,
     >,
-    unified_bridge_tx: Option<
-        futures::channel::mpsc::UnboundedSender<bridge::TuiToBackendRequest>,
-    >,
+    unified_bridge_tx: Option<futures::channel::mpsc::UnboundedSender<bridge::TuiToBackendRequest>>,
 ) -> Result<()> {
     install_panic_hook();
     let _guard = init_terminal()?;
@@ -164,7 +163,6 @@ pub fn run(
         chat_tx,
         handle,
         unified_language_model,
-
         path_index_display_root,
         command_bridge_tx,
         unified_bridge_tx,
@@ -255,7 +253,9 @@ pub fn run(
                     }
                 }
             }
-            Ok(TuiEvent::UnifiedResponse(bridge::BackendToTuiResponse::AgentStatusUpdate(update))) => {
+            Ok(TuiEvent::UnifiedResponse(bridge::BackendToTuiResponse::AgentStatusUpdate(
+                update,
+            ))) => {
                 app.agent_pane.apply_status_update(update);
             }
             Ok(TuiEvent::UnifiedResponse(resp)) => {
@@ -351,9 +351,10 @@ mod tests {
         let (tx, rx) = mpsc::sync_channel::<TuiEvent>(32);
         let join = std::thread::spawn(move || {
             for index in 0..100 {
-                tx.send(TuiEvent::Chat(ChatUiEvent::AssistantDelta(0, format!(
-                    "c{index}"
-                ))))
+                tx.send(TuiEvent::Chat(ChatUiEvent::AssistantDelta(
+                    0,
+                    format!("c{index}"),
+                )))
                 .expect("chat");
                 let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
                 tx.send(TuiEvent::Crossterm(Event::Key(key)))
@@ -384,9 +385,10 @@ mod tests {
                     lines: vec![ratatui::text::Line::from(index.to_string())],
                 }))
                 .expect("terminal frame");
-                tx.send(TuiEvent::Chat(ChatUiEvent::AssistantDelta(0, format!(
-                    "c{index}"
-                ))))
+                tx.send(TuiEvent::Chat(ChatUiEvent::AssistantDelta(
+                    0,
+                    format!("c{index}"),
+                )))
                 .expect("chat");
                 let key = KeyEvent::new(KeyCode::Char('x'), KeyModifiers::NONE);
                 tx.send(TuiEvent::Crossterm(Event::Key(key)))

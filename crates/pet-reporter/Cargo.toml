@@ -1,0 +1,16 @@
+[package]
+name = "pet-reporter"
+version = "0.0.1"
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/pet_reporter.rs"
+
+[dependencies]
+parking_lot.workspace = true
+pet-core = { path = "../pet-core" }

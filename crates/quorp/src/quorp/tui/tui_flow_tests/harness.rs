@@ -9,10 +9,11 @@ use ratatui::backend::TestBackend;
 use ratatui::buffer::Buffer;
 use ratatui::layout::Rect;
 
+use super::fixtures;
 use crate::quorp::tui::TuiEvent;
 use crate::quorp::tui::app::{Overlay, PaneType, TuiApp};
 use crate::quorp::tui::chat::ChatUiEvent;
-use super::fixtures;
+use crate::quorp::tui::tui_backend::SharedTuiBackend;
 
 pub struct TuiTestHarness {
     pub app: TuiApp,
@@ -96,14 +97,23 @@ impl TuiTestHarness {
         let (editor_pane_tx, _editor_pane_rx) = futures::channel::mpsc::unbounded();
         let (file_tree_tx, _file_tree_rx) = futures::channel::mpsc::unbounded();
         let (mut app, event_rx) = TuiApp::new_for_flow_tests(root.clone());
+        let file_tree_backend =
+            std::sync::Arc::new(crate::quorp::tui::bridge::UnifiedBridgeTuiBackend::new(
+                file_tree_tx,
+            )) as SharedTuiBackend;
+        let editor_backend =
+            std::sync::Arc::new(crate::quorp::tui::bridge::UnifiedBridgeTuiBackend::new(
+                editor_pane_tx,
+            )) as SharedTuiBackend;
         app.file_tree = crate::quorp::tui::file_tree::FileTree::with_root(root);
-        app.file_tree
-            .set_project_list_sender(file_tree_tx);
+        app.file_tree.set_backend(file_tree_backend);
         app.editor_pane =
-            crate::quorp::tui::editor_pane::EditorPane::with_buffer_bridge(Some(editor_pane_tx));
+            crate::quorp::tui::editor_pane::EditorPane::with_buffer_bridge(Some(editor_backend));
         app.chat.ensure_project_root(app.file_tree.root());
         app.chat
-            .use_project_backed_path_index_for_backend_flow_tests(app.file_tree.root().to_path_buf());
+            .use_project_backed_path_index_for_backend_flow_tests(
+                app.file_tree.root().to_path_buf(),
+            );
         let backend = TestBackend::new(cols, rows);
         let terminal = Terminal::new(backend).expect("terminal");
         Self {
@@ -134,7 +144,12 @@ impl TuiTestHarness {
         let mut out = String::new();
         for y in area.top()..area.bottom() {
             for x in area.left()..area.right() {
-                out.push_str(self.buffer().cell((x, y)).map(|c| c.symbol()).unwrap_or(" "));
+                out.push_str(
+                    self.buffer()
+                        .cell((x, y))
+                        .map(|c| c.symbol())
+                        .unwrap_or(" "),
+                );
             }
         }
         out
@@ -150,8 +165,8 @@ impl TuiTestHarness {
     /// Captures the TUI frame and saves it to a persistent output directory for Playwright artifacts.
     pub fn save_screenshot(&mut self, base_name: &str) -> std::path::PathBuf {
         let img = self.screenshot();
-        let target_dir = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-            .join("target/tui_screenshots");
+        let target_dir =
+            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/tui_screenshots");
         std::fs::create_dir_all(&target_dir).expect("failed to mkdir target/tui_screenshots");
         let path = target_dir.join(format!("{}.png", base_name));
         img.save(&path).expect("failed to save screenshot png");
@@ -257,9 +272,6 @@ impl TuiTestHarness {
     }
 
     pub fn wait_path_index_ready(&mut self, timeout: Duration) -> bool {
-        self.app
-            .chat
-            .blocking_wait_path_index_ready(timeout)
+        self.app.chat.blocking_wait_path_index_ready(timeout)
     }
-
 }
