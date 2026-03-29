@@ -53,6 +53,42 @@ Verification gate:
 - `./script/tui-verify`
 - Release-parity signoff checklist for backend functionality.
 
+## Phase 0 kickoff artifact
+
+- Track baseline acceptance and migration-batch snapshots in `docs/src/development/tui-phase-0-baseline.md`.
+
+## Phase 1 inventory artifact
+
+- Track unresolved dependency classification in `docs/src/development/tui-phase-1-dependency-inventory.md` before adding new crates.
+
+## Phase 2 seam artifact
+
+- Track seam implementation scope and per-vertical tests in `docs/src/development/tui-phase-2-seam-implementation.md`.
+
+## Phase 3 runtime artifact
+
+- Track runtime split scope and dual-lane verification in `docs/src/development/tui-phase-3-runtime-split.md`.
+
+## Phase 4 cleanup artifact
+
+- Track legacy deprecation and dependency cleanup in `docs/src/development/tui-phase-4-deprecation-cleanup.md`.
+
+## Phase 5 operations artifact
+
+- Track production hardening, observability, and release governance in `docs/src/development/tui-phase-5-operations-and-observability.md`.
+
+## Phase 6 execution artifact
+
+- Track implementation work packages, merge sequencing, and delivery gates in `docs/src/development/tui-phase-6-execution-tracker.md`.
+
+## Phase 7 burn-in artifact
+
+- Track rollout burn-in, reliability scorecards, and adoption milestones in `docs/src/development/tui-phase-7-burn-in-and-adoption.md`.
+
+## Phase 8 governance artifact
+
+- Track long-term architecture, dependency, and release governance in `docs/src/development/tui-phase-8-steady-state-governance.md`.
+
 ## Why this is safest
 
 This path keeps backend behavior intact while reducing risk: each migration step has a hard verification gate before moving to the next stage.
