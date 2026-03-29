@@ -286,7 +286,7 @@ impl TuiApp {
         let mut ssd_moe = SsdMoeManager::new();
         let default_model = crate::quorp::tui::model_registry::get_saved_model();
         ssd_moe.ensure_running(&project_root, &default_model);
-        let theme = Theme::prism_forge();
+        let theme = Theme::antigravity();
         let terminal = match &unified_language_model {
             Some((tx, _, _)) => TerminalPane::with_bridge(Some(tx.clone())),
             None => TerminalPane::new(),
@@ -333,8 +333,8 @@ impl TuiApp {
             last_full_area: Rect::default(),
             theme,
             hitmap: HitMap::new(),
-            workspace: crate::quorp::tui::workbench::default_prismforge_tree(),
-            prismforge_dynamic_layout: true,
+            workspace: crate::quorp::tui::workbench::default_antigravity_tree(),
+            prismforge_dynamic_layout: false,
             visual_status_center_override: None,
             visual_title_override: None,
             visual_status_left_override: None,
