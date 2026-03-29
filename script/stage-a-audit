@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+echo "Workspace deps pinned to '=0.1.0' without local path crates:"
+awk '
+  $0 ~ /^\[workspace.dependencies\]/ { in_deps=1; next }
+  in_deps && $0 ~ /^\[/ { in_deps=0 }
+  in_deps && $0 ~ /^[a-zA-Z0-9_-]+\s*=\s*"=0\.1\.0"/ {
+    split($0, parts, "=");
+    name=parts[1];
+    gsub(/[ \t]/, "", name);
+    print name;
+  }
+' Cargo.toml | while read -r crate_name; do
+  dir_name="${crate_name//-/_}"
+  if [[ ! -d "crates/$crate_name" && ! -d "crates/$dir_name" ]]; then
+    echo "  - $crate_name"
+  fi
+done

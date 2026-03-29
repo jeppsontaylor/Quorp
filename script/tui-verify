@@ -1,0 +1,23 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+echo "[tui-verify] Stage 1: compile quorp binary"
+if ! cargo check -p quorp --bin quorp; then
+  echo >&2
+  echo "[tui-verify] cargo check failed. Resolve workspace dependency/index blockers first." >&2
+  exit 1
+fi
+
+echo "[tui-verify] Stage 2: run seam tests"
+cargo test -p quorp \
+  editor_pane::tests::backend_receives_open_for_selected_file \
+  editor_pane::tests::backend_open_failure_sets_disconnected_error \
+  file_tree::tests::load_children_uses_backend_request_when_configured
+
+echo "[tui-verify] Stage 3: run TUI flow tests"
+cargo test -p quorp tui_flow_tests
+
+echo "[tui-verify] All TUI verification stages passed."

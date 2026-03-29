@@ -1,0 +1,21 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+output_file="${TMPDIR:-/tmp}/quorp-stage-a-check.log"
+if cargo check -p quorp --bin quorp >"$output_file" 2>&1; then
+  echo "No dependency blocker found. cargo check succeeded."
+  exit 0
+fi
+
+missing_pkg="$(awk '/no matching package named/ {print $6}' "$output_file" | tr -d '"' | tail -n1)"
+if [[ -n "$missing_pkg" ]]; then
+  echo "Next Stage A blocker: $missing_pkg"
+else
+  echo "cargo check failed, but no missing package line was found."
+fi
+
+echo
+sed -n '1,120p' "$output_file"

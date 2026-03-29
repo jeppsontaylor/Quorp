@@ -14,6 +14,7 @@ use std::path::{Path, PathBuf};
 
 use crate::quorp::tui::path_guard::path_within_project;
 use crate::quorp::tui::text_width::truncate_prefix_fit;
+use crate::quorp::tui::tui_backend::SharedTuiBackend;
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -100,11 +101,7 @@ pub struct EditorPane {
     load_error: Option<String>,
     truncated: bool,
     viewport_height: usize,
-    unified_bridge_tx: Option<
-        futures::channel::mpsc::UnboundedSender<
-            crate::quorp::tui::bridge::TuiToBackendRequest,
-        >,
-    >,
+    backend: Option<SharedTuiBackend>,
     bridge_load_pending: bool,
 }
 
@@ -113,13 +110,7 @@ impl EditorPane {
         Self::with_buffer_bridge(None)
     }
 
-    pub(crate) fn with_buffer_bridge(
-        unified_bridge_tx: Option<
-            futures::channel::mpsc::UnboundedSender<
-                crate::quorp::tui::bridge::TuiToBackendRequest,
-            >,
-        >,
-    ) -> Self {
+    pub(crate) fn with_buffer_bridge(backend: Option<SharedTuiBackend>) -> Self {
         Self {
             tabs: vec![FileTab { path: None }],
             active_tab: 0,
@@ -131,7 +122,7 @@ impl EditorPane {
             load_error: None,
             truncated: false,
             viewport_height: 24,
-            unified_bridge_tx,
+            backend,
             bridge_load_pending: false,
         }
     }
@@ -159,7 +150,12 @@ impl EditorPane {
     }
 
     /// Replace open file tabs for deterministic PNG regression (`new_for_prismforge_regression`).
-    pub fn set_regression_file_tabs(&mut self, paths: Vec<PathBuf>, active: usize, project_root: &Path) {
+    pub fn set_regression_file_tabs(
+        &mut self,
+        paths: Vec<PathBuf>,
+        active: usize,
+        project_root: &Path,
+    ) {
         if paths.is_empty() {
             self.tabs = vec![FileTab { path: None }];
             self.active_tab = 0;
@@ -207,10 +203,7 @@ impl EditorPane {
     }
 
     pub fn ensure_active_loaded(&mut self, project_root: &Path) {
-        let target = self
-            .tabs
-            .get(self.active_tab)
-            .and_then(|t| t.path.clone());
+        let target = self.tabs.get(self.active_tab).and_then(|t| t.path.clone());
         if paths_equal(self.displayed_path.as_deref(), target.as_deref()) {
             return;
         }
@@ -225,10 +218,8 @@ impl EditorPane {
 
         let Some(ref path) = target else {
             self.vertical_scroll = 0;
-            if let Some(tx) = &self.unified_bridge_tx {
-                let _ = tx.unbounded_send(
-                    crate::quorp::tui::bridge::TuiToBackendRequest::CloseBuffer,
-                );
+            if let Some(backend) = &self.backend {
+                let _ = backend.request_close_buffer();
             }
             return;
         };
@@ -240,16 +231,9 @@ impl EditorPane {
             return;
         }
 
-        if let Some(tx) = &self.unified_bridge_tx {
+        if let Some(backend) = &self.backend {
             self.bridge_load_pending = true;
-            if tx
-                .unbounded_send(
-                    crate::quorp::tui::bridge::TuiToBackendRequest::OpenBuffer(
-                        path.clone(),
-                    ),
-                )
-                .is_err()
-            {
+            if backend.request_open_buffer(path.clone()).is_err() {
                 self.bridge_load_pending = false;
                 self.load_error = Some("Code preview bridge disconnected.".to_string());
             }
@@ -282,7 +266,10 @@ impl EditorPane {
         self.highlighted = lines_from_plain_source(&source);
     }
 
-    pub fn leaf_tab_specs(&self, theme: &crate::quorp::tui::theme::Theme) -> Vec<crate::quorp::tui::chrome_v2::LeafTabSpec> {
+    pub fn leaf_tab_specs(
+        &self,
+        theme: &crate::quorp::tui::theme::Theme,
+    ) -> Vec<crate::quorp::tui::chrome_v2::LeafTabSpec> {
         self.tabs
             .iter()
             .enumerate()
@@ -323,7 +310,12 @@ impl EditorPane {
             theme.palette.editor_accent,
         );
         if overflow > 0 {
-            crate::quorp::tui::chrome_v2::render_tab_overflow_hint(buf, strip, overflow, &theme.palette);
+            crate::quorp::tui::chrome_v2::render_tab_overflow_hint(
+                buf,
+                strip,
+                overflow,
+                &theme.palette,
+            );
         }
         (cells, overflow)
     }
@@ -485,7 +477,13 @@ impl EditorPane {
         }
     }
 
-    pub fn render(&mut self, frame: &mut Frame<'_>, inner: Rect, focused: bool, theme: &crate::quorp::tui::theme::Theme) {
+    pub fn render(
+        &mut self,
+        frame: &mut Frame<'_>,
+        inner: Rect,
+        focused: bool,
+        theme: &crate::quorp::tui::theme::Theme,
+    ) {
         if inner.height == 0 || inner.width == 0 {
             return;
         }
@@ -587,7 +585,10 @@ impl EditorPane {
             };
             code_lines.push(truncate_line_to_width(line.clone(), code_column_width));
             let gutter_line = format!("{:>width$}", line_index + 1, width = line_digits);
-            gutter_text.push(Line::from(Span::styled(gutter_line, gutter_style(focused, theme))));
+            gutter_text.push(Line::from(Span::styled(
+                gutter_line,
+                gutter_style(focused, theme),
+            )));
         }
 
         while gutter_text.len() < code_viewport {
@@ -625,7 +626,7 @@ impl EditorPane {
         focused: bool,
         theme: &crate::quorp::tui::theme::Theme,
     ) {
-        use ratatui::widgets::{Widget, StatefulWidget};
+        use ratatui::widgets::{StatefulWidget, Widget};
 
         crate::quorp::tui::paint::fill_rect(buf, rects.body, theme.palette.editor_bg);
         crate::quorp::tui::paint::fill_rect(buf, rects.scrollbar, theme.palette.editor_bg);
@@ -636,7 +637,10 @@ impl EditorPane {
         self.viewport_height = rects.body.height as usize;
 
         if let Some(ref err) = self.load_error {
-            let line = Line::from(Span::styled(err.clone(), Style::default().fg(theme.palette.danger_orange)));
+            let line = Line::from(Span::styled(
+                err.clone(),
+                Style::default().fg(theme.palette.danger_orange),
+            ));
             Paragraph::new(line).render(rects.body, buf);
             return;
         }
@@ -711,30 +715,54 @@ impl EditorPane {
         if mode == EditorRenderMode::MarkdownPreview {
             let mut md_lines: Vec<Line<'static>> = Vec::new();
             for line_index in start..end {
-                let Some(line) = self.highlighted.get(line_index) else { continue };
+                let Some(line) = self.highlighted.get(line_index) else {
+                    continue;
+                };
                 let mut raw = String::new();
                 for span in &line.spans {
                     raw.push_str(&span.content);
                 }
-                
+
                 let text = raw.trim_end_matches('\n');
                 let l = if text.starts_with("# ") {
-                    Line::from(Span::styled(text.to_string(), Style::default().fg(theme.palette.text).add_modifier(Modifier::BOLD)))
+                    Line::from(Span::styled(
+                        text.to_string(),
+                        Style::default()
+                            .fg(theme.palette.text)
+                            .add_modifier(Modifier::BOLD),
+                    ))
                 } else if text.starts_with('>') || text.starts_with("---") {
-                    Line::from(Span::styled(text.to_string(), Style::default().fg(theme.palette.text_muted)))
-                } else if text.starts_with("- [ ]") || text.starts_with("- [x]") || text.starts_with("* [ ]") || text.starts_with("* [x]") {
+                    Line::from(Span::styled(
+                        text.to_string(),
+                        Style::default().fg(theme.palette.text_muted),
+                    ))
+                } else if text.starts_with("- [ ]")
+                    || text.starts_with("- [x]")
+                    || text.starts_with("* [ ]")
+                    || text.starts_with("* [x]")
+                {
                     let is_checked = text.contains("[x]");
                     let box_str = if is_checked { "[x]" } else { "[ ]" };
                     let rest = text.replacen(box_str, "", 1);
-                    let color = if is_checked { theme.palette.success_green } else { theme.palette.text_muted };
+                    let color = if is_checked {
+                        theme.palette.success_green
+                    } else {
+                        theme.palette.text_muted
+                    };
                     Line::from(vec![
                         Span::styled(box_str.to_string(), Style::default().fg(color)),
                         Span::styled(rest, Style::default().fg(theme.palette.text)),
                     ])
                 } else if text.starts_with("- ") || text.starts_with("* ") {
-                    Line::from(Span::styled(format!("  {}", text), Style::default().fg(theme.palette.text)))
+                    Line::from(Span::styled(
+                        format!("  {}", text),
+                        Style::default().fg(theme.palette.text),
+                    ))
                 } else {
-                    Line::from(Span::styled(text.to_string(), Style::default().fg(theme.palette.text)))
+                    Line::from(Span::styled(
+                        text.to_string(),
+                        Style::default().fg(theme.palette.text),
+                    ))
                 };
                 md_lines.push(l);
             }
@@ -742,7 +770,7 @@ impl EditorPane {
         } else {
             let line_digits = total_lines.max(1).to_string().len().max(4);
             let gutter_width = line_digits as u16;
-            
+
             let gutter_area = ratatui::layout::Rect {
                 x: code_area.x,
                 y: code_area.y,
@@ -762,10 +790,15 @@ impl EditorPane {
             let mut gutter_text: Vec<Line> = Vec::new();
 
             for line_index in start..end {
-                let Some(line) = self.highlighted.get(line_index) else { continue };
+                let Some(line) = self.highlighted.get(line_index) else {
+                    continue;
+                };
                 code_lines.push(truncate_line_to_width(line.clone(), code_column_width));
                 let gutter_line = format!("{:>width$}", line_index + 1, width = line_digits);
-                gutter_text.push(Line::from(Span::styled(gutter_line, gutter_style(focused, theme))));
+                gutter_text.push(Line::from(Span::styled(
+                    gutter_line,
+                    gutter_style(focused, theme),
+                )));
             }
 
             Paragraph::new(gutter_text).render(gutter_area, buf);
@@ -781,7 +814,11 @@ impl EditorPane {
                 .end_symbol(None)
                 .track_symbol(Some(" "))
                 .thumb_symbol(" ")
-                .style(Style::default().fg(theme.palette.scrollbar_thumb).bg(theme.palette.scrollbar_track));
+                .style(
+                    Style::default()
+                        .fg(theme.palette.scrollbar_thumb)
+                        .bg(theme.palette.scrollbar_track),
+                );
             StatefulWidget::render(scrollbar, rects.scrollbar, buf, &mut scrollbar_state);
         }
     }
@@ -825,6 +862,38 @@ impl EditorPane {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::quorp::tui::tui_backend::TuiBackend;
+    use std::sync::{Arc, Mutex};
+
+    #[derive(Default)]
+    struct RecordingBackend {
+        opened_paths: Mutex<Vec<PathBuf>>,
+        close_count: Mutex<usize>,
+        fail_open: bool,
+    }
+
+    impl TuiBackend for RecordingBackend {
+        fn request_list_directory(&self, _path: PathBuf) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn request_open_buffer(&self, path: PathBuf) -> Result<(), String> {
+            if self.fail_open {
+                return Err("bridge offline".to_string());
+            }
+            if let Ok(mut opened_paths) = self.opened_paths.lock() {
+                opened_paths.push(path);
+            }
+            Ok(())
+        }
+
+        fn request_close_buffer(&self) -> Result<(), String> {
+            if let Ok(mut close_count) = self.close_count.lock() {
+                *close_count += 1;
+            }
+            Ok(())
+        }
+    }
 
     #[test]
     fn path_under_root_accepts_nested_file() {
@@ -913,8 +982,16 @@ mod tests {
     fn gutter_style_differs_when_unfocused() {
         let theme = crate::quorp::tui::theme::Theme::core_tui();
         assert_ne!(gutter_style(true, &theme), gutter_style(false, &theme));
-        assert!(!gutter_style(true, &theme).add_modifier.contains(Modifier::DIM));
-        assert!(gutter_style(false, &theme).add_modifier.contains(Modifier::DIM));
+        assert!(
+            !gutter_style(true, &theme)
+                .add_modifier
+                .contains(Modifier::DIM)
+        );
+        assert!(
+            gutter_style(false, &theme)
+                .add_modifier
+                .contains(Modifier::DIM)
+        );
     }
 
     #[test]
@@ -1074,5 +1151,44 @@ mod tests {
         assert_eq!(preview.active_tab_index(), 2);
         assert!(preview.close_file_tab_at(1, root));
         assert_eq!(preview.tab_count(), 2);
+    }
+
+    #[test]
+    fn backend_receives_open_for_selected_file() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let path = root.join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").expect("write");
+
+        let backend = Arc::new(RecordingBackend::default());
+        let mut preview = EditorPane::with_buffer_bridge(Some(backend.clone()));
+        preview.sync_from_selected_file(Some(path.as_path()), root);
+
+        let opened_paths = backend
+            .opened_paths
+            .lock()
+            .expect("open buffer lock")
+            .clone();
+        assert_eq!(opened_paths, vec![path]);
+    }
+
+    #[test]
+    fn backend_open_failure_sets_disconnected_error() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let root = temp.path();
+        let path = root.join("main.rs");
+        std::fs::write(&path, "fn main() {}\n").expect("write");
+
+        let backend = Arc::new(RecordingBackend {
+            fail_open: true,
+            ..Default::default()
+        });
+        let mut preview = EditorPane::with_buffer_bridge(Some(backend));
+        preview.sync_from_selected_file(Some(path.as_path()), root);
+
+        assert_eq!(
+            preview.load_error.as_deref(),
+            Some("Code preview bridge disconnected.")
+        );
     }
 }

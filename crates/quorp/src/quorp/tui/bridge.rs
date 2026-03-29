@@ -39,6 +39,7 @@ use settings::{
     LanguageModelProviderSetting, LanguageModelSelection, update_settings_file,
 };
 use crate::quorp::tui::chat::ChatUiEvent;
+use crate::quorp::tui::tui_backend::TuiBackend;
 use crate::quorp::tui::tui_tool_runtime::execute_tui_tool_call;
 
 
@@ -524,6 +525,36 @@ pub enum TuiToBackendRequest {
     
     // Agent
     StartAgentAction(String),
+}
+
+pub struct UnifiedBridgeTuiBackend {
+    request_tx: futures::channel::mpsc::UnboundedSender<TuiToBackendRequest>,
+}
+
+impl UnifiedBridgeTuiBackend {
+    pub fn new(request_tx: futures::channel::mpsc::UnboundedSender<TuiToBackendRequest>) -> Self {
+        Self { request_tx }
+    }
+}
+
+impl TuiBackend for UnifiedBridgeTuiBackend {
+    fn request_list_directory(&self, path: PathBuf) -> Result<(), String> {
+        self.request_tx
+            .unbounded_send(TuiToBackendRequest::ListDirectory(path))
+            .map_err(|error| error.to_string())
+    }
+
+    fn request_open_buffer(&self, path: PathBuf) -> Result<(), String> {
+        self.request_tx
+            .unbounded_send(TuiToBackendRequest::OpenBuffer(path))
+            .map_err(|error| error.to_string())
+    }
+
+    fn request_close_buffer(&self) -> Result<(), String> {
+        self.request_tx
+            .unbounded_send(TuiToBackendRequest::CloseBuffer)
+            .map_err(|error| error.to_string())
+    }
 }
 
 #[derive(Debug, Clone)]

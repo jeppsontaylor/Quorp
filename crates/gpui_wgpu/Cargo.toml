@@ -35,7 +35,7 @@ wgpu.workspace = true
 # Optional: only needed on platforms with multiple font sources (e.g. Linux)
 # Prefer crates.io package resolution so restricted CI / sandbox environments
 # can build and run TUI flow tests without git dependency access.
-font-kit = { package = "quorp-font-kit", version = "0.14.1-quorp", optional = true }
+font-kit = { package = "zed-font-kit", version = "0.14.1-zed", optional = true }
 
 [target.'cfg(not(target_family = "wasm"))'.dependencies]
 pollster.workspace = true

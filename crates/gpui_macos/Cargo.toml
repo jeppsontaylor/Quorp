@@ -38,7 +38,7 @@ dispatch2 = "0.3.1"
 etagere = "0.2"
 # Prefer crates.io package resolution so restricted CI / sandbox environments
 # can build and run TUI flow tests without git dependency access.
-font-kit = { package = "quorp-font-kit", version = "0.14.1-quorp", optional = true }
+font-kit = { package = "zed-font-kit", version = "0.14.1-zed", optional = true }
 foreign-types = "0.5"
 futures.workspace = true
 image.workspace = true

@@ -1,0 +1,15 @@
+[package]
+name = "tree-sitter-gowork"
+version = "0.0.1"
+edition.workspace = true
+publish = false
+license = "MIT"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/tree_sitter_gowork.rs"
+
+[dependencies]
+tree-sitter-go-mod.workspace = true

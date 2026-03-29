@@ -15,14 +15,15 @@ use crate::quorp::tui::chat::ChatPane;
 use crate::quorp::tui::editor_pane::EditorPane;
 use crate::quorp::tui::file_tree::{FileTree, FileTreeKeyOutcome};
 use crate::quorp::tui::ssd_moe_tui::SsdMoeManager;
+use crate::quorp::tui::tui_backend::SharedTuiBackend;
 
+use crate::quorp::tui::agent_pane::AgentPane;
 use crate::quorp::tui::models_pane::ModelsPane;
 use crate::quorp::tui::terminal_pane::TerminalPane;
-use crate::quorp::tui::agent_pane::AgentPane;
 use crate::quorp::tui::theme::Theme;
 
-use crate::quorp::tui::workbench::{LeafId, WorkspaceNode};
 use crate::quorp::tui::hitmap::{HitMap, HitTarget};
+use crate::quorp::tui::workbench::{LeafId, WorkspaceNode};
 
 pub type PaneType = LeafId;
 
@@ -123,7 +124,9 @@ pub struct TuiApp {
     _event_rx_keepalive: Option<std::sync::mpsc::Receiver<crate::quorp::tui::TuiEvent>>,
     pub overlay: Overlay,
     pub app_state: Option<std::sync::Arc<crate::AppState>>,
-    pub unified_bridge_tx: Option<futures::channel::mpsc::UnboundedSender<crate::quorp::tui::bridge::TuiToBackendRequest>>,
+    pub unified_bridge_tx: Option<
+        futures::channel::mpsc::UnboundedSender<crate::quorp::tui::bridge::TuiToBackendRequest>,
+    >,
 
     last_full_area: Rect,
     pub theme: Theme,
@@ -267,8 +270,12 @@ impl TuiApp {
         >,
     ) -> Self {
         let mut file_tree = FileTree::with_root(workspace_root);
-        if let Some(sender) = unified_bridge_tx.clone() {
-            file_tree.set_project_list_sender(sender);
+        let backend = unified_bridge_tx
+            .clone()
+            .map(crate::quorp::tui::bridge::UnifiedBridgeTuiBackend::new)
+            .map(|backend| std::sync::Arc::new(backend) as SharedTuiBackend);
+        if let Some(backend) = backend.clone() {
+            file_tree.set_backend(backend);
         }
         let project_root = file_tree.root().to_path_buf();
         let path_index = match path_index_display_root {
@@ -319,7 +326,7 @@ impl TuiApp {
             right_pane: Pane::Chat,
             last_left_pane: Pane::EditorPane,
             file_tree,
-            editor_pane: EditorPane::with_buffer_bridge(unified_bridge_tx.clone()),
+            editor_pane: EditorPane::with_buffer_bridge(backend),
             terminal: TerminalPane::with_bridge(unified_bridge_tx.clone()),
             agent_pane: AgentPane::new(unified_bridge_tx.clone()),
             chat,
@@ -384,10 +391,7 @@ impl TuiApp {
             self.tab_strip_focus = None;
         }
         self.focused = pane;
-        if matches!(
-            pane,
-            Pane::EditorPane | Pane::Terminal | Pane::Chat
-        ) {
+        if matches!(pane, Pane::EditorPane | Pane::Terminal | Pane::Chat) {
             self.last_left_pane = pane;
         }
     }
@@ -409,7 +413,11 @@ impl TuiApp {
         let metrics = self.theme.metrics.clone();
         let shell = crate::quorp::tui::workbench::compute_shell(full, &metrics);
         self.sync_prismforge_workspace(shell.workspace, &metrics);
-        let layout = crate::quorp::tui::workbench::compute_workbench(shell.workspace, &self.workspace, &metrics);
+        let layout = crate::quorp::tui::workbench::compute_workbench(
+            shell.workspace,
+            &self.workspace,
+            &metrics,
+        );
         if let Some(rects) = layout.leaves.get(&Pane::Terminal) {
             let width = rects.body.width;
             let height = rects.body.height;
@@ -421,10 +429,7 @@ impl TuiApp {
     }
 
     fn navigate_left(&mut self) {
-        if matches!(
-            self.focused,
-            Pane::EditorPane | Pane::Terminal | Pane::Chat
-        ) {
+        if matches!(self.focused, Pane::EditorPane | Pane::Terminal | Pane::Chat) {
             self.last_left_pane = self.focused;
             self.set_focus(Pane::FileTree);
         }
@@ -433,7 +438,10 @@ impl TuiApp {
     fn navigate_right(&mut self) {
         if self.focused == Pane::FileTree {
             self.set_focus(self.last_left_pane);
-        } else if self.focused == Pane::EditorPane || self.focused == Pane::Terminal || self.focused == Pane::Agent {
+        } else if self.focused == Pane::EditorPane
+            || self.focused == Pane::Terminal
+            || self.focused == Pane::Agent
+        {
             self.set_focus(self.right_pane);
         }
     }
@@ -482,29 +490,36 @@ impl TuiApp {
     }
 
     /// Snapshot layout after applying the same workspace sync as [`TuiApp::draw`] (for tests and hit geometry).
-    pub fn workbench_layout_snapshot(&mut self, full: Rect) -> crate::quorp::tui::workbench::WorkbenchLayout {
+    pub fn workbench_layout_snapshot(
+        &mut self,
+        full: Rect,
+    ) -> crate::quorp::tui::workbench::WorkbenchLayout {
         let metrics = self.theme.metrics.clone();
         let shell = crate::quorp::tui::workbench::compute_shell(full, &metrics);
         self.sync_prismforge_workspace(shell.workspace, &metrics);
         crate::quorp::tui::workbench::compute_workbench(shell.workspace, &self.workspace, &metrics)
     }
 
-    fn sync_prismforge_workspace(&mut self, workspace_rect: ratatui::layout::Rect, metrics: &crate::quorp::tui::theme::Metrics) {
+    fn sync_prismforge_workspace(
+        &mut self,
+        workspace_rect: ratatui::layout::Rect,
+        metrics: &crate::quorp::tui::theme::Metrics,
+    ) {
         if !self.prismforge_dynamic_layout {
             return;
         }
         let fresh =
             crate::quorp::tui::workbench::prismforge_tree_for_workspace(workspace_rect, metrics);
         let (fv, fh) = crate::quorp::tui::workbench::prismforge_ratios_from_tree(&fresh);
-        let (v, h) = self
-            .prismforge_split_ratio_lock
-            .unwrap_or((fv, fh));
+        let (v, h) = self.prismforge_split_ratio_lock.unwrap_or((fv, fh));
         self.workspace = crate::quorp::tui::workbench::prismforge_tree_with_ratios(v, h, 1);
     }
 
     fn context_hints_for_focused_pane(&self) -> String {
         match self.focused {
-            Pane::FileTree => "↑↓ Navigate  Enter Open  ←→ Expand/Collapse  Ctrl+→ Code".to_string(),
+            Pane::FileTree => {
+                "↑↓ Navigate  Enter Open  ←→ Expand/Collapse  Ctrl+→ Code".to_string()
+            }
             Pane::EditorPane => "↑↓ Scroll  Ctrl+←→↑↓ Navigate  Tab Next  ? Help".to_string(),
             Pane::Terminal => "Shell input active  Ctrl+←→↑↓ Navigate  ? Help".to_string(),
             Pane::Chat => "Enter Send  Ctrl+T New  [ ] Model  Ctrl+←→↑↓ Navigate".to_string(),
@@ -522,7 +537,10 @@ impl TuiApp {
         }
     }
 
-    fn register_splitter_hit_targets(&mut self, layout: &crate::quorp::tui::workbench::WorkbenchLayout) {
+    fn register_splitter_hit_targets(
+        &mut self,
+        layout: &crate::quorp::tui::workbench::WorkbenchLayout,
+    ) {
         for (index, div) in layout.splitters.iter().enumerate() {
             let hit = crate::quorp::tui::workbench::expand_splitter_hit_rect(*div);
             self.hitmap.push(hit, HitTarget::Splitter(index));
@@ -537,7 +555,11 @@ impl TuiApp {
         let metrics = self.theme.metrics.clone();
         let shell = crate::quorp::tui::workbench::compute_shell(full, &metrics);
         self.sync_prismforge_workspace(shell.workspace, &metrics);
-        let layout = crate::quorp::tui::workbench::compute_workbench(shell.workspace, &self.workspace, &metrics);
+        let layout = crate::quorp::tui::workbench::compute_workbench(
+            shell.workspace,
+            &self.workspace,
+            &metrics,
+        );
         for (index, div) in layout.splitters.iter().enumerate() {
             let hit = crate::quorp::tui::workbench::expand_splitter_hit_rect(*div);
             if col >= hit.x
@@ -559,21 +581,25 @@ impl TuiApp {
         let metrics = self.theme.metrics.clone();
         let shell = crate::quorp::tui::workbench::compute_shell(full, &metrics);
         self.sync_prismforge_workspace(shell.workspace, &metrics);
-        let Some((parent, axis, divider)) = crate::quorp::tui::workbench::split_parent_rect_for_index(
-            shell.workspace,
-            &self.workspace,
-            splitter_index,
-        ) else {
+        let Some((parent, axis, divider)) =
+            crate::quorp::tui::workbench::split_parent_rect_for_index(
+                shell.workspace,
+                &self.workspace,
+                splitter_index,
+            )
+        else {
             return;
         };
         let primary = match axis {
             crate::quorp::tui::workbench::Axis::Vertical => col,
             crate::quorp::tui::workbench::Axis::Horizontal => row,
         };
-        let new_bp =
-            crate::quorp::tui::workbench::ratio_bp_from_drag_position(parent, axis, primary, divider);
+        let new_bp = crate::quorp::tui::workbench::ratio_bp_from_drag_position(
+            parent, axis, primary, divider,
+        );
         if self.prismforge_dynamic_layout {
-            let (mut v, mut h) = crate::quorp::tui::workbench::prismforge_ratios_from_tree(&self.workspace);
+            let (mut v, mut h) =
+                crate::quorp::tui::workbench::prismforge_ratios_from_tree(&self.workspace);
             match axis {
                 crate::quorp::tui::workbench::Axis::Vertical => v = new_bp,
                 crate::quorp::tui::workbench::Axis::Horizontal => h = new_bp,
@@ -598,22 +624,20 @@ impl TuiApp {
         }
 
         match mouse.kind {
-            MouseEventKind::Moved => {
-                match self.splitter_visual_state {
-                    SplitterVisualState::Dragging { index } => {
-                        self.apply_drag_to_splitter(index, mouse.column, mouse.row);
-                    }
-                    _ => {
-                        let next = match self.hit_splitter_index_at(mouse.column, mouse.row) {
-                            Some(index) => SplitterVisualState::Hover { index },
-                            None => SplitterVisualState::Idle,
-                        };
-                        if next != self.splitter_visual_state {
-                            self.splitter_visual_state = next;
-                        }
+            MouseEventKind::Moved => match self.splitter_visual_state {
+                SplitterVisualState::Dragging { index } => {
+                    self.apply_drag_to_splitter(index, mouse.column, mouse.row);
+                }
+                _ => {
+                    let next = match self.hit_splitter_index_at(mouse.column, mouse.row) {
+                        Some(index) => SplitterVisualState::Hover { index },
+                        None => SplitterVisualState::Idle,
+                    };
+                    if next != self.splitter_visual_state {
+                        self.splitter_visual_state = next;
                     }
                 }
-            }
+            },
             MouseEventKind::Drag(MouseButton::Left) => {
                 if let SplitterVisualState::Dragging { index } = self.splitter_visual_state {
                     self.apply_drag_to_splitter(index, mouse.column, mouse.row);
@@ -646,13 +670,16 @@ impl TuiApp {
         self.draw_frame_seq = self.draw_frame_seq.wrapping_add(1);
         self.ssd_moe.poll_health();
 
-        self.chat
-            .ensure_project_root(self.file_tree.root());
+        self.chat.ensure_project_root(self.file_tree.root());
 
         let metrics = self.theme.metrics.clone();
         let shell = crate::quorp::tui::workbench::compute_shell(full, &metrics);
         self.sync_prismforge_workspace(shell.workspace, &metrics);
-        let layout = crate::quorp::tui::workbench::compute_workbench(shell.workspace, &self.workspace, &metrics);
+        let layout = crate::quorp::tui::workbench::compute_workbench(
+            shell.workspace,
+            &self.workspace,
+            &metrics,
+        );
 
         self.hitmap.clear();
 
@@ -661,23 +688,21 @@ impl TuiApp {
 
         frame.render_widget(
             crate::quorp::tui::chrome::TitleBar {
-                text: self
-                    .visual_title_override
-                    .as_deref()
-                    .unwrap_or("quorp-tui"),
+                text: self.visual_title_override.as_deref().unwrap_or("quorp-tui"),
                 theme: &self.theme,
             },
             shell.titlebar,
         );
 
         self.render_activity_bar(frame, shell.activity);
-        
+
         ratatui::widgets::Widget::render(
-            ratatui::widgets::Block::default().style(ratatui::style::Style::default().bg(self.theme.palette.divider_bg)),
+            ratatui::widgets::Block::default()
+                .style(ratatui::style::Style::default().bg(self.theme.palette.divider_bg)),
             shell.explorer_divider,
             frame.buffer_mut(),
         );
-        
+
         self.render_explorer(
             frame,
             shell.explorer_header,
@@ -713,10 +738,13 @@ impl TuiApp {
             if matches!(*id, Pane::EditorPane | Pane::Chat) {
                 // Tab hit targets registered when the leaf is drawn.
             } else {
-                self.hitmap.push(leaf_rects.tabs, HitTarget::LeafTab { leaf: *id, tab: 0 });
-                self.hitmap.push(leaf_rects.body, HitTarget::LeafTab { leaf: *id, tab: 0 });
+                self.hitmap
+                    .push(leaf_rects.tabs, HitTarget::LeafTab { leaf: *id, tab: 0 });
+                self.hitmap
+                    .push(leaf_rects.body, HitTarget::LeafTab { leaf: *id, tab: 0 });
                 if let Some(panel) = leaf_rects.panel_tabs {
-                    self.hitmap.push(panel, HitTarget::PanelTab { leaf: *id, tab: 0 });
+                    self.hitmap
+                        .push(panel, HitTarget::PanelTab { leaf: *id, tab: 0 });
                 }
             }
             if let Some(composer) = leaf_rects.composer {
@@ -726,22 +754,21 @@ impl TuiApp {
                 if matches!(*id, Pane::Chat) {
                     self.hitmap.push(banner, HitTarget::LeafBody(Pane::Chat));
                 } else if !matches!(*id, Pane::EditorPane) {
-                    self.hitmap.push(banner, HitTarget::LeafTab { leaf: *id, tab: 0 });
+                    self.hitmap
+                        .push(banner, HitTarget::LeafTab { leaf: *id, tab: 0 });
                 }
             }
 
             match *id {
                 Pane::EditorPane => {
-                    self.editor_pane.sync_tree_selection(
-                        self.file_tree.selected_file(),
-                        self.file_tree.root(),
-                    );
                     self.editor_pane
-                        .ensure_active_loaded(self.file_tree.root());
+                        .sync_tree_selection(self.file_tree.selected_file(), self.file_tree.root());
+                    self.editor_pane.ensure_active_loaded(self.file_tree.root());
                     let tab_cells = {
                         let buf = frame.buffer_mut();
                         let (cells, _) =
-                            self.editor_pane.draw_tab_strip(buf, leaf_rects.tabs, &self.theme);
+                            self.editor_pane
+                                .draw_tab_strip(buf, leaf_rects.tabs, &self.theme);
                         cells
                     };
                     for cell in &tab_cells {
@@ -764,10 +791,8 @@ impl TuiApp {
                     }
                     self.hitmap
                         .push(leaf_rects.body, HitTarget::LeafBody(Pane::EditorPane));
-                    self.hitmap.push(
-                        leaf_rects.scrollbar,
-                        HitTarget::LeafBody(Pane::EditorPane),
-                    );
+                    self.hitmap
+                        .push(leaf_rects.scrollbar, HitTarget::LeafBody(Pane::EditorPane));
                     self.editor_pane.render_in_leaf(
                         frame.buffer_mut(),
                         leaf_rects,
@@ -777,13 +802,22 @@ impl TuiApp {
                     );
                 }
                 Pane::Terminal => {
-                    self.terminal
-                        .render_in_leaf(frame.buffer_mut(), leaf_rects, is_focused, &self.theme);
+                    self.terminal.render_in_leaf(
+                        frame.buffer_mut(),
+                        leaf_rects,
+                        is_focused,
+                        &self.theme,
+                    );
                 }
                 Pane::Agent => {
-                    self.agent_pane.render_in_leaf(frame.buffer_mut(), leaf_rects.body, is_focused, &self.theme);
+                    self.agent_pane.render_in_leaf(
+                        frame.buffer_mut(),
+                        leaf_rects.body,
+                        is_focused,
+                        &self.theme,
+                    );
                 }
-                        Pane::Chat => {
+                Pane::Chat => {
                     let tab_cells = {
                         let buf = frame.buffer_mut();
                         let (cells, _) =
@@ -810,10 +844,8 @@ impl TuiApp {
                     }
                     self.hitmap
                         .push(leaf_rects.body, HitTarget::LeafBody(Pane::Chat));
-                    self.hitmap.push(
-                        leaf_rects.scrollbar,
-                        HitTarget::LeafBody(Pane::Chat),
-                    );
+                    self.hitmap
+                        .push(leaf_rects.scrollbar, HitTarget::LeafBody(Pane::Chat));
                     self.chat.render_in_leaf(
                         frame.buffer_mut(),
                         leaf_rects,
@@ -832,12 +864,7 @@ impl TuiApp {
             let cy = full.height / 2;
             let rw = 60.min(full.width.saturating_sub(4));
             let rh = 20.min(full.height.saturating_sub(4));
-            let r = Rect::new(
-                cx.saturating_sub(rw / 2),
-                cy.saturating_sub(rh / 2),
-                rw,
-                rh,
-            );
+            let r = Rect::new(cx.saturating_sub(rw / 2), cy.saturating_sub(rh / 2), rw, rh);
             self.models_pane.render(
                 frame,
                 r,
@@ -852,10 +879,7 @@ impl TuiApp {
         let status_indicator = self.ssd_moe.status().indicator().to_string();
         let status_label = self.ssd_moe.status().label().to_string();
         let status_right_default = format!("Flash-MOE {} {}", status_indicator, status_label);
-        let status_left = self
-            .visual_status_left_override
-            .as_deref()
-            .unwrap_or(mode);
+        let status_left = self.visual_status_left_override.as_deref().unwrap_or(mode);
         let status_right = self
             .visual_status_right_override
             .as_deref()
@@ -894,9 +918,7 @@ impl TuiApp {
             if y >= area.y + area.height {
                 break;
             }
-            let is_active = pane_map.get(i).is_some_and(|p| {
-                *p == self.focused
-            });
+            let is_active = pane_map.get(i).is_some_and(|p| *p == self.focused);
             let style = if is_active {
                 Style::default()
                     .bg(self.theme.palette.pill_bg)
@@ -906,7 +928,7 @@ impl TuiApp {
                     .bg(self.theme.palette.activity_bg)
                     .fg(self.theme.palette.icon_inactive)
             };
-            
+
             // Center the icon in the 6-col width
             let padding = "  "; // 2 spaces
             let line = Line::from(vec![
@@ -1005,11 +1027,7 @@ impl TuiApp {
                 "Tab strip focused",
                 "Close active tab",
             ]),
-            Row::new(vec![
-                "Ctrl+Shift+w",
-                "Tab strip focused",
-                "Close all tabs",
-            ]),
+            Row::new(vec!["Ctrl+Shift+w", "Tab strip focused", "Close all tabs"]),
             Row::new(vec!["Ctrl+t", "Chat", "New chat session"]),
             Row::new(vec!["Shift+PgUp/PgDn", "Terminal", "Scrollback offset"]),
             Row::new(vec!["[ / ]", "Chat", "Cycle model"]),
@@ -1138,12 +1156,16 @@ impl TuiApp {
                             {
                                 crate::quorp::tui::model_registry::save_model(&entry.registry_id);
                             }
-                            self.chat
-                                .request_persist_default_model_to_agent_settings(&entry.registry_id);
-                            self.chat
-                                .set_model_index(self.models_pane.selected_index);
+                            self.chat.request_persist_default_model_to_agent_settings(
+                                &entry.registry_id,
+                            );
+                            self.chat.set_model_index(self.models_pane.selected_index);
                             let root = self.file_tree.root().to_path_buf();
-                            if let Some(spec) = crate::quorp::tui::model_registry::local_moe_spec_for_registry_id(&entry.registry_id) {
+                            if let Some(spec) =
+                                crate::quorp::tui::model_registry::local_moe_spec_for_registry_id(
+                                    &entry.registry_id,
+                                )
+                            {
                                 self.ssd_moe.switch_model(&root, &spec);
                             }
                             self.overlay = Overlay::None;
@@ -1251,9 +1273,7 @@ impl TuiApp {
                         Pane::EditorPane => {
                             self.editor_pane.activate_file_tab(tab, root);
                         }
-                        Pane::Agent => {
-
-                        }
+                        Pane::Agent => {}
                         Pane::Chat => {
                             self.chat.activate_chat_session(tab, &self.theme);
                         }
@@ -1266,9 +1286,7 @@ impl TuiApp {
                         Pane::EditorPane => {
                             self.editor_pane.close_file_tab_at(tab, root);
                         }
-                        Pane::Agent => {
-
-                        }
+                        Pane::Agent => {}
                         Pane::Chat => {
                             self.chat.close_chat_session_at(tab, &self.theme);
                         }
@@ -1315,10 +1333,8 @@ impl TuiApp {
                     Pane::EditorPane => {
                         self.editor_pane.cycle_file_tab(-1, root);
                     }
-                    Pane::Agent => {
-
-                        }
-                        Pane::Chat => {
+                    Pane::Agent => {}
+                    Pane::Chat => {
                         self.chat.cycle_chat_session(-1, &self.theme);
                     }
                     _ => {}
@@ -1330,10 +1346,8 @@ impl TuiApp {
                     Pane::EditorPane => {
                         self.editor_pane.cycle_file_tab(1, root);
                     }
-                    Pane::Agent => {
-
-                        }
-                        Pane::Chat => {
+                    Pane::Agent => {}
+                    Pane::Chat => {
                         self.chat.cycle_chat_session(1, &self.theme);
                     }
                     _ => {}
@@ -1346,10 +1360,8 @@ impl TuiApp {
                         let i = self.editor_pane.active_tab_index();
                         let _ = self.editor_pane.close_file_tab_at(i, root);
                     }
-                    Pane::Agent => {
-
-                        }
-                        Pane::Chat => {
+                    Pane::Agent => {}
+                    Pane::Chat => {
                         let i = self.chat.active_session_index();
                         let _ = self.chat.close_chat_session_at(i, &self.theme);
                     }
@@ -1363,9 +1375,7 @@ impl TuiApp {
                         Pane::EditorPane => {
                             self.editor_pane.close_all_file_tabs(root);
                         }
-                        Pane::Agent => {
-
-                        }
+                        Pane::Agent => {}
                         Pane::Chat => {
                             self.chat.close_all_chat_sessions(&self.theme);
                         }
@@ -1377,9 +1387,7 @@ impl TuiApp {
                             let i = self.editor_pane.active_tab_index();
                             let _ = self.editor_pane.close_file_tab_at(i, root);
                         }
-                        Pane::Agent => {
-
-                        }
+                        Pane::Agent => {}
                         Pane::Chat => {
                             let i = self.chat.active_session_index();
                             let _ = self.chat.close_chat_session_at(i, &self.theme);
@@ -1402,9 +1410,7 @@ impl TuiApp {
         runtime: Option<tokio::runtime::Runtime>,
         event_rx_keepalive: Option<std::sync::mpsc::Receiver<crate::quorp::tui::TuiEvent>>,
         unified_language_model_boot: Option<(
-            futures::channel::mpsc::UnboundedSender<
-                crate::quorp::tui::bridge::TuiToBackendRequest,
-            >,
+            futures::channel::mpsc::UnboundedSender<crate::quorp::tui::bridge::TuiToBackendRequest>,
             Vec<String>,
             usize,
         )>,
@@ -1416,7 +1422,9 @@ impl TuiApp {
         let path_index = std::sync::Arc::new(crate::quorp::tui::path_index::PathIndex::new(
             fixture_root.clone(),
         ));
-        let agent_bridge_tx = unified_language_model_boot.as_ref().map(|(tx, _, _)| tx.clone());
+        let agent_bridge_tx = unified_language_model_boot
+            .as_ref()
+            .map(|(tx, _, _)| tx.clone());
         let uses_language_model_registry = unified_language_model_boot.is_some();
         let mut chat = ChatPane::new(
             tx,
@@ -1437,7 +1445,11 @@ impl TuiApp {
             last_left_pane: Pane::EditorPane,
             file_tree: FileTree::with_root(fixture_root),
             editor_pane: EditorPane::new(),
-            terminal: TerminalPane::with_bridge(unified_language_model_boot.as_ref().map(|(tx, _, _)| tx.clone())),
+            terminal: TerminalPane::with_bridge(
+                unified_language_model_boot
+                    .as_ref()
+                    .map(|(tx, _, _)| tx.clone()),
+            ),
             agent_pane: AgentPane::new(agent_bridge_tx),
             chat,
             models_pane,
@@ -1498,8 +1510,7 @@ impl TuiApp {
         app.workspace = crate::quorp::tui::workbench::default_prismforge_tree();
         app.prismforge_dynamic_layout = true;
         app.visual_title_override = Some("PrismForge — quorp-tui".to_string());
-        app.visual_status_left_override =
-            Some("main • 3 agents • 0 errors • 12 tasks".to_string());
+        app.visual_status_left_override = Some("main • 3 agents • 0 errors • 12 tasks".to_string());
         app.visual_status_right_override = Some("Flash-MOE • Online".to_string());
         let planner = app.file_tree.root().join("planner.rs");
         let plan_md = app.file_tree.root().join("multi_tab_preview.plan.md");
@@ -1517,10 +1528,7 @@ impl TuiApp {
     /// keep the returned receiver alive so the UI event channel stays open.
     pub fn new_for_flow_tests(
         fixture_root: std::path::PathBuf,
-    ) -> (
-        Self,
-        std::sync::mpsc::Receiver<crate::quorp::tui::TuiEvent>,
-    ) {
+    ) -> (Self, std::sync::mpsc::Receiver<crate::quorp::tui::TuiEvent>) {
         let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
         let handle = runtime.handle().clone();
         let (tx, rx) = std::sync::mpsc::sync_channel::<crate::quorp::tui::TuiEvent>(128);
@@ -1568,18 +1576,19 @@ impl TuiApp {
             TuiEvent::FileTreeListed { parent, result } => {
                 self.file_tree.apply_project_listing(parent, result);
             }
-            TuiEvent::UnifiedResponse(crate::quorp::tui::bridge::BackendToTuiResponse::BufferChunk {
-                path,
-                lines,
-                error,
-                truncated,
-            }) => self.editor_pane.apply_editor_pane_buffer_snapshot(
-                path,
-                lines,
-                error,
-                truncated,
-            ),
-            TuiEvent::UnifiedResponse(crate::quorp::tui::bridge::BackendToTuiResponse::AgentStatusUpdate(s)) => {
+            TuiEvent::UnifiedResponse(
+                crate::quorp::tui::bridge::BackendToTuiResponse::BufferChunk {
+                    path,
+                    lines,
+                    error,
+                    truncated,
+                },
+            ) => self
+                .editor_pane
+                .apply_editor_pane_buffer_snapshot(path, lines, error, truncated),
+            TuiEvent::UnifiedResponse(
+                crate::quorp::tui::bridge::BackendToTuiResponse::AgentStatusUpdate(s),
+            ) => {
                 self.agent_pane.apply_status_update(s);
             }
             TuiEvent::PathIndexSnapshot {
@@ -1688,12 +1697,7 @@ mod tests {
 
     #[test]
     fn esc_quits_from_every_pane() {
-        for pane in [
-            Pane::EditorPane,
-            Pane::Terminal,
-            Pane::Chat,
-            Pane::FileTree,
-        ] {
+        for pane in [Pane::EditorPane, Pane::Terminal, Pane::Chat, Pane::FileTree] {
             let mut app = TuiApp::new();
             app.focused = pane;
             let esc = Event::Key(KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE));

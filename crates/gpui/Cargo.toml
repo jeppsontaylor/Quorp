@@ -118,7 +118,7 @@ core-video.workspace = true
 core-text = "21"
 # Prefer crates.io package resolution so restricted CI / sandbox environments
 # can build and run TUI flow tests without git dependency access.
-font-kit = { package = "quorp-font-kit", version = "0.14.1-quorp", optional = true }
+font-kit = { package = "zed-font-kit", version = "0.14.1-zed", optional = true }
 foreign-types = "0.5"
 log.workspace = true
 media.workspace = true
