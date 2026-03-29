@@ -1,0 +1,12 @@
+[package]
+name = "flash_moe_defaults"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[lib]
+path = "src/flash_moe_defaults.rs"

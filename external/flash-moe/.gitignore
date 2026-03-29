@@ -1,0 +1,6 @@
+flash-moe-serve.log
+
+# Packed SSD-MOE / Flash-MOE weights (canonical location is ~/models/)
+out_*/
+**/packed_experts/
+**/model_weights.bin

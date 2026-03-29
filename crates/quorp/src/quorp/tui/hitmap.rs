@@ -1,0 +1,125 @@
+#![allow(unused)]
+use ratatui::layout::Rect;
+
+use crate::quorp::tui::workbench::LeafId;
+
+#[derive(Clone, Debug, Copy, PartialEq, Eq)]
+pub enum HitTarget {
+    Activity(usize),
+    ExplorerRow(usize),
+    ExplorerMenu,
+    LeafTab { leaf: LeafId, tab: usize },
+    LeafTabClose { leaf: LeafId, tab: usize },
+    /// Pane content (not tab strip): clears tab-strip sub-focus on click.
+    LeafBody(LeafId),
+    Splitter(usize),
+    PanelTab { leaf: LeafId, tab: usize },
+    AgentBlock(usize),
+    ComposerInput(LeafId),
+    ComposerAction(LeafId, usize),
+    StatusChip,
+}
+
+#[derive(Clone, Debug)]
+pub struct HitRegion {
+    pub rect: Rect,
+    pub target: HitTarget,
+}
+
+pub struct HitMap {
+    regions: Vec<HitRegion>,
+}
+
+impl HitMap {
+    pub fn new() -> Self {
+        Self {
+            regions: Vec::new(),
+        }
+    }
+
+    pub fn clear(&mut self) {
+        self.regions.clear();
+    }
+
+    pub fn push(&mut self, rect: Rect, target: HitTarget) {
+        self.regions.push(HitRegion { rect, target });
+    }
+
+    pub fn hit(&self, col: u16, row: u16) -> Option<&HitTarget> {
+        for region in self.regions.iter().rev() {
+            let r = &region.rect;
+            if col >= r.x && col < r.x + r.width && row >= r.y && row < r.y + r.height {
+                return Some(&region.target);
+            }
+        }
+        None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn hit_returns_last_pushed_for_overlapping() {
+        let mut map = HitMap::new();
+        let rect = Rect::new(0, 0, 10, 10);
+        map.push(rect, HitTarget::Activity(0));
+        map.push(rect, HitTarget::Activity(1));
+        match map.hit(5, 5) {
+            Some(HitTarget::Activity(1)) => {}
+            other => panic!("expected Activity(1), got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn hit_returns_none_outside_all_regions() {
+        let mut map = HitMap::new();
+        map.push(Rect::new(0, 0, 5, 5), HitTarget::Activity(0));
+        assert!(map.hit(6, 6).is_none());
+    }
+
+    #[test]
+    fn hit_boundary_inclusive_exclusive() {
+        let mut map = HitMap::new();
+        map.push(Rect::new(10, 20, 5, 3), HitTarget::ExplorerMenu);
+        assert!(map.hit(10, 20).is_some());
+        assert!(map.hit(14, 22).is_some());
+        assert!(map.hit(15, 20).is_none());
+        assert!(map.hit(10, 23).is_none());
+    }
+
+    #[test]
+    fn hit_leaf_tab_targets_differ_by_tab_index() {
+        use crate::quorp::tui::workbench::LeafId;
+        let mut map = HitMap::new();
+        map.push(
+            Rect::new(0, 0, 4, 1),
+            HitTarget::LeafTab {
+                leaf: LeafId(1),
+                tab: 0,
+            },
+        );
+        map.push(
+            Rect::new(5, 0, 4, 1),
+            HitTarget::LeafTab {
+                leaf: LeafId(1),
+                tab: 1,
+            },
+        );
+        assert_eq!(
+            map.hit(1, 0),
+            Some(&HitTarget::LeafTab {
+                leaf: LeafId(1),
+                tab: 0,
+            })
+        );
+        assert_eq!(
+            map.hit(6, 0),
+            Some(&HitTarget::LeafTab {
+                leaf: LeafId(1),
+                tab: 1,
+            })
+        );
+    }
+}

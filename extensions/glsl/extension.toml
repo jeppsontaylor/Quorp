@@ -1,0 +1,15 @@
+id = "glsl"
+name = "GLSL"
+description = "GLSL support."
+version = "0.2.2"
+schema_version = 1
+authors = ["Mikayla Maki <mikayla@quorp.dev>"]
+repository = "https://github.com/quorp-industries/quorp"
+
+[language_servers.glsl_analyzer]
+name = "GLSL Analyzer LSP"
+language = "GLSL"
+
+[grammars.glsl]
+repository = "https://github.com/theHamsta/tree-sitter-glsl"
+commit = "31064ce53385150f894a6c72d61b94076adf640a"

@@ -1,0 +1,59 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/assets",
+    "crates/client",
+    "crates/clock",
+    "crates/collections",
+    "crates/db",
+    "crates/fs",
+    "crates/fuzzy",
+    "crates/git",
+    "crates/gpui",
+    "crates/gpui_linux",
+    "crates/gpui_macos",
+    "crates/gpui_macros",
+    "crates/gpui_platform",
+    "crates/gpui_tokio",
+    "crates/gpui_util",
+    "crates/gpui_wgpu",
+    "crates/gpui_windows",
+    "crates/language",
+    "crates/language_model",
+    "crates/language_models",
+    "crates/lsp",
+    "crates/multi_buffer",
+    "crates/node_runtime",
+    "crates/paths",
+    "crates/project",
+    "crates/proto",
+    "crates/release_channel",
+    "crates/rope",
+    "crates/rpc",
+    "crates/session",
+    "crates/settings",
+    "crates/sqlez",
+    "crates/sqlez_macros",
+    "crates/sum_tree",
+    "crates/telemetry",
+    "crates/terminal",
+    "crates/text",
+    "crates/theme",
+    "crates/util",
+    "crates/quorp",
+    "crates/worktree",
+    "crates/zlog",
+    "crates/zlog_settings",
+    "crates/ztracing",
+    "crates/ztracing_macro",
+]
+default-members = ["crates/quorp"]
+
+[workspace.package]
+publish = false
+edition = "2021"
+rust-version = "1.82"
+
+[workspace.dependencies]
+# We'll keep the workspace dependencies section as it contains many shared crates
+# that the backend crates use. I will prune this later if needed.
