@@ -50,7 +50,7 @@ pub struct WorkbenchLayout {
     pub splitters: Vec<Rect>,
 }
 
-pub fn default_antigravity_tree() -> WorkspaceNode {
+pub fn default_core_tui_tree() -> WorkspaceNode {
     WorkspaceNode::Split {
         axis: Axis::Vertical,
         ratio_bp: 3560,
@@ -594,7 +594,7 @@ mod tests {
     use crate::quorp::tui::theme::Theme;
 
     fn golden_metrics() -> Metrics {
-        Theme::antigravity().metrics
+        Theme::core_tui().metrics
     }
 
     fn golden_shell() -> (Rect, ShellRects) {
@@ -621,9 +621,9 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_left_leaf_72_cols() {
+    fn core_tui_left_leaf_72_cols() {
         let (_, shell) = golden_shell();
-        let tree = default_antigravity_tree();
+        let tree = default_core_tui_tree();
         let layout = compute_workbench(shell.workspace, &tree, &golden_metrics());
         let left_editor = layout.leaves.get(&LeafId(1)).expect("leaf 1");
         let left_total_w = left_editor.tabs.width + left_editor.scrollbar.width;
@@ -634,9 +634,9 @@ mod tests {
     }
 
     #[test]
-    fn antigravity_right_leaf_130_cols() {
+    fn core_tui_right_leaf_130_cols() {
         let (_, shell) = golden_shell();
-        let tree = default_antigravity_tree();
+        let tree = default_core_tui_tree();
         let layout = compute_workbench(shell.workspace, &tree, &golden_metrics());
         let right = layout.leaves.get(&LeafId(3)).expect("leaf 3");
         let right_total_w = right.tabs.width;
@@ -663,7 +663,7 @@ mod tests {
     #[test]
     fn leaf_rects_terminal_has_panel_tabs() {
         let (_, shell) = golden_shell();
-        let tree = default_antigravity_tree();
+        let tree = default_core_tui_tree();
         let layout = compute_workbench(shell.workspace, &tree, &golden_metrics());
         let terminal = layout.leaves.get(&LeafId(2)).expect("leaf 2");
         assert!(terminal.panel_tabs.is_some(), "terminal leaf should have panel_tabs");
@@ -674,7 +674,7 @@ mod tests {
     #[test]
     fn leaf_rects_agent_has_banner_and_composer() {
         let (_, shell) = golden_shell();
-        let tree = default_antigravity_tree();
+        let tree = default_core_tui_tree();
         let layout = compute_workbench(shell.workspace, &tree, &golden_metrics());
         let agent = layout.leaves.get(&LeafId(3)).expect("leaf 3");
         assert!(agent.banner.is_some(), "agent leaf should have banner");

@@ -104,7 +104,7 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub fn antigravity() -> Self {
+    pub fn core_tui() -> Self {
         Self {
             palette: Palette {
                 titlebar_bg: hex(0x3C3C3C),

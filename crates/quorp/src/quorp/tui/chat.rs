@@ -2230,9 +2230,9 @@ mod tests {
             ChatMessage::Assistant(String::new()),
         ]);
         pane.set_streaming_for_test(true);
-        pane.apply_chat_event(ChatUiEvent::AssistantDelta(0, "world".to_string()), &crate::quorp::tui::theme::Theme::antigravity());
+        pane.apply_chat_event(ChatUiEvent::AssistantDelta(0, "world".to_string()), &crate::quorp::tui::theme::Theme::core_tui());
         assert_eq!(pane.last_assistant_text_for_test(), Some("world"));
-        pane.apply_chat_event(ChatUiEvent::StreamFinished(0), &crate::quorp::tui::theme::Theme::antigravity());
+        pane.apply_chat_event(ChatUiEvent::StreamFinished(0), &crate::quorp::tui::theme::Theme::core_tui());
         assert!(!pane.is_streaming());
     }
 
@@ -2292,7 +2292,7 @@ mod tests {
 
         for i in 0..600 {
             pane.set_input_for_test(&format!("Message {}", i));
-            pane.submit_input(&crate::quorp::tui::theme::Theme::antigravity());
+            pane.submit_input(&crate::quorp::tui::theme::Theme::core_tui());
             // submit_input sets streaming to true. Reset it so we can submit again.
             pane.active_session_mut().streaming = false;
         }
@@ -2305,7 +2305,7 @@ mod tests {
     #[test]
     fn new_chat_session_does_not_see_prior_session_assistant() {
         let mut pane = chat_pane_with_temp_root();
-        let theme = crate::quorp::tui::theme::Theme::antigravity();
+        let theme = crate::quorp::tui::theme::Theme::core_tui();
         pane.seed_messages_for_test(vec![
             ChatMessage::User("u".to_string()),
             ChatMessage::Assistant("prior".to_string()),
@@ -2318,7 +2318,7 @@ mod tests {
     #[test]
     fn close_chat_session_keeps_other_tab_intact() {
         let mut pane = chat_pane_with_temp_root();
-        let theme = crate::quorp::tui::theme::Theme::antigravity();
+        let theme = crate::quorp::tui::theme::Theme::core_tui();
         pane.new_chat_session(&theme);
         pane.seed_messages_for_test(vec![ChatMessage::User("tab-one".to_string())]);
         assert!(pane.activate_chat_session(0, &theme));
@@ -2336,7 +2336,7 @@ mod tests {
     #[test]
     fn close_all_chat_sessions_leaves_one_fresh_tab() {
         let mut pane = chat_pane_with_temp_root();
-        let theme = crate::quorp::tui::theme::Theme::antigravity();
+        let theme = crate::quorp::tui::theme::Theme::core_tui();
         pane.new_chat_session(&theme);
         pane.close_all_chat_sessions(&theme);
         assert_eq!(pane.active_session_index(), 0);
@@ -2346,7 +2346,7 @@ mod tests {
 
     #[test]
     fn mention_at_opens_popup_with_matches() {
-        let theme = crate::quorp::tui::theme::Theme::antigravity();
+        let theme = crate::quorp::tui::theme::Theme::core_tui();
         let (_rt, mut chat, _dir) = chat_with_indexed_project();
         assert!(chat.handle_key_event(&key_char('@'), &theme));
         assert!(chat.mention_popup_open_for_test());
@@ -2355,7 +2355,7 @@ mod tests {
 
     #[test]
     fn mention_filter_narrows_list() {
-        let theme = crate::quorp::tui::theme::Theme::antigravity();
+        let theme = crate::quorp::tui::theme::Theme::core_tui();
         let (_rt, mut chat, _dir) = chat_with_indexed_project();
         chat.handle_key_event(&key_char('@'), &theme);
         let full = chat.mention_match_count_for_test();
@@ -2370,7 +2370,7 @@ mod tests {
 
     #[test]
     fn mention_down_past_first_page_advances_scroll() {
-        let theme = crate::quorp::tui::theme::Theme::antigravity();
+        let theme = crate::quorp::tui::theme::Theme::core_tui();
         let (_rt, mut chat, _dir) = chat_with_indexed_project();
         chat.handle_key_event(&key_char('@'), &theme);
         for c in "f".chars() {
@@ -2388,7 +2388,7 @@ mod tests {
 
     #[test]
     fn mention_tab_inserts_file_link() {
-        let theme = crate::quorp::tui::theme::Theme::antigravity();
+        let theme = crate::quorp::tui::theme::Theme::core_tui();
         let (_rt, mut chat, _dir) = chat_with_indexed_project();
         chat.handle_key_event(&key_char('@'), &theme);
         for c in "needle".chars() {
@@ -2400,7 +2400,7 @@ mod tests {
 
     #[test]
     fn mention_esc_dismisses_popup() {
-        let theme = crate::quorp::tui::theme::Theme::antigravity();
+        let theme = crate::quorp::tui::theme::Theme::core_tui();
         let (_rt, mut chat, _dir) = chat_with_indexed_project();
         chat.handle_key_event(&key_char('@'), &theme);
         assert!(chat.mention_popup_open_for_test());

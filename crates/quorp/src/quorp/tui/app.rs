@@ -161,7 +161,7 @@ impl TuiApp {
         let mut ssd_moe = SsdMoeManager::new();
         let default_model = crate::quorp::tui::model_registry::get_saved_model();
         ssd_moe.ensure_running(&project_root, &default_model);
-        let theme = Theme::antigravity();
+        let theme = Theme::core_tui();
         let chat = ChatPane::new(tx, handle, project_root, path_index, None, None);
         let models_pane = ModelsPane::sync_from_chat(&chat);
         Self {
@@ -183,7 +183,7 @@ impl TuiApp {
             last_full_area: Rect::default(),
             theme,
             hitmap: HitMap::new(),
-            workspace: crate::quorp::tui::workbench::default_antigravity_tree(),
+            workspace: crate::quorp::tui::workbench::default_core_tui_tree(),
             visual_status_center_override: None,
             visual_title_override: None,
             visual_status_left_override: None,
@@ -209,7 +209,7 @@ impl TuiApp {
         let mut ssd_moe = SsdMoeManager::new();
         let default_model = crate::quorp::tui::model_registry::get_saved_model();
         ssd_moe.ensure_running(&project_root, &default_model);
-        let theme = Theme::antigravity();
+        let theme = Theme::core_tui();
         let chat = ChatPane::new(tx, handle, project_root, path_index, None, None);
         let models_pane = ModelsPane::sync_from_chat(&chat);
         Self {
@@ -231,7 +231,7 @@ impl TuiApp {
             last_full_area: Rect::default(),
             theme,
             hitmap: HitMap::new(),
-            workspace: crate::quorp::tui::workbench::default_antigravity_tree(),
+            workspace: crate::quorp::tui::workbench::default_core_tui_tree(),
             visual_status_center_override: None,
             visual_title_override: None,
             visual_status_left_override: None,
@@ -286,7 +286,7 @@ impl TuiApp {
         let mut ssd_moe = SsdMoeManager::new();
         let default_model = crate::quorp::tui::model_registry::get_saved_model();
         ssd_moe.ensure_running(&project_root, &default_model);
-        let theme = Theme::antigravity();
+        let theme = Theme::core_tui();
         let terminal = match &unified_language_model {
             Some((tx, _, _)) => TerminalPane::with_bridge(Some(tx.clone())),
             None => TerminalPane::new(),
@@ -333,7 +333,7 @@ impl TuiApp {
             last_full_area: Rect::default(),
             theme,
             hitmap: HitMap::new(),
-            workspace: crate::quorp::tui::workbench::default_antigravity_tree(),
+            workspace: crate::quorp::tui::workbench::default_core_tui_tree(),
             prismforge_dynamic_layout: false,
             visual_status_center_override: None,
             visual_title_override: None,
@@ -1430,7 +1430,7 @@ impl TuiApp {
             chat.set_model_index_for_test(0);
         }
         let models_pane = ModelsPane::sync_from_chat(&chat);
-        let theme = Theme::antigravity();
+        let theme = Theme::core_tui();
         Self {
             focused: Pane::EditorPane,
             right_pane: Pane::Chat,
@@ -1450,7 +1450,7 @@ impl TuiApp {
             last_full_area: Rect::default(),
             theme,
             hitmap: HitMap::new(),
-            workspace: crate::quorp::tui::workbench::default_antigravity_tree(),
+            workspace: crate::quorp::tui::workbench::default_core_tui_tree(),
             visual_status_center_override: Some("/fixture/project".to_string()),
             visual_title_override: None,
             visual_status_left_override: None,
