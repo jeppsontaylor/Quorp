@@ -104,7 +104,7 @@ pub struct Theme {
 }
 
 impl Theme {
-    pub fn antigravity() -> Self {
+    pub fn core_tui() -> Self {
         Self {
             palette: Palette {
                 titlebar_bg: hex(0x3C3C3C),
@@ -167,25 +167,25 @@ impl Theme {
             metrics: Metrics {
                 activity_bar_width: 5,
                 default_explorer_width: 23,
-                default_assistant_width: 130,
-                default_terminal_height: 47,
-                title_height: 2,
+                default_assistant_width: 42,
+                default_terminal_height: 12,
+                title_height: 1,
                 header_height: 2,
                 composer_height: 4,
-                banner_height: 2,
+                banner_height: 1,
                 scrollbar_width: 1,
-                content_pad_x: 2,
+                content_pad_x: 1,
             },
             glyphs: Glyphs {
-                chevron_right: "›",
-                chevron_down: "⌄",
-                folder_icon: "󰉋",
-                file_icon: "󰌛",
-                close_icon: "×",
-                activity_files: "☰",
-                activity_search: "⌕",
-                activity_settings: "⚙",
-                activity_agent: "◈",
+                chevron_right: ">",
+                chevron_down: "v",
+                folder_icon: "+",
+                file_icon: "-",
+                close_icon: "x",
+                activity_files: "F",
+                activity_search: "S",
+                activity_settings: "C",
+                activity_agent: "A",
             },
         }
     }
@@ -262,15 +262,15 @@ impl Theme {
                 content_pad_x: 1,
             },
             glyphs: Glyphs {
-                chevron_right: "›",
-                chevron_down: "⌄",
-                folder_icon: "󰉋",
-                file_icon: "󰌛",
-                close_icon: "×",
-                activity_files: "☰",
-                activity_search: "⌕",
-                activity_settings: "⚙",
-                activity_agent: "◈",
+                chevron_right: ">",
+                chevron_down: "v",
+                folder_icon: "+",
+                file_icon: "-",
+                close_icon: "x",
+                activity_files: "F",
+                activity_search: "S",
+                activity_settings: "C",
+                activity_agent: "A",
             },
         }
     }
@@ -337,4 +337,3 @@ mod tests {
         assert_eq!(color_u24(palette.sidebar_bg), 0x111723);
     }
 }
-

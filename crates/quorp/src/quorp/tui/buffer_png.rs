@@ -293,10 +293,10 @@ fn blue_and_warm_fractions(img: &RgbaImage) -> (f64, f64) {
     (blue_frac, warm_frac)
 }
 
-/// Heuristic 0.0–1.0 comparing bottom status strip of `tui` to `reference` (e.g. Antigravity IDE).
+/// Heuristic 0.0–1.0 comparing bottom status strip of `tui` to `reference` (e.g. Core TUI IDE).
 ///
 /// Uses blue-bar and warm-chip pixel fractions; not a perceptual match to the whole IDE frame.
-pub fn antigravity_likeness(tui: &RgbaImage, reference: &RgbaImage) -> f64 {
+pub fn core_tui_likeness(tui: &RgbaImage, reference: &RgbaImage) -> f64 {
     let (tb, tw) = blue_and_warm_fractions(tui);
     let (rb, rw) = blue_and_warm_fractions(reference);
     let blue_closeness = (1.0 - (tb - rb).abs()).clamp(0.0, 1.0);

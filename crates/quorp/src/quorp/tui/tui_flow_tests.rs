@@ -21,5 +21,6 @@ mod visual_flows;
 mod session_isolation_flows;
 mod vim_navigation_matrix;
 mod visual_regression;
+mod rust_capture_flows;
 
 mod chat_http_mock;

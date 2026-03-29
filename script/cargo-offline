@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+vendor_dir="$repo_root/vendor"
+if [[ ! -d "$vendor_dir" ]]; then
+  echo "vendor/ is missing. Run ./script/bootstrap-vendor first." >&2
+  exit 1
+fi
+if ! find "$vendor_dir" -mindepth 2 -maxdepth 2 -name .cargo-checksum.json | grep -q .; then
+  echo "vendor/ exists but is incomplete. Re-run ./script/bootstrap-vendor in a networked environment." >&2
+  exit 1
+fi
+
+exec cargo \
+  --offline \
+  --config "$repo_root/.cargo/config.offline-vendor.toml" \
+  "$@"
