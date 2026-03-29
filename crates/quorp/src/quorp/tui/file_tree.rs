@@ -928,14 +928,14 @@ mod tests {
 
     #[test]
     fn file_style_rust_returns_orange() {
-        let palette = crate::quorp::tui::theme::Theme::antigravity().palette;
+        let palette = crate::quorp::tui::theme::Theme::core_tui().palette;
         let style = file_style(Path::new("test.rs"), false, &palette);
         assert_eq!(style.fg, Some(palette.file_rust));
     }
 
     #[test]
     fn file_style_directory_returns_blue_bold() {
-        let palette = crate::quorp::tui::theme::Theme::antigravity().palette;
+        let palette = crate::quorp::tui::theme::Theme::core_tui().palette;
         let style = file_style(Path::new("some_dir"), true, &palette);
         assert_eq!(style.fg, Some(palette.folder_blue));
         assert!(style.add_modifier.contains(Modifier::BOLD));

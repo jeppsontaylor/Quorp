@@ -53,14 +53,14 @@ impl ModelStatus {
 
     pub fn indicator(&self) -> &str {
         match self {
-            ModelStatus::NotDownloaded => "⬜",
-            ModelStatus::Downloading { .. } => "📥",
-            ModelStatus::Packing { .. } => "📦",
-            ModelStatus::Ready => "⬜",
-            ModelStatus::Starting => "🟡",
-            ModelStatus::Running => "🟢",
-            ModelStatus::Stopping => "🟡",
-            ModelStatus::Failed(_) => "🔴",
+            ModelStatus::NotDownloaded => "[ ]",
+            ModelStatus::Downloading { .. } => "[D]",
+            ModelStatus::Packing { .. } => "[P]",
+            ModelStatus::Ready => "[ ]",
+            ModelStatus::Starting => "[~]",
+            ModelStatus::Running => "[+]",
+            ModelStatus::Stopping => "[~]",
+            ModelStatus::Failed(_) => "[!]",
         }
     }
 }
