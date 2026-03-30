@@ -5,8 +5,7 @@ mod fixtures;
 mod harness;
 
 mod backend_flows;
-mod project_bridge_gpui;
-mod path_index_bridge_gpui;
+mod chat_http_mock;
 mod chat_flows;
 mod mention_flows;
 mod editor_pane_flows;
@@ -19,8 +18,7 @@ mod tab_strip_flows;
 mod terminal_flows;
 mod visual_flows;
 mod session_isolation_flows;
+mod screenshot_suite;
 mod vim_navigation_matrix;
 mod visual_regression;
 mod rust_capture_flows;
-
-mod chat_http_mock;

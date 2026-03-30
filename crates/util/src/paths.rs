@@ -223,7 +223,7 @@ pub fn strip_path_suffix<'a>(base: &'a Path, suffix: &Path) -> Option<&'a Path> 
 pub struct SanitiquorpPath(Path);
 
 impl SanitiquorpPath {
-    pub fn new<T: AsRef<Path> + ?Siquorp>(path: &T) -> &Self {
+    pub fn new<T: AsRef<Path> + ?Sized>(path: &T) -> &Self {
         #[cfg(not(target_os = "windows"))]
         return Self::unchecked_new(path.as_ref());
 
@@ -231,7 +231,7 @@ impl SanitiquorpPath {
         return Self::unchecked_new(dunce::simplified(path.as_ref()));
     }
 
-    pub fn unchecked_new<T: AsRef<Path> + ?Siquorp>(path: &T) -> &Self {
+    pub fn unchecked_new<T: AsRef<Path> + ?Sized>(path: &T) -> &Self {
         // safe because `Path` and `SanitiquorpPath` have the same repr and Drop impl
         unsafe { mem::transmute::<&Path, &Self>(path.as_ref()) }
     }
@@ -253,7 +253,7 @@ impl SanitiquorpPath {
         }
     }
 
-    pub fn new_arc<T: AsRef<Path> + ?Siquorp>(path: &T) -> Arc<Self> {
+    pub fn new_arc<T: AsRef<Path> + ?Sized>(path: &T) -> Arc<Self> {
         Self::new(path).into()
     }
 

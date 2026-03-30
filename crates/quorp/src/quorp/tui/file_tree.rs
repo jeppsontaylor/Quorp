@@ -25,6 +25,12 @@ pub struct TreeChild {
     pub is_directory: bool,
 }
 
+#[derive(Clone, Debug)]
+pub struct DirectoryListing {
+    pub parent: PathBuf,
+    pub result: Result<Vec<TreeChild>, String>,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileTreeKeyOutcome {
     NotHandled,

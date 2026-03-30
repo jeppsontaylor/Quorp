@@ -20,7 +20,18 @@ fn diff_baseline(harness: &mut TuiTestHarness, name: &str) {
 
     let baseline = image::open(&baseline_path).unwrap().to_rgba8();
     let fraction = crate::quorp::tui::buffer_png::pixel_mismatch_fraction(&baseline, &img).unwrap();
-    assert!(fraction < 0.05, "Visual regression for {}: mismatch fraction {}", name, fraction);
+    if fraction >= 0.05 {
+        let actual_dir = TuiTestHarness::screenshot_output_dir().join("visual_regression_failures");
+        std::fs::create_dir_all(&actual_dir).unwrap();
+        let actual_path = actual_dir.join(format!("{name}.actual.png"));
+        img.save(&actual_path).unwrap();
+        panic!(
+            "Visual regression for {}: mismatch fraction {}. Actual image saved to {}",
+            name,
+            fraction,
+            actual_path.display()
+        );
+    }
 }
 
 #[test]

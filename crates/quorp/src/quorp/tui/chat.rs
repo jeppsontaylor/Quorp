@@ -1,65 +1,29 @@
 #![allow(unused)]
 //! Chat pane: transcript, composer, and model row.
 //!
-//! When the TUI is started from `main` with a GPUI [`crate::quorp::tui::chat_bridge`] task, all
-//! completions go through [`language_model::LanguageModelRegistry`] and
-//! [`language_model::LanguageModel::stream_completion`]. The OpenAI HTTP path in this module exists
-//! only for harnesses and tools that construct [`ChatPane`] without a bridge (flow tests, `ui_lab`).
+//! The TUI-only build keeps chat state, transcript rendering, and tool output in this module.
+//! Native chat and command services drive prompt submission and tool execution for the pane.
 //!
 //! Pane focus uses **Tab** / **Shift+Tab** for cycling panes (same as the rest of the TUI). Model
 //! selection uses **`[`** and **`]`** while the Chat pane is focused (see the model row hint).
 
 use std::path::PathBuf;
-use std::str::FromStr as _;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-use futures::StreamExt;
-use language_model::{
-    CompletionIntent, LanguageModelRequest, LanguageModelRequestMessage, MessageContent, Role,
-    SelectedModel,
-};
-use open_ai::RequestMessage;
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use reqwest_client::ReqwestClient;
-use tokio::task::AbortHandle;
 use unicode_width::UnicodeWidthChar;
 
-use crate::quorp::tui::command_runner::{CommandRunner, PendingCommand};
+use crate::quorp::tui::chat_service::{
+    ChatServiceMessage, ChatServiceRequest, ChatServiceRole,
+};
 use crate::quorp::tui::mention_links::{expand_mentions_for_api_message, mention_link_for_path};
 use crate::quorp::tui::path_index::{PathEntry, PathIndex, PathIndexProgress};
 
 const MAX_MESSAGE_CHARS: usize = 512 * 1024;
 const MAX_MESSAGES: usize = 500;
-
-const SYSTEM_PROMPT: &str = r#"You are an expert coding assistant running inside a terminal IDE.
-You can read files, write code, and execute shell commands.
-
-When the model API exposes tools, prefer the `terminal`, `read_file`, and `list_directory` tools (with correct `cd` / project-relative paths) instead of the XML format below.
-
-When you need to run a shell command without tools, wrap it in XML tags like this:
-
-<run_command>
-python3 hello.py
-</run_command>
-
-You can optionally specify a timeout in milliseconds:
-
-<run_command timeout_ms="60000">
-cargo build
-</run_command>
-
-Rules:
-- Commands run in the project root directory
-- Each command is a fresh shell (no state carries over between commands)
-- Output will be shown to the user and returned to you for analysis
-- Always run code when the user asks you to — never simulate or fake output
-- For scripts you just wrote, use the filename directly (it runs from project root)
-- Prefer short, focused commands over long pipelines
-- Do NOT run destructive commands (rm -rf /, etc) without explicit user confirmation"#;
 
 #[derive(Debug, Clone)]
 pub enum ChatUiEvent {
@@ -74,6 +38,12 @@ pub enum ChatUiEvent {
 pub enum ChatMessage {
     User(String),
     Assistant(String),
+}
+
+#[derive(Debug, Clone)]
+pub struct PendingCommand {
+    pub command: String,
+    pub timeout: Duration,
 }
 
 impl ChatMessage {
@@ -92,140 +62,6 @@ impl ChatMessage {
         }
         s.push_str("\n… [truncated]");
     }
-}
-
-pub fn normalize_api_base(raw: &str) -> String {
-    raw.trim().trim_end_matches('/').to_string()
-}
-
-/// Rejects `http://` for non-local hosts so remote calls use TLS; allows `http://` only for
-/// `localhost` and loopback IPs (parsed host, not substring — avoids `http://localhost.evil.com`).
-pub fn validate_api_base_url(normaliquorp: &str) -> Result<(), String> {
-    let parsed = url::Url::parse(normaliquorp).map_err(|e| format!("Invalid API base URL: {e}"))?;
-    match parsed.scheme() {
-        "https" => Ok(()),
-        "http" => {
-            let allow_plaintext = match parsed.host() {
-                Some(url::Host::Domain(domain)) => domain.eq_ignore_ascii_case("localhost"),
-                Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
-                Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
-                None => {
-                    return Err("API base URL must include a host".to_string());
-                }
-            };
-            if allow_plaintext {
-                Ok(())
-            } else {
-                Err(
-                    "Insecure HTTP is only allowed for localhost (e.g. http://127.0.0.1:11434/v1). Use https:// for remote hosts."
-                        .to_string(),
-                )
-            }
-        }
-        other => Err(format!(
-            "API base URL scheme must be http or https, got {other}"
-        )),
-    }
-}
-
-/// Pushes UI work to the main thread via a bounded `sync_channel`. Uses blocking `send` on
-/// purpose: when the queue is full, the SSE task waits until the UI drains events (backpressure).
-/// If Tokio worker blocking becomes an issue, consider `spawn_blocking` around `send` or running the
-/// stream loop on a dedicated `std::thread`.
-fn send_chat_ui(tx: &std::sync::mpsc::SyncSender<crate::quorp::tui::TuiEvent>, event: ChatUiEvent) {
-    if let Err(e) = tx.send(crate::quorp::tui::TuiEvent::Chat(event)) {
-        log::error!("tui: chat UI channel closed: {e}");
-    }
-}
-
-/// When no API key is configured but the base URL is loopback, send `Bearer local`, matching Quorp's
-/// OpenAI-compatible localhost behavior in `language_models`.
-fn effective_api_key(api_base: &str, stored_key: &str) -> String {
-    let trimmed = stored_key.trim();
-    if !trimmed.is_empty() {
-        return trimmed.to_string();
-    }
-    if let Ok(url) = url::Url::parse(api_base) {
-        match url.host_str() {
-            Some(host) if host.eq_ignore_ascii_case("localhost") => return "local".to_string(),
-            Some("127.0.0.1") | Some("[::1]") => return "local".to_string(),
-            _ => {}
-        }
-    }
-    String::new()
-}
-
-async fn drive_chat_completion_stream(
-    session_id: usize,
-    http: Arc<ReqwestClient>,
-    api_base: String,
-    api_key_effective: String,
-    request: open_ai::Request,
-    ui_tx: std::sync::mpsc::SyncSender<crate::quorp::tui::TuiEvent>,
-) {
-    let stream_result = open_ai::stream_completion(
-        http.as_ref(),
-        "quorp-tui",
-        &api_base,
-        &api_key_effective,
-        request,
-    )
-    .await;
-
-    let mut stream = match stream_result {
-        Ok(stream) => stream,
-        Err(error) => {
-            send_chat_ui(
-                &ui_tx,
-                ChatUiEvent::Error(session_id, format!("stream start failed: {error}")),
-            );
-            send_chat_ui(&ui_tx, ChatUiEvent::StreamFinished(session_id));
-            return;
-        }
-    };
-
-    while let Some(item) = stream.next().await {
-        match item {
-            Ok(event) => {
-                for choice in event.choices {
-                    if let Some(delta) = choice.delta {
-                        if let Some(text) = delta.content.filter(|fragment| !fragment.is_empty()) {
-                            send_chat_ui(&ui_tx, ChatUiEvent::AssistantDelta(session_id, text));
-                        }
-                        if let Some(text) = delta
-                            .reasoning_content
-                            .filter(|fragment| !fragment.is_empty())
-                        {
-                            send_chat_ui(&ui_tx, ChatUiEvent::AssistantDelta(session_id, text));
-                        }
-                    }
-                }
-            }
-            Err(error) => {
-                send_chat_ui(
-                    &ui_tx,
-                    ChatUiEvent::Error(session_id, format!("stream error: {error}")),
-                );
-                break;
-            }
-        }
-    }
-
-    send_chat_ui(&ui_tx, ChatUiEvent::StreamFinished(session_id));
-}
-
-/// Returns `Some(payload)` for a non-empty `data:` line; `None` for comments/empty.
-pub fn sse_data_payload(line: &str) -> Option<&str> {
-    let line = line.trim_end_matches(['\r', '\n']);
-    if line.is_empty() {
-        return None;
-    }
-    let rest = line.strip_prefix("data:")?;
-    let rest = rest.trim_start();
-    if rest.is_empty() {
-        return None;
-    }
-    Some(rest)
 }
 
 #[derive(Debug)]
@@ -248,11 +84,10 @@ pub struct ChatSession {
     pub last_error: Option<String>,
     pub pending_command: Option<PendingCommand>,
     pub running_command: bool,
+    pub running_command_name: Option<String>,
     pub command_output_lines: Vec<String>,
     mention_popup: Option<MentionPopup>,
     pub streaming: bool,
-    pub streaming_abort: Option<AbortHandle>,
-    pub streaming_cancel: Option<Arc<AtomicBool>>,
 }
 
 impl ChatSession {
@@ -267,35 +102,30 @@ impl ChatSession {
             last_error: None,
             pending_command: None,
             running_command: false,
+            running_command_name: None,
             command_output_lines: Vec::new(),
             mention_popup: None,
             streaming: false,
-            streaming_abort: None,
-            streaming_cancel: None,
         }
     }
 }
 
 pub struct ChatPane {
-    http_client: Arc<ReqwestClient>,
-    runtime: tokio::runtime::Handle,
     ui_tx: std::sync::mpsc::SyncSender<crate::quorp::tui::TuiEvent>,
     sessions: Vec<ChatSession>,
     active_session: usize,
-    unified_bridge_tx:
-        Option<futures::channel::mpsc::UnboundedSender<crate::quorp::tui::bridge::TuiToBackendRequest>>,
     models: Vec<String>,
     model_index: usize,
     viewport_transcript_lines: usize,
-    api_base: String,
-    api_key: String,
     last_text_width: usize,
-    command_runner: CommandRunner,
+    chat_service_tx: futures::channel::mpsc::UnboundedSender<ChatServiceRequest>,
     command_bridge_tx: Option<
         futures::channel::mpsc::UnboundedSender<crate::quorp::tui::command_bridge::CommandBridgeRequest>,
     >,
     project_root: PathBuf,
     path_index: Arc<PathIndex>,
+    #[cfg(test)]
+    base_url_override: Option<String>,
 }
 
 fn char_index_for_byte(input: &str, byte: usize) -> usize {
@@ -346,10 +176,16 @@ fn active_mention_token(input: &str, cursor_byte: usize) -> Option<(usize, Strin
     Some((at_byte, after_at.to_string()))
 }
 
+fn parse_command_timeout(timeout_ms: Option<&str>) -> Duration {
+    timeout_ms
+        .and_then(|value| value.parse::<u64>().ok())
+        .map(Duration::from_millis)
+        .unwrap_or(Duration::from_secs(30))
+}
+
 impl ChatPane {
     pub fn new(
         ui_tx: std::sync::mpsc::SyncSender<crate::quorp::tui::TuiEvent>,
-        runtime: tokio::runtime::Handle,
         project_root: PathBuf,
         path_index: Arc<PathIndex>,
         unified_language_model: Option<(
@@ -363,33 +199,16 @@ impl ChatPane {
             >,
         >,
     ) -> Self {
-        let http_client = Arc::new(ReqwestClient::new());
-
-        let default_api_base = format!(
-            "http://127.0.0.1:{}/v1",
-            flash_moe_defaults::DEFAULT_INFER_SERVE_PORT
-        );
-        let api_base = std::env::var("QUORP_TUI_API_BASE")
-            .or_else(|_| std::env::var("QUORP_TUI_API_URL"))
-            .map(|s| normalize_api_base(&s))
-            .unwrap_or(default_api_base);
-        let mut last_error = None;
-        let use_registry = unified_language_model.is_some();
-        if !use_registry {
-            if let Err(e) = validate_api_base_url(&api_base) {
-                last_error = Some(e);
-            }
-        }
-        let api_key = std::env::var("OPENAI_API_KEY").unwrap_or_default();
-
-        let (unified_bridge_tx, mut models, mut model_index) = match unified_language_model {
-            Some((tx, m, idx)) => {
+        let chat_service_tx =
+            crate::quorp::tui::chat_service::spawn_chat_service_loop(ui_tx.clone());
+        let (mut models, mut model_index) = match unified_language_model {
+            Some((_tx, m, idx)) => {
                 let model_index = if m.is_empty() {
                     0
                 } else {
                     idx.min(m.len() - 1)
                 };
-                (Some(tx), m, model_index)
+                (m, model_index)
             }
             None => {
                 let mut models: Vec<String> = crate::quorp::tui::model_registry::local_moe_catalog()
@@ -407,161 +226,38 @@ impl ChatPane {
                         }
                     }
                 }
-                (None, models, model_index)
+                (models, model_index)
             }
         };
 
-        if use_registry {
-            if let Ok(m) = std::env::var("QUORP_TUI_MODEL") {
-                if !m.is_empty() {
-                    if let Some(i) = models.iter().position(|x| x == &m) {
-                        model_index = i;
-                    } else if m.contains('/') {
-                        models.insert(0, m);
-                        model_index = 0;
-                    }
-                }
-            }
-        }
-
-        let mut first_session = ChatSession::new("Chat 1".to_string());
-        if use_registry && models.is_empty() {
-            first_session.last_error = Some(
-                "No authenticated language models. Configure a provider in Quorp settings.".to_string(),
-            );
-        } else if let Some(e) = last_error {
-            first_session.last_error = Some(e);
-        }
+        let first_session = ChatSession::new("Chat 1".to_string());
 
         Self {
-            http_client,
-            runtime,
-            ui_tx,
+            ui_tx: ui_tx.clone(),
             sessions: vec![first_session],
             active_session: 0,
-            unified_bridge_tx,
             models,
             model_index,
             viewport_transcript_lines: 1,
-            api_base,
-            api_key,
             last_text_width: 60,
-            command_runner: CommandRunner::new(project_root.clone()),
-            command_bridge_tx,
+            chat_service_tx,
+            command_bridge_tx: command_bridge_tx.or_else(|| {
+                let (command_tx, command_rx) = futures::channel::mpsc::unbounded();
+                let _command_thread =
+                    crate::quorp::tui::native_backend::spawn_command_service_loop(
+                        ui_tx.clone(),
+                        command_rx,
+                    );
+                Some(command_tx)
+            }),
             project_root,
             path_index,
+            #[cfg(test)]
+            base_url_override: None,
         }
     }
 
-    fn uses_language_model_registry(&self) -> bool {
-        self.unified_bridge_tx.is_some()
-    }
-
-    /// When the chat bridge is active, persist `provider/model` to Quorp agent settings and the global registry.
-    pub fn request_persist_default_model_to_agent_settings(&self, registry_line: &str) {
-        let Some(bridge_tx) = self.unified_bridge_tx.as_ref() else {
-            return;
-        };
-        if SelectedModel::from_str(registry_line).is_err() {
-            log::trace!(
-                "chat: skip agent settings persist for non-registry model id `{registry_line}`"
-            );
-            return;
-        }
-        let _ = bridge_tx.unbounded_send(
-            crate::quorp::tui::bridge::TuiToBackendRequest::PersistDefaultModel {
-                registry_line: registry_line.to_string(),
-            },
-        );
-    }
-
-    fn build_language_model_request(&self) -> LanguageModelRequest {
-        let mut messages = vec![LanguageModelRequestMessage {
-            role: Role::System,
-            content: vec![MessageContent::Text(SYSTEM_PROMPT.to_string())],
-            cache: false,
-            reasoning_details: None,
-        }];
-        let chat_messages = &self.active_session_ref().messages;
-        let len = chat_messages.len();
-        for (i, m) in chat_messages.iter().enumerate() {
-            match m {
-                ChatMessage::User(user_text) => {
-                    messages.push(LanguageModelRequestMessage {
-                        role: Role::User,
-                        content: vec![MessageContent::Text(
-                            expand_mentions_for_api_message(user_text, &self.project_root),
-                        )],
-                        cache: false,
-                        reasoning_details: None,
-                    });
-                }
-                ChatMessage::Assistant(assistant_text) => {
-                    let is_trailing_empty = self.active_session_ref().streaming
-                        && i + 1 == len
-                        && assistant_text.is_empty();
-                    if is_trailing_empty {
-                        continue;
-                    }
-                    if !assistant_text.is_empty() {
-                        messages.push(LanguageModelRequestMessage {
-                            role: Role::Assistant,
-                            content: vec![MessageContent::Text(assistant_text.clone())],
-                            cache: false,
-                            reasoning_details: None,
-                        });
-                    }
-                }
-            }
-        }
-        LanguageModelRequest {
-            thread_id: None,
-            prompt_id: None,
-            intent: Some(CompletionIntent::UserPrompt),
-            messages,
-            tools: crate::quorp::tui::tui_tool_runtime::tui_chat_tools(),
-            tool_choice: None,
-            stop: vec![],
-            temperature: None,
-            thinking_allowed: true,
-            thinking_effort: None,
-            speed: None,
-        }
-    }
-
-    fn enqueue_registry_completion(&mut self) {
-        let Some(bridge_tx) = self.unified_bridge_tx.clone() else {
-            log::error!("chat: registry completion requested without bridge");
-            return;
-        };
-        let request = self.build_language_model_request();
-        let preferred_model = SelectedModel::from_str(self.current_model_id()).ok();
-        let cancel = Arc::new(AtomicBool::new(false));
-        
-        let session_id = self.active_session;
-        self.active_session_mut().streaming_cancel = Some(cancel.clone());
-        self.active_session_mut().streaming = true;
-        
-        if bridge_tx
-            .unbounded_send(crate::quorp::tui::bridge::TuiToBackendRequest::StreamChat {
-                request,
-                preferred_model,
-                cancel,
-                session_id,
-            })
-            .is_err()
-        {
-            log::error!("chat: chat bridge send failed (disconnected)");
-            self.active_session_mut().streaming_cancel = None;
-            self.active_session_mut().streaming = false;
-            let _ = self.ui_tx.send(crate::quorp::tui::TuiEvent::Chat(ChatUiEvent::Error(
-                session_id,
-                "Chat bridge disconnected.".to_string(),
-            )));
-            let _ = self
-                .ui_tx
-                .send(crate::quorp::tui::TuiEvent::Chat(ChatUiEvent::StreamFinished(session_id)));
-        }
+    pub fn request_persist_default_model_to_agent_settings(&self, _registry_line: &str) {
     }
 
     fn active_session_mut(&mut self) -> &mut ChatSession {
@@ -573,14 +269,62 @@ impl ChatPane {
     }
 
     fn abort_streaming(&mut self) {
-        let s = self.active_session_mut();
-        if let Some(cancel) = s.streaming_cancel.take() {
-            cancel.store(true, Ordering::Release);
+        let session_id = self.active_session;
+        self.active_session_mut().streaming = false;
+        if self
+            .chat_service_tx
+            .unbounded_send(ChatServiceRequest::Cancel { session_id })
+            .is_err()
+        {
+            log::warn!("tui: failed to cancel chat stream for session {session_id}");
         }
-        if let Some(h) = s.streaming_abort.take() {
-            h.abort();
+    }
+
+    fn cancel_stream_for_session(&mut self, session_id: usize) {
+        if let Some(session) = self.sessions.get_mut(session_id) {
+            session.streaming = false;
         }
-        s.streaming = false;
+        if self
+            .chat_service_tx
+            .unbounded_send(ChatServiceRequest::Cancel { session_id })
+            .is_err()
+        {
+            log::warn!("tui: failed to cancel chat stream for session {session_id}");
+        }
+    }
+
+    fn build_service_messages_for_session(&self, session_index: usize) -> Vec<ChatServiceMessage> {
+        let Some(session) = self.sessions.get(session_index) else {
+            return Vec::new();
+        };
+        session
+            .messages
+            .iter()
+            .filter_map(|message| match message {
+                ChatMessage::User(content) => Some(ChatServiceMessage {
+                    role: ChatServiceRole::User,
+                    content: expand_mentions_for_api_message(content, self.project_root.as_path()),
+                }),
+                ChatMessage::Assistant(content) if !content.trim().is_empty() => {
+                    Some(ChatServiceMessage {
+                        role: ChatServiceRole::Assistant,
+                        content: content.clone(),
+                    })
+                }
+                ChatMessage::Assistant(_) => None,
+            })
+            .collect()
+    }
+
+    fn base_url_override_for_service(&self) -> Option<String> {
+        #[cfg(test)]
+        {
+            return self.base_url_override.clone();
+        }
+        #[cfg(not(test))]
+        {
+            None
+        }
     }
 
     pub fn project_root(&self) -> &PathBuf {
@@ -593,10 +337,9 @@ impl ChatPane {
         }
         self.project_root = root.to_path_buf();
         self.path_index.set_root(self.project_root.clone());
-        self.command_runner.set_project_root(self.project_root.clone());
     }
 
-    /// Match production + [`TuiTestHarness::new_with_backend_state`]: bridge snapshots drive the index
+    /// Match production + [`TuiTestHarness::new_with_backend_state`]: backend snapshots drive the index
     /// (no background `ignore` walk). Mention tests that need a disk scan use `new_with_root` instead.
     #[cfg(test)]
     pub fn use_project_backed_path_index_for_backend_flow_tests(&mut self, root: PathBuf) {
@@ -651,8 +394,6 @@ impl ChatPane {
             ChatUiEvent::StreamFinished(idx) => {
                 if let Some(s) = self.sessions.get_mut(idx) {
                     s.streaming = false;
-                    s.streaming_abort = None;
-                    s.streaming_cancel = None;
                 }
                 self.try_extract_pending_command_for_session(idx);
                 let stick = self
@@ -674,8 +415,6 @@ impl ChatPane {
                         }
                     }
                     s.streaming = false;
-                    s.streaming_abort = None;
-                    s.streaming_cancel = None;
                 }
             }
             ChatUiEvent::CommandOutput(idx, line) => {
@@ -688,9 +427,10 @@ impl ChatPane {
             ChatUiEvent::CommandFinished(idx, output) => {
                 let Some(s) = self.sessions.get_mut(idx) else { return };
                 s.running_command = false;
+                let command = s.running_command_name.take().unwrap_or_default();
                 let context = format!(
                     "[Command Output]\n$ {}\n{}\n[End Output]",
-                    s.command_output_lines.first().cloned().unwrap_or_default(),
+                    command,
                     output
                 );
                 s.messages.push(ChatMessage::User(context));
@@ -698,7 +438,7 @@ impl ChatPane {
                 s.command_output_lines.clear();
                 
                 if idx == self.active_session {
-                    self.submit_input_for_followup(theme);
+                    self.submit_input_for_followup(theme, command, output);
                 }
             }
         }
@@ -716,7 +456,7 @@ impl ChatPane {
         let segments = parse_assistant_segments(&last_text);
         for segment in segments {
             if let AssistantSegment::RunCommand { command, timeout_ms } = segment {
-                let timeout = CommandRunner::parse_timeout(Some(&timeout_ms.to_string()));
+                let timeout = parse_command_timeout(Some(&timeout_ms.to_string()));
                 if let Some(s) = self.sessions.get_mut(session_index) {
                     s.pending_command = Some(PendingCommand { command, timeout });
                 }
@@ -737,10 +477,9 @@ impl ChatPane {
         {
             let session = &mut self.sessions[idx];
             session.running_command = true;
+            session.running_command_name = Some(cmd.command.clone());
             session.command_output_lines.clear();
         }
-        // Production `quorp` TUI always wires `command_bridge_tx` (Quorp `Terminal` / task stack).
-        // `command_runner` is only used when `ChatPane` is constructed without a bridge (flow tests, ui_lab).
         if let Some(ref bridge_tx) = self.command_bridge_tx {
             let cwd = self.project_root.clone();
             let session_id = idx;
@@ -755,18 +494,12 @@ impl ChatPane {
             if send_result.is_err() {
                 let session = &mut self.sessions[idx];
                 session.running_command = false;
+                session.running_command_name = None;
                 session.messages.push(ChatMessage::User(
                     "Command bridge disconnected; could not run command.".to_string(),
                 ));
                 session.messages.push(ChatMessage::Assistant(String::new()));
             }
-        } else {
-            self.command_runner.execute(
-                idx,
-                &cmd.command,
-                cmd.timeout,
-                self.ui_tx.clone(),
-            );
         }
     }
 
@@ -779,31 +512,40 @@ impl ChatPane {
         }
     }
 
-    fn submit_input_for_followup(&mut self, _theme: &crate::quorp::tui::theme::Theme) {
-        if self.active_session_ref().messages.is_empty() {
+    fn submit_input_for_followup(
+        &mut self,
+        theme: &crate::quorp::tui::theme::Theme,
+        command: String,
+        command_output: String,
+    ) {
+        if self.active_session_ref().messages.is_empty() || self.models.is_empty() {
             return;
         }
-        if self.uses_language_model_registry() && self.models.is_empty() {
-            return;
-        }
-        self.active_session_mut().streaming = true;
-
-        if self.uses_language_model_registry() {
-            self.enqueue_registry_completion();
-            return;
-        }
-
-        let request = self.build_open_ai_request();
-        let api_key_effective = effective_api_key(&self.api_base, &self.api_key);
-        let http = self.http_client.clone();
-        let api_base = self.api_base.clone();
-        let ui_tx = self.ui_tx.clone();
-
         let session_id = self.active_session;
-        let task = self.runtime.spawn(async move {
-            drive_chat_completion_stream(session_id, http, api_base, api_key_effective, request, ui_tx).await;
-        });
-        self.active_session_mut().streaming_abort = Some(task.abort_handle());
+        let model_id = self.current_model_id().to_string();
+        let messages = self.build_service_messages_for_session(session_id);
+        self.active_session_mut().streaming = true;
+        if self
+            .chat_service_tx
+            .unbounded_send(ChatServiceRequest::SummarizeCommandOutput {
+                session_id,
+                model_id,
+                command,
+                command_output,
+                messages,
+                project_root: self.project_root.clone(),
+                base_url_override: self.base_url_override_for_service(),
+            })
+            .is_err()
+        {
+            let session = self.active_session_mut();
+            session.streaming = false;
+            session.last_error = Some("Chat service disconnected.".to_string());
+            if let Some(ChatMessage::Assistant(text)) = session.messages.last_mut() {
+                *text = "Chat service disconnected.".to_string();
+            }
+            self.scroll_transcript_to_bottom(theme);
+        }
     }
 
     pub fn current_model_id(&self) -> &str {
@@ -826,64 +568,6 @@ impl ChatPane {
             return;
         }
         self.model_index = index.min(self.models.len() - 1);
-    }
-
-    fn requires_api_key(&self) -> bool {
-        url::Url::parse(&self.api_base).ok().is_some_and(|url| {
-            url.host_str()
-                .is_some_and(|host| host.eq_ignore_ascii_case("api.openai.com"))
-        })
-    }
-
-    fn build_request_messages(&self) -> Vec<RequestMessage> {
-        let mut out = vec![RequestMessage::System {
-            content: open_ai::MessageContent::Plain(SYSTEM_PROMPT.to_string()),
-        }];
-        let messages = &self.active_session_ref().messages;
-        let len = messages.len();
-        for (i, m) in messages.iter().enumerate() {
-            match m {
-                ChatMessage::User(user_text) => {
-                    out.push(RequestMessage::User {
-                        content: open_ai::MessageContent::Plain(
-                            expand_mentions_for_api_message(user_text, &self.project_root),
-                        ),
-                    });
-                }
-                ChatMessage::Assistant(assistant_text) => {
-                    let is_trailing_empty = self.active_session_ref().streaming
-                        && i + 1 == len
-                        && assistant_text.is_empty();
-                    if is_trailing_empty {
-                        continue;
-                    }
-                    if !assistant_text.is_empty() {
-                        out.push(RequestMessage::Assistant {
-                            content: Some(open_ai::MessageContent::Plain(assistant_text.clone())),
-                            tool_calls: Vec::new(),
-                        });
-                    }
-                }
-            }
-        }
-        out
-    }
-
-    fn build_open_ai_request(&self) -> open_ai::Request {
-        open_ai::Request {
-            model: self.current_model_id().to_string(),
-            messages: self.build_request_messages(),
-            stream: true,
-            stream_options: Some(open_ai::StreamOptions::default()),
-            max_completion_tokens: None,
-            stop: Vec::new(),
-            temperature: None,
-            tool_choice: None,
-            parallel_tool_calls: None,
-            tools: Vec::new(),
-            prompt_cache_key: None,
-            reasoning_effort: None,
-        }
     }
 
     fn scroll_transcript_to_bottom(&mut self, theme: &crate::quorp::tui::theme::Theme) {
@@ -1327,15 +1011,7 @@ impl ChatPane {
             return false;
         }
         if self.sessions.get(index).is_some_and(|s| s.streaming) {
-            if let Some(s) = self.sessions.get_mut(index) {
-                if let Some(cancel) = s.streaming_cancel.take() {
-                    cancel.store(true, Ordering::Release);
-                }
-                if let Some(h) = s.streaming_abort.take() {
-                    h.abort();
-                }
-                s.streaming = false;
-            }
+            self.cancel_stream_for_session(index);
         }
         let was_active = self.active_session == index;
         self.sessions.remove(index);
@@ -1351,7 +1027,15 @@ impl ChatPane {
     }
 
     pub fn close_all_chat_sessions(&mut self, theme: &crate::quorp::tui::theme::Theme) {
-        self.abort_streaming();
+        let streaming_sessions: Vec<usize> = self
+            .sessions
+            .iter()
+            .enumerate()
+            .filter_map(|(index, session)| session.streaming.then_some(index))
+            .collect();
+        for session_id in streaming_sessions {
+            self.cancel_stream_for_session(session_id);
+        }
         self.sessions = vec![ChatSession::new("Chat 1".to_string())];
         self.active_session = 0;
         self.clamp_transcript_scroll(theme);
@@ -1389,39 +1073,10 @@ impl ChatPane {
         }
         let trimmed = trimmed.to_string();
 
-        if !self.uses_language_model_registry() {
-            if validate_api_base_url(&self.api_base).is_err() {
-                let s = self.active_session_mut();
-                s.messages.push(ChatMessage::User(trimmed));
-                s.messages.push(ChatMessage::Assistant(
-                    "Invalid API base URL. Use https:// for remote hosts or http://127.0.0.1 for local."
-                        .to_string(),
-                ));
-                s.input.clear();
-                s.cursor_char = 0;
-                self.sync_mention_popup();
-                self.scroll_transcript_to_bottom(theme);
-                return;
-            }
-
-            if self.requires_api_key() && self.api_key.is_empty() {
-                let s = self.active_session_mut();
-                s.messages.push(ChatMessage::User(trimmed));
-                s.messages.push(ChatMessage::Assistant(
-                    "Error: OPENAI_API_KEY is not set.".to_string(),
-                ));
-                s.input.clear();
-                s.cursor_char = 0;
-                s.last_error = Some("OPENAI_API_KEY is not set".to_string());
-                self.sync_mention_popup();
-                self.scroll_transcript_to_bottom(theme);
-                return;
-            }
-        }
-
         self.abort_streaming();
 
         let user_text = trimmed;
+        let request_input = user_text.clone();
         let s = self.active_session_mut();
         let was_empty = s.messages.is_empty();
         s.input.clear();
@@ -1439,38 +1094,39 @@ impl ChatPane {
             s.messages.drain(0..drop_count);
         }
 
-        if self.uses_language_model_registry() && self.models.is_empty() {
+        if self.models.is_empty() {
             if let Some(ChatMessage::Assistant(text)) = self.active_session_mut().messages.last_mut()
             {
-                *text = "No authenticated language models. Configure a provider in Quorp settings."
-                    .to_string();
+                *text = "No configured chat models are available.".to_string();
             }
             self.scroll_transcript_to_bottom(theme);
             return;
         }
 
-        if self.uses_language_model_registry() {
-            self.active_session_mut().streaming = true;
-            self.enqueue_registry_completion();
-            self.scroll_transcript_to_bottom(theme);
-            return;
-        }
-
-        let request = self.build_open_ai_request();
-        let api_key_effective = effective_api_key(&self.api_base, &self.api_key);
-        let http = self.http_client.clone();
-        let api_base = self.api_base.clone();
-        let ui_tx = self.ui_tx.clone();
-
         self.active_session_mut().streaming = true;
 
-        // `send_chat_ui` may block this task when the UI queue is full; see `send_chat_ui`.
         let session_id = self.active_session;
-        let task = self.runtime.spawn(async move {
-            drive_chat_completion_stream(session_id, http, api_base, api_key_effective, request, ui_tx).await;
-        });
-
-        self.active_session_mut().streaming_abort = Some(task.abort_handle());
+        let model_id = self.current_model_id().to_string();
+        let messages = self.build_service_messages_for_session(session_id);
+        if self
+            .chat_service_tx
+            .unbounded_send(ChatServiceRequest::SubmitPrompt {
+                session_id,
+                model_id,
+                latest_input: request_input,
+                messages,
+                project_root: self.project_root.clone(),
+                base_url_override: self.base_url_override_for_service(),
+            })
+            .is_err()
+        {
+            let session = self.active_session_mut();
+            session.streaming = false;
+            session.last_error = Some("Chat service disconnected.".to_string());
+            if let Some(ChatMessage::Assistant(text)) = session.messages.last_mut() {
+                *text = "Chat service disconnected.".to_string();
+            }
+        }
         self.scroll_transcript_to_bottom(theme);
     }
 
@@ -1769,6 +1425,11 @@ impl ChatPane {
     }
 
     #[cfg(test)]
+    pub fn set_base_url_for_test(&mut self, base_url: String) {
+        self.base_url_override = Some(base_url);
+    }
+
+    #[cfg(test)]
     pub fn mention_popup_open_for_test(&self) -> bool {
         self.active_session_ref().mention_popup.is_some()
     }
@@ -1809,7 +1470,11 @@ impl ChatPane {
     /// [`ChatPane::execute_pending_command`]).
     #[cfg(test)]
     pub fn set_running_command_for_test(&mut self, running: bool) {
-        self.active_session_mut().running_command = running;
+        let session = self.active_session_mut();
+        session.running_command = running;
+        if !running {
+            session.running_command_name = None;
+        }
     }
 
     #[cfg(test)]
@@ -1841,64 +1506,8 @@ impl ChatPane {
     }
 
     #[cfg(test)]
-    pub fn set_api_base_for_test(&mut self, base: String) {
-        self.api_base = base;
-    }
-
-    #[cfg(test)]
-    pub fn requires_api_key_for_test(&self) -> bool {
-        self.requires_api_key()
-    }
-
-    #[cfg(test)]
     pub fn set_streaming_for_test(&mut self, streaming: bool) {
         self.active_session_mut().streaming = streaming;
-    }
-
-    #[cfg(test)]
-    pub fn request_roles_and_contents_for_test(&self) -> Vec<(String, String)> {
-        self.build_request_messages()
-            .iter()
-            .map(Self::request_message_role_content_for_test)
-            .collect()
-    }
-
-    #[cfg(test)]
-    fn request_message_role_content_for_test(message: &RequestMessage) -> (String, String) {
-        match message {
-            RequestMessage::System { content } => (
-                "system".into(),
-                plain_message_content_for_test(content),
-            ),
-            RequestMessage::User { content } => ("user".into(), plain_message_content_for_test(content)),
-            RequestMessage::Assistant { content, .. } => (
-                "assistant".into(),
-                content
-                    .as_ref()
-                    .map(plain_message_content_for_test)
-                    .unwrap_or_default(),
-            ),
-            RequestMessage::Tool { content, .. } => ("tool".into(), plain_message_content_for_test(content)),
-        }
-    }
-}
-
-#[cfg(test)]
-fn plain_message_content_for_test(content: &open_ai::MessageContent) -> String {
-    use open_ai::{MessageContent, MessagePart};
-    match content {
-        MessageContent::Plain(text) => text.clone(),
-        MessageContent::Multipart(parts) => parts
-            .iter()
-            .filter_map(|part| {
-                if let MessagePart::Text { text } = part {
-                    Some(text.as_str())
-                } else {
-                    None
-                }
-            })
-            .collect::<Vec<_>>()
-            .join("\n"),
     }
 }
 
@@ -2073,365 +1682,4 @@ fn wrap_lines(lines: Vec<Line<'static>>, max_width: usize) -> Vec<Line<'static>>
         result.push(Line::from(current_spans));
     }
     result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
-    use std::time::Duration;
-
-    fn chat_pane_with_temp_root() -> ChatPane {
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let (tx, _rx) = std::sync::mpsc::sync_channel::<crate::quorp::tui::TuiEvent>(8);
-        let root = std::env::temp_dir();
-        let path_index = Arc::new(PathIndex::new(root.clone()));
-        ChatPane::new(tx, runtime.handle().clone(), root, path_index, None, None)
-    }
-
-    fn key_char(c: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
-    }
-
-    fn key_code(code: KeyCode) -> KeyEvent {
-        KeyEvent::new(code, KeyModifiers::NONE)
-    }
-
-    fn chat_with_indexed_project() -> (tokio::runtime::Runtime, ChatPane, tempfile::TempDir) {
-        let dir = tempfile::tempdir().expect("tempdir");
-        for i in 0..12 {
-            std::fs::write(dir.path().join(format!("f{i}.txt")), "").expect("write");
-        }
-        std::fs::write(dir.path().join("needle.txt"), "").expect("write");
-        let path_index = Arc::new(PathIndex::new(dir.path().to_path_buf()));
-        assert!(
-            path_index.blocking_wait_for_ready(dir.path(), Duration::from_secs(8)),
-            "path index"
-        );
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let (tx, _rx) = std::sync::mpsc::sync_channel::<crate::quorp::tui::TuiEvent>(8);
-        let chat = ChatPane::new(
-            tx,
-            runtime.handle().clone(),
-            dir.path().to_path_buf(),
-            path_index,
-            None,
-            None,
-        );
-        (runtime, chat, dir)
-    }
-
-    #[test]
-    fn active_mention_token_requires_word_boundary_before_at() {
-        let s = "user@host.com ";
-        let cursor = s.trim_end().len();
-        assert!(active_mention_token(s, cursor).is_none());
-    }
-
-    #[test]
-    fn active_mention_token_after_whitespace() {
-        let s = "hi @src";
-        assert_eq!(
-            active_mention_token(s, s.len()),
-            Some((3usize, "src".to_string()))
-        );
-    }
-
-    #[test]
-    fn active_mention_token_rejects_space_inside_query() {
-        let s = "hi @a b";
-        let cursor = s.len();
-        assert!(active_mention_token(s, cursor).is_none());
-    }
-
-    #[test]
-    fn normalize_api_base_strips_slash() {
-        assert_eq!(
-            normalize_api_base(" https://api.openai.com/v1/ "),
-            "https://api.openai.com/v1"
-        );
-    }
-
-    #[test]
-    fn validate_api_base_rejects_insecure_remote_http() {
-        assert!(validate_api_base_url("http://api.openai.com/v1").is_err());
-    }
-
-    #[test]
-    fn validate_api_base_rejects_localhost_prefix_spoof() {
-        assert!(validate_api_base_url("http://localhost.evil.com/v1").is_err());
-    }
-
-    #[test]
-    fn validate_api_base_allows_localhost_http() {
-        assert!(validate_api_base_url("http://127.0.0.1:11434/v1").is_ok());
-        assert!(validate_api_base_url("http://localhost:8080/v1").is_ok());
-        assert!(validate_api_base_url("http://[::1]:8080/v1").is_ok());
-    }
-
-    #[test]
-    fn validate_api_base_allows_https() {
-        assert!(validate_api_base_url("https://api.openai.com/v1").is_ok());
-    }
-
-    #[test]
-    fn sse_data_payload_skips_empty() {
-        assert_eq!(sse_data_payload(""), None);
-        assert_eq!(sse_data_payload("data: "), None);
-        assert_eq!(sse_data_payload("data: {}").unwrap(), "{}");
-        assert_eq!(sse_data_payload("data:[DONE]").unwrap(), "[DONE]");
-    }
-
-    #[test]
-    fn build_request_messages_skips_trailing_empty_assistant_while_streaming() {
-        let mut pane = chat_pane_with_temp_root();
-        pane.seed_messages_for_test(vec![
-            ChatMessage::User("hello".to_string()),
-            ChatMessage::Assistant(String::new()),
-        ]);
-        pane.set_streaming_for_test(true);
-        let rows = pane.request_roles_and_contents_for_test();
-        let non_system: Vec<_> = rows.into_iter().filter(|(r, _)| r != "system").collect();
-        assert_eq!(
-            non_system,
-            vec![("user".to_string(), "hello".to_string())],
-            "in-flight empty assistant must not be sent to the API"
-        );
-        pane.set_streaming_for_test(false);
-        let rows = pane.request_roles_and_contents_for_test();
-        let non_system: Vec<_> = rows.into_iter().filter(|(r, _)| r != "system").collect();
-        assert_eq!(non_system, vec![("user".to_string(), "hello".to_string())]);
-    }
-
-    #[test]
-    fn build_request_messages_includes_nonempty_assistant_while_streaming() {
-        let mut pane = chat_pane_with_temp_root();
-        pane.seed_messages_for_test(vec![
-            ChatMessage::User("hello".to_string()),
-            ChatMessage::Assistant("partial".to_string()),
-        ]);
-        pane.set_streaming_for_test(true);
-        let rows = pane.request_roles_and_contents_for_test();
-        let non_system: Vec<_> = rows.into_iter().filter(|(r, _)| r != "system").collect();
-        assert_eq!(
-            non_system,
-            vec![
-                ("user".to_string(), "hello".to_string()),
-                ("assistant".to_string(), "partial".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn apply_chat_event_assistant_delta_appends() {
-        let mut pane = chat_pane_with_temp_root();
-        pane.seed_messages_for_test(vec![
-            ChatMessage::User("hi".to_string()),
-            ChatMessage::Assistant(String::new()),
-        ]);
-        pane.set_streaming_for_test(true);
-        pane.apply_chat_event(ChatUiEvent::AssistantDelta(0, "world".to_string()), &crate::quorp::tui::theme::Theme::core_tui());
-        assert_eq!(pane.last_assistant_text_for_test(), Some("world"));
-        pane.apply_chat_event(ChatUiEvent::StreamFinished(0), &crate::quorp::tui::theme::Theme::core_tui());
-        assert!(!pane.is_streaming());
-    }
-
-    #[test]
-    fn requires_api_key_matches_openai_host_not_substring() {
-        let mut pane = chat_pane_with_temp_root();
-        pane.set_api_base_for_test("https://proxy.example.com/v1".to_string());
-        assert!(
-            !pane.requires_api_key_for_test(),
-            "substring must not imply OpenAI host"
-        );
-        pane.set_api_base_for_test("https://api.openai.com/v1".to_string());
-        assert!(pane.requires_api_key_for_test());
-    }
-
-    #[test]
-    fn chunked_sse_lines() {
-        let mut buf = String::new();
-        let mut lines_out = Vec::new();
-        let json_line = r#"{"choices":[{"delta":{"content":"hi"}}]}"#;
-        let full = format!("data: {json_line}\ndata: [DONE]\n");
-        for chunk in [full.as_str()] {
-            buf.push_str(chunk);
-            while let Some(pos) = buf.find('\n') {
-                let line = buf[..pos].to_string();
-                buf.drain(..=pos);
-                if let Some(p) = sse_data_payload(&line) {
-                    lines_out.push(p.to_string());
-                }
-            }
-        }
-        assert!(lines_out.iter().any(|s| s.contains("choices")));
-        assert!(lines_out.iter().any(|s| *s == "[DONE]"));
-
-        let mut buf2 = String::new();
-        let mut lines2 = Vec::new();
-        let s = format!("data: {json_line}\n");
-        let mid = s.len() / 2;
-        for chunk in [&s[..mid], &s[mid..], "data: [DONE]\n"] {
-            buf2.push_str(chunk);
-            while let Some(pos) = buf2.find('\n') {
-                let line = buf2[..pos].to_string();
-                buf2.drain(..=pos);
-                if let Some(p) = sse_data_payload(&line) {
-                    lines2.push(p.to_string());
-                }
-            }
-        }
-        assert_eq!(lines2, lines_out);
-    }
-
-    #[test]
-    fn chat_messages_capped_at_max() {
-        let mut pane = chat_pane_with_temp_root();
-        pane.api_base = "https://api.openai.com/v1".to_string();
-        pane.api_key = "test".to_string();
-
-        for i in 0..600 {
-            pane.set_input_for_test(&format!("Message {}", i));
-            pane.submit_input(&crate::quorp::tui::theme::Theme::core_tui());
-            // submit_input sets streaming to true. Reset it so we can submit again.
-            pane.active_session_mut().streaming = false;
-        }
-
-        let msg_len = pane.active_session_ref().messages.len();
-        assert!(msg_len <= super::MAX_MESSAGES);
-        assert_eq!(msg_len, super::MAX_MESSAGES);
-    }
-
-    #[test]
-    fn new_chat_session_does_not_see_prior_session_assistant() {
-        let mut pane = chat_pane_with_temp_root();
-        let theme = crate::quorp::tui::theme::Theme::core_tui();
-        pane.seed_messages_for_test(vec![
-            ChatMessage::User("u".to_string()),
-            ChatMessage::Assistant("prior".to_string()),
-        ]);
-        pane.new_chat_session(&theme);
-        assert_eq!(pane.active_session_index(), 1);
-        assert_eq!(pane.last_assistant_text_for_test(), None);
-    }
-
-    #[test]
-    fn close_chat_session_keeps_other_tab_intact() {
-        let mut pane = chat_pane_with_temp_root();
-        let theme = crate::quorp::tui::theme::Theme::core_tui();
-        pane.new_chat_session(&theme);
-        pane.seed_messages_for_test(vec![ChatMessage::User("tab-one".to_string())]);
-        assert!(pane.activate_chat_session(0, &theme));
-        pane.seed_messages_for_test(vec![ChatMessage::User("tab-zero".to_string())]);
-        assert!(pane.activate_chat_session(1, &theme));
-        assert!(pane.close_chat_session_at(1, &theme));
-        assert_eq!(pane.active_session_index(), 0);
-        assert!(pane
-            .active_session_ref()
-            .messages
-            .iter()
-            .any(|m| matches!(m, ChatMessage::User(s) if s == "tab-zero")));
-    }
-
-    #[test]
-    fn close_all_chat_sessions_leaves_one_fresh_tab() {
-        let mut pane = chat_pane_with_temp_root();
-        let theme = crate::quorp::tui::theme::Theme::core_tui();
-        pane.new_chat_session(&theme);
-        pane.close_all_chat_sessions(&theme);
-        assert_eq!(pane.active_session_index(), 0);
-        pane.new_chat_session(&theme);
-        assert_eq!(pane.active_session_index(), 1);
-    }
-
-    #[test]
-    fn mention_at_opens_popup_with_matches() {
-        let theme = crate::quorp::tui::theme::Theme::core_tui();
-        let (_rt, mut chat, _dir) = chat_with_indexed_project();
-        assert!(chat.handle_key_event(&key_char('@'), &theme));
-        assert!(chat.mention_popup_open_for_test());
-        assert!(chat.mention_match_count_for_test() > 0);
-    }
-
-    #[test]
-    fn mention_filter_narrows_list() {
-        let theme = crate::quorp::tui::theme::Theme::core_tui();
-        let (_rt, mut chat, _dir) = chat_with_indexed_project();
-        chat.handle_key_event(&key_char('@'), &theme);
-        let full = chat.mention_match_count_for_test();
-        for c in "needle".chars() {
-            chat.handle_key_event(&key_char(c), &theme);
-        }
-        assert!(chat.mention_match_count_for_test() <= full);
-        assert!(chat
-            .mention_selected_label_for_test()
-            .is_some_and(|s| s.contains("needle")));
-    }
-
-    #[test]
-    fn mention_down_past_first_page_advances_scroll() {
-        let theme = crate::quorp::tui::theme::Theme::core_tui();
-        let (_rt, mut chat, _dir) = chat_with_indexed_project();
-        chat.handle_key_event(&key_char('@'), &theme);
-        for c in "f".chars() {
-            chat.handle_key_event(&key_char(c), &theme);
-        }
-        assert!(chat.mention_match_count_for_test() > 8);
-        for _ in 0..8 {
-            chat.handle_key_event(&key_code(KeyCode::Down), &theme);
-        }
-        assert!(
-            chat.mention_scroll_top_for_test().unwrap_or(0) > 0,
-            "expected popup to scroll after many downs"
-        );
-    }
-
-    #[test]
-    fn mention_tab_inserts_file_link() {
-        let theme = crate::quorp::tui::theme::Theme::core_tui();
-        let (_rt, mut chat, _dir) = chat_with_indexed_project();
-        chat.handle_key_event(&key_char('@'), &theme);
-        for c in "needle".chars() {
-            chat.handle_key_event(&key_char(c), &theme);
-        }
-        assert!(chat.handle_key_event(&key_code(KeyCode::Tab), &theme));
-        assert!(chat.input_for_test().contains("needle.txt"));
-    }
-
-    #[test]
-    fn mention_esc_dismisses_popup() {
-        let theme = crate::quorp::tui::theme::Theme::core_tui();
-        let (_rt, mut chat, _dir) = chat_with_indexed_project();
-        chat.handle_key_event(&key_char('@'), &theme);
-        assert!(chat.mention_popup_open_for_test());
-        assert!(chat.handle_key_event(&key_code(KeyCode::Esc), &theme));
-        assert!(!chat.mention_popup_open_for_test());
-    }
-
-    #[test]
-    fn build_request_expands_file_mention_in_user_message() {
-        let dir = tempfile::tempdir().expect("tempdir");
-        let f = dir.path().join("attached.txt");
-        std::fs::write(&f, "secret-body").expect("write");
-        let path_index = Arc::new(PathIndex::new(dir.path().to_path_buf()));
-        assert!(path_index.blocking_wait_for_ready(dir.path(), Duration::from_secs(8)));
-        let runtime = tokio::runtime::Runtime::new().expect("runtime");
-        let (tx, _rx) = std::sync::mpsc::sync_channel::<crate::quorp::tui::TuiEvent>(8);
-        let mut pane = ChatPane::new(
-            tx,
-            runtime.handle().clone(),
-            dir.path().to_path_buf(),
-            path_index,
-            None,
-            None,
-        );
-        let link = crate::quorp::tui::mention_links::mention_link_for_path(&f, "attached.txt").expect("link");
-        pane.seed_messages_for_test(vec![ChatMessage::User(format!("see {link}"))]);
-        let rows = pane.request_roles_and_contents_for_test();
-        let user = rows.iter().find(|(r, _)| r == "user").map(|(_, c)| c.as_str());
-        assert!(
-            user.is_some_and(|c| c.contains("secret-body")),
-            "{user:?}"
-        );
-    }
 }

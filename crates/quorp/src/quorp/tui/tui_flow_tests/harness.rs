@@ -1,5 +1,5 @@
 use std::ops::ControlFlow;
-use std::time::{Duration, Instant};
+use std::time::Duration;
 
 use crossterm::event::{
     Event, KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind,
@@ -18,10 +18,14 @@ use crate::quorp::tui::tui_backend::SharedTuiBackend;
 pub struct TuiTestHarness {
     pub app: TuiApp,
     pub terminal: Terminal<TestBackend>,
-    event_rx: std::sync::mpsc::Receiver<TuiEvent>,
+    _event_rx_keepalive: std::sync::mpsc::Receiver<TuiEvent>,
 }
 
 impl TuiTestHarness {
+    pub fn screenshot_output_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/tui_screenshots")
+    }
+
     pub fn new(cols: u16, rows: u16) -> Self {
         let (app, event_rx) = TuiApp::new_for_flow_tests(fixtures::fixture_project_root());
         let backend = TestBackend::new(cols, rows);
@@ -29,7 +33,7 @@ impl TuiTestHarness {
         Self {
             app,
             terminal,
-            event_rx,
+            _event_rx_keepalive: event_rx,
         }
     }
 
@@ -47,7 +51,7 @@ impl TuiTestHarness {
         Self {
             app,
             terminal,
-            event_rx,
+            _event_rx_keepalive: event_rx,
         }
     }
 
@@ -60,21 +64,20 @@ impl TuiTestHarness {
         Self {
             app,
             terminal,
-            event_rx,
+            _event_rx_keepalive: event_rx,
         }
     }
 
-    /// Playwright-style harness with production-shaped wiring: file tree and code preview use bridge
+    /// Playwright-style harness with production-shaped wiring: file tree and code preview use backend
     /// senders (requests go to a sink). Tests inject [`crate::quorp::tui::TuiEvent`] via
-    /// [`TuiTestHarness::apply_backend_event`] to mirror GPUI / project outputs without running `main`.
+    /// [`TuiTestHarness::apply_backend_event`] to mirror backend outputs without running `main`.
     /// Path index is **project-backed** so [`crate::quorp::tui::TuiEvent::PathIndexSnapshot`] is honored
     /// (unlike [`Self::new_with_root`], which uses a disk walk). Supply a snapshot before @-mention
     /// assertions, or only files from that snapshot appear — not whatever happens to be on disk.
-    /// Use alongside GPUI tests in `path_index_bridge_gpui` and `project_bridge_gpui` for the same data
-    /// against a real [`project::Project`].
-    /// Chat list matches production (`provider/model` strings) and [`ChatPane`] uses the language-model
-    /// bridge code path. The bridge receiver is dropped; use [`TuiApp::new_for_flow_tests_with_registry_chat`]
-    /// when a test needs to inspect [`crate::quorp::tui::chat_bridge::ChatBridgeRequest`]s.
+    /// Chat list matches production (`provider/model` strings) and [`ChatPane`] uses the native
+    /// backend request path. The bridge receiver is dropped; use
+    /// [`TuiApp::new_for_flow_tests_with_registry_chat`] when a test needs to inspect backend
+    /// requests directly.
     pub fn new_with_registry_chat(
         cols: u16,
         rows: u16,
@@ -89,7 +92,7 @@ impl TuiTestHarness {
         Self {
             app,
             terminal,
-            event_rx,
+            _event_rx_keepalive: event_rx,
         }
     }
 
@@ -119,7 +122,7 @@ impl TuiTestHarness {
         Self {
             app,
             terminal,
-            event_rx,
+            _event_rx_keepalive: event_rx,
         }
     }
 
@@ -165,8 +168,7 @@ impl TuiTestHarness {
     /// Captures the TUI frame and saves it to a persistent output directory for Playwright artifacts.
     pub fn save_screenshot(&mut self, base_name: &str) -> std::path::PathBuf {
         let img = self.screenshot();
-        let target_dir =
-            std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("target/tui_screenshots");
+        let target_dir = Self::screenshot_output_dir();
         std::fs::create_dir_all(&target_dir).expect("failed to mkdir target/tui_screenshots");
         let path = target_dir.join(format!("{}.png", base_name));
         img.save(&path).expect("failed to save screenshot png");
@@ -254,21 +256,17 @@ impl TuiTestHarness {
         assert!(s.contains(needle), "status {s:?} missing {needle:?}");
     }
 
-    pub fn recv_tui_event_timeout(&mut self, timeout: Duration) -> Option<TuiEvent> {
-        let start = Instant::now();
-        while start.elapsed() < timeout {
-            match self.event_rx.recv_timeout(Duration::from_millis(50)) {
-                Ok(ev) => return Some(ev),
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
-                Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => return None,
-            }
-        }
-        None
-    }
-
     pub fn apply_chat_event(&mut self, event: ChatUiEvent) {
         let theme = self.app.theme.clone();
         self.app.chat.apply_chat_event(event, &theme);
+    }
+
+    pub fn recv_tui_event_timeout(&self, timeout: Duration) -> Option<TuiEvent> {
+        match self._event_rx_keepalive.recv_timeout(timeout) {
+            Ok(event) => Some(event),
+            Err(std::sync::mpsc::RecvTimeoutError::Timeout) => None,
+            Err(std::sync::mpsc::RecvTimeoutError::Disconnected) => None,
+        }
     }
 
     pub fn wait_path_index_ready(&mut self, timeout: Duration) -> bool {
