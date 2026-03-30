@@ -120,6 +120,11 @@ impl SsdMoeRuntimeHandle {
         self.inner.lock().expect("ssd-moe runtime lock").port
     }
 
+    fn tcp_probe_port(port: u16) -> bool {
+        let addr = SocketAddr::from(([127, 0, 0, 1], port));
+        std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+    }
+
     pub fn status(&self) -> ModelStatus {
         self.inner
             .lock()
@@ -163,8 +168,7 @@ impl SsdMoeRuntimeHandle {
     }
 
     fn tcp_probe(&self) -> bool {
-        let addr = SocketAddr::from(([127, 0, 0, 1], self.port()));
-        std::net::TcpStream::connect_timeout(&addr, Duration::from_millis(300)).is_ok()
+        Self::tcp_probe_port(self.port())
     }
 
     pub fn resolve_server_path(project_root: &Path) -> Option<PathBuf> {
@@ -318,9 +322,10 @@ impl SsdMoeRuntimeHandle {
 
     pub fn poll_health(&self) {
         let mut state = self.inner.lock().expect("ssd-moe runtime lock");
+        let port = state.port;
         match state.status {
             ModelStatus::Starting => {
-                if self.tcp_probe() {
+                if Self::tcp_probe_port(port) {
                     state.status = ModelStatus::Running;
                 } else if let Some(child) = state.child_process.as_mut() {
                     if let Ok(Some(status)) = child.try_wait() {
@@ -341,7 +346,7 @@ impl SsdMoeRuntimeHandle {
                         ));
                         state.child_process = None;
                     }
-                } else if !self.tcp_probe() {
+                } else if !Self::tcp_probe_port(port) {
                     state.status = ModelStatus::Ready;
                 }
             }
