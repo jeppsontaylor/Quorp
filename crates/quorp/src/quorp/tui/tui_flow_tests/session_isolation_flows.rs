@@ -1,4 +1,3 @@
-use crate::quorp::tui::TuiEvent;
 use crate::quorp::tui::app::Pane;
 use crate::quorp::tui::chat::{ChatUiEvent, ChatMessage};
 use super::harness::TuiTestHarness;

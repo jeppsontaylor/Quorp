@@ -1,10 +1,8 @@
 //! Four-pane TUI (ratatui + crossterm): file tree, code preview, integrated terminal, chat.
-//!
-//! The terminal uses [`terminal_bridge`] with Quorp’s `terminal::Terminal` entity; chat completions
-//! use [`chat_bridge`] (Quorp language model registry) when wired from `main`.
 
 pub mod model_registry;
 pub mod models_pane;
+pub mod native_backend;
 use std::io::stdout;
 use std::ops::ControlFlow;
 use std::panic;
@@ -25,10 +23,11 @@ pub mod app;
 #[cfg(any(test, feature = "test-support"))]
 pub mod buffer_png;
 pub mod chat;
+pub mod chat_service;
 pub mod chrome;
-pub mod command_runner;
 pub mod editor_pane;
 pub mod file_tree;
+pub mod ssd_moe_client;
 pub mod ssd_moe_tui;
 
 pub mod agent_pane;
@@ -43,10 +42,7 @@ pub mod theme;
 pub mod tui_backend;
 pub mod workbench;
 
-pub mod path_index_bridge;
-
 pub mod command_bridge;
-pub mod tui_tool_runtime;
 
 pub mod bridge;
 
@@ -57,24 +53,17 @@ use chat::ChatUiEvent;
 use crossterm::event::Event;
 
 /// Unified events for the main thread (crossterm input, chat, integrated terminal frames).
+#[cfg_attr(not(test), allow(dead_code))]
 #[derive(Debug)]
 pub enum TuiEvent {
     Crossterm(Event),
     Chat(ChatUiEvent),
     TerminalFrame(bridge::TerminalFrame),
     TerminalClosed,
-    FileTreeListed {
-        parent: std::path::PathBuf,
-        result: Result<Vec<file_tree::TreeChild>, String>,
-    },
-
-    PathIndexSnapshot {
-        root: std::path::PathBuf,
-        entries: std::sync::Arc<Vec<path_index::PathEntry>>,
-        files_seen: u64,
-    },
-    UnifiedResponse(bridge::BackendToTuiResponse),
-    ThemeReloaded,
+    FileTreeListed(file_tree::DirectoryListing),
+    PathIndexSnapshot(path_index::PathIndexSnapshot),
+    BufferSnapshot(editor_pane::BufferSnapshot),
+    BackendResponse(bridge::BackendToTuiResponse),
 }
 
 /// Bounded queue capacity for [`std::sync::mpsc::sync_channel`] to the TUI thread.
@@ -129,7 +118,6 @@ fn init_terminal() -> Result<TerminalGuard> {
 }
 
 pub fn run(
-    app_state: std::sync::Arc<workspace::AppState>,
     workspace_root: std::path::PathBuf,
     event_rx: std::sync::mpsc::Receiver<TuiEvent>,
     crossterm_tx: std::sync::mpsc::SyncSender<TuiEvent>,
@@ -157,23 +145,34 @@ pub fn run(
     let runtime = tokio::runtime::Runtime::new().context("tokio runtime")?;
     let handle = runtime.handle().clone();
 
+    let native_backend_tx = if unified_bridge_tx.is_none() {
+        let (native_tx, native_rx) = futures::channel::mpsc::unbounded();
+        let _backend_thread = native_backend::spawn_native_backend_loop(
+            workspace_root.clone(),
+            chat_tx.clone(),
+            native_rx,
+        );
+        Some(native_tx)
+    } else {
+        unified_bridge_tx.clone()
+    };
+
+    let native_command_tx = if command_bridge_tx.is_none() {
+        let (command_tx, command_rx) = futures::channel::mpsc::unbounded();
+        let _command_thread = native_backend::spawn_command_service_loop(chat_tx.clone(), command_rx);
+        Some(command_tx)
+    } else {
+        command_bridge_tx.clone()
+    };
+
     let mut app = TuiApp::new_with_backend(
-        app_state,
         workspace_root,
         chat_tx,
         handle,
         unified_language_model,
         path_index_display_root,
-        command_bridge_tx,
-        unified_bridge_tx,
-    );
-    log::trace!(
-        "tui: workspace AppState {}",
-        if app.app_state().is_some() {
-            "attached"
-        } else {
-            "missing"
-        }
+        native_command_tx,
+        native_backend_tx,
     );
     let _runtime_guard = runtime;
 
@@ -219,25 +218,22 @@ pub fn run(
             Ok(TuiEvent::TerminalClosed) => {
                 app.terminal.mark_integrated_session_closed();
             }
-            Ok(TuiEvent::FileTreeListed { parent, result }) => {
-                app.file_tree.apply_project_listing(parent, result);
+            Ok(TuiEvent::FileTreeListed(listing)) => {
+                app.file_tree
+                    .apply_project_listing(listing.parent, listing.result);
             }
-            Ok(TuiEvent::UnifiedResponse(bridge::BackendToTuiResponse::BufferChunk {
-                path,
-                lines,
-                error,
-                truncated,
-            })) => {
+            Ok(TuiEvent::BufferSnapshot(snapshot)) => {
                 app.editor_pane
-                    .apply_editor_pane_buffer_snapshot(path, lines, error, truncated);
+                    .apply_editor_pane_buffer_snapshot(
+                        snapshot.path,
+                        snapshot.lines,
+                        snapshot.error,
+                        snapshot.truncated,
+                    );
             }
-            Ok(TuiEvent::PathIndexSnapshot {
-                root,
-                entries,
-                files_seen,
-            }) => {
+            Ok(TuiEvent::PathIndexSnapshot(snapshot)) => {
                 app.chat
-                    .apply_path_index_snapshot(root, entries, files_seen);
+                    .apply_path_index_snapshot(snapshot.root, snapshot.entries, snapshot.files_seen);
             }
             Ok(TuiEvent::Crossterm(ev)) => {
                 let should_sync_pty = matches!(ev, Event::Resize(_, _));
@@ -253,16 +249,10 @@ pub fn run(
                     }
                 }
             }
-            Ok(TuiEvent::UnifiedResponse(bridge::BackendToTuiResponse::AgentStatusUpdate(
+            Ok(TuiEvent::BackendResponse(bridge::BackendToTuiResponse::AgentStatusUpdate(
                 update,
             ))) => {
                 app.agent_pane.apply_status_update(update);
-            }
-            Ok(TuiEvent::UnifiedResponse(resp)) => {
-                log::debug!("Unhandled unified response: {:?}", resp);
-            }
-            Ok(TuiEvent::ThemeReloaded) => {
-                log::info!("TUI received ThemeReloaded, scheduling redraw or refresh if needed.");
             }
             Err(_) => break,
         }

@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+echo "[tui-screenshot-suite] Exporting Rust-native screenshot bundle"
+cargo test -p quorp screenshot_suite::export_review_bundle -- --nocapture
+
+echo
+echo "[tui-screenshot-suite] Screenshot bundle ready:"
+echo "  crates/quorp/target/tui_screenshots/INDEX.md"

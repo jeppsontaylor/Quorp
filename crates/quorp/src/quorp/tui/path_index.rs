@@ -1,13 +1,9 @@
 #![allow(unused)]
 //! Path list for @-mentions (Phase 3g).
 //!
-//! **Production:** [`PathIndex::new_project_backed`] + [`crate::quorp::tui::path_index_bridge`] — entries
-//! come from [`project::Project`] worktree snapshots (gitignore, scan ids, FS updates) via
-//! [`PathIndex::apply_bridge_snapshot`].
-//!
-//! **Walk-based:** [`PathIndex::new`] runs `ignore` + `notify` on disk; snapshots from the bridge are
-//! ignored (`apply_bridge_snapshot` is a no-op). Used by `TuiTestHarness::new_with_root`, `ui_lab`, and
-//! tests that call [`PathIndex::blocking_wait_for_ready`] against a real directory scan.
+//! [`PathIndex::new_project_backed`] applies snapshots supplied by the native TUI backend, while
+//! [`PathIndex::new`] runs an `ignore` + `notify` disk walk directly. Tests use both forms depending
+//! on whether they want injected backend state or a real directory scan.
 
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
@@ -38,6 +34,13 @@ pub struct PathIndexProgress {
     pub root: PathBuf,
 }
 
+#[derive(Clone, Debug)]
+pub struct PathIndexSnapshot {
+    pub root: PathBuf,
+    pub entries: Arc<Vec<PathEntry>>,
+    pub files_seen: u64,
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct PathEntry {
     pub relative_display: String,
@@ -60,8 +63,8 @@ enum Op {
     Shutdown,
 }
 
-/// Shared index updated by a background thread (initial walk + notify debounce), or by the
-/// GPUI [`crate::quorp::tui::path_index_bridge`] when integrated with a real [`project::Project`].
+/// Shared index updated by a background thread (initial walk + notify debounce), or by injected
+/// backend snapshots in project-backed mode.
 pub struct PathIndex {
     shared: Arc<RwLock<PathIndexData>>,
     op_tx: Option<std::sync::mpsc::Sender<Op>>,
@@ -146,9 +149,9 @@ impl PathIndex {
         }
     }
 
-    /// Path list is driven by [`crate::quorp::tui::path_index_bridge`] snapshots instead of a local
-    /// `ignore` walk. `display_root_watch` is updated by [`PathIndex::set_root`] so the bridge
-    /// rescopes entries when the file tree root changes.
+    /// Path list is driven by injected snapshots instead of a local `ignore` walk.
+    /// `display_root_watch` is updated by [`PathIndex::set_root`] so the backend can rescope entries
+    /// when the file tree root changes.
     pub fn new_project_backed(
         initial_root: PathBuf,
         display_root_watch: Arc<RwLock<PathBuf>>,

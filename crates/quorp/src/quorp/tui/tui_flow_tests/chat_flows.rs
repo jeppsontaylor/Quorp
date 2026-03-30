@@ -41,9 +41,9 @@ fn harness_apply_chat_event_appends_assistant_delta() {
     assert_eq!(h.app.chat.last_assistant_text_for_test(), Some("tok"));
 }
 
-/// Simulates streaming lines from [`crate::quorp::tui::command_bridge`] (or `command_runner`) before
-/// `CommandFinished`. We do not apply `CommandFinished` here: it triggers an LLM follow-up round,
-/// which would open the HTTP completion path in harnesses without a chat bridge.
+/// Simulates streaming lines from [`crate::quorp::tui::command_bridge`] before
+/// `CommandFinished`. We do not apply `CommandFinished` here because it triggers the follow-up
+/// assistant path, which is covered separately.
 #[test]
 fn harness_apply_chat_event_command_output_appends_lines() {
     let mut h = TuiTestHarness::new(80, 24);

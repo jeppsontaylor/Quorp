@@ -1,6 +1,6 @@
 #![allow(unused)]
 //! Terminal pane: ratatui paint from integrated snapshots; shell I/O goes through
-//! [`crate::quorp::tui::terminal_bridge`] to Quorp's `terminal::Terminal` entity.
+//! native backend requests sent over [`crate::quorp::tui::bridge::TuiToBackendRequest`].
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
 use ratatui::Frame;

@@ -1,11 +1,14 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 use std::path::PathBuf;
+use std::sync::{Mutex, MutexGuard};
 
 use crate::quorp::tui::app::Overlay;
 use crate::quorp::tui::model_registry::{self, set_test_model_config_root};
 
 use super::fixtures;
 use super::harness::TuiTestHarness;
+
+static MODEL_CONFIG_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 struct ClearTestModelRoot;
 
@@ -15,8 +18,15 @@ impl Drop for ClearTestModelRoot {
     }
 }
 
+fn lock_model_config_test() -> MutexGuard<'static, ()> {
+    MODEL_CONFIG_TEST_LOCK
+        .lock()
+        .expect("model config test mutex poisoned")
+}
+
 #[test]
 fn model_picker_enter_writes_active_model_under_test_config_root() {
+    let _lock = lock_model_config_test();
     let tmp = tempfile::tempdir().expect("tempdir");
     let root = tmp.path().to_path_buf();
     set_test_model_config_root(Some(root.clone()));
@@ -42,6 +52,7 @@ fn model_picker_enter_writes_active_model_under_test_config_root() {
 
 #[test]
 fn model_picker_enter_cloud_registry_id_skips_active_model_file() {
+    let _lock = lock_model_config_test();
     let tmp = tempfile::tempdir().expect("tempdir");
     let config_home = tmp.path().to_path_buf();
     set_test_model_config_root(Some(config_home.clone()));

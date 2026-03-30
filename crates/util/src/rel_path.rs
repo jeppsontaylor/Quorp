@@ -55,9 +55,10 @@ impl RelPath {
         while prefixes.iter().any(|prefix| path.starts_with(prefix)) {
             path = &path[prefixes[0].len()..];
         }
-        while let Some(prefix) = path.strip_suffix(suffixes)
-            && !prefix.is_empty()
-        {
+        while let Some(prefix) = path.strip_suffix(suffixes) {
+            if prefix.is_empty() {
+                break;
+            }
             path = prefix;
         }
 
@@ -103,7 +104,7 @@ impl RelPath {
     ///
     /// Returns an error if the path is not already in the correct format.
     #[track_caller]
-    pub fn unix<S: AsRef<Path> + ?Siquorp>(path: &S) -> anyhow::Result<&Self> {
+    pub fn unix<S: AsRef<Path> + ?Sized>(path: &S) -> anyhow::Result<&Self> {
         let path = path.as_ref();
         match Self::new(path, PathStyle::Posix)? {
             Cow::Borrowed(path) => Ok(path),

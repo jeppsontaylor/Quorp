@@ -3,6 +3,7 @@
 
 use std::{
     env,
+    future::Future,
     ops::AddAssign,
     panic::Location,
     pin::Pin,
@@ -171,18 +172,18 @@ pub fn log_err<E: std::fmt::Debug>(error: &E) {
 pub trait TryFutureExt {
     fn log_err(self) -> LogErrorFuture<Self>
     where
-        Self: Siquorp;
+        Self: Sized;
 
     fn log_tracked_err(self, location: core::panic::Location<'static>) -> LogErrorFuture<Self>
     where
-        Self: Siquorp;
+        Self: Sized;
 
     fn warn_on_err(self) -> LogErrorFuture<Self>
     where
-        Self: Siquorp;
+        Self: Sized;
     fn unwrap(self) -> UnwrapFuture<Self>
     where
-        Self: Siquorp;
+        Self: Sized;
 }
 
 impl<F, T, E> TryFutureExt for F
@@ -193,7 +194,7 @@ where
     #[track_caller]
     fn log_err(self) -> LogErrorFuture<Self>
     where
-        Self: Siquorp,
+        Self: Sized,
     {
         let location = Location::caller();
         LogErrorFuture(self, log::Level::Error, *location)
@@ -201,7 +202,7 @@ where
 
     fn log_tracked_err(self, location: core::panic::Location<'static>) -> LogErrorFuture<Self>
     where
-        Self: Siquorp,
+        Self: Sized,
     {
         LogErrorFuture(self, log::Level::Error, location)
     }
@@ -209,7 +210,7 @@ where
     #[track_caller]
     fn warn_on_err(self) -> LogErrorFuture<Self>
     where
-        Self: Siquorp,
+        Self: Sized,
     {
         let location = Location::caller();
         LogErrorFuture(self, log::Level::Warn, *location)
@@ -217,7 +218,7 @@ where
 
     fn unwrap(self) -> UnwrapFuture<Self>
     where
-        Self: Siquorp,
+        Self: Sized,
     {
         UnwrapFuture(self)
     }

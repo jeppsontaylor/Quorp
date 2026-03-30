@@ -52,14 +52,13 @@ fn main() {
             Some(git_sha)
         }
         None => {
-            if let Some(output) = Command::new("git")
-                .args(["rev-parse", "HEAD"])
-                .output()
-                .ok()
-                && output.status.success()
-            {
-                let git_sha = String::from_utf8_lossy(&output.stdout);
-                Some(git_sha.trim().to_string())
+            if let Some(output) = Command::new("git").args(["rev-parse", "HEAD"]).output().ok() {
+                if output.status.success() {
+                    let git_sha = String::from_utf8_lossy(&output.stdout);
+                    Some(git_sha.trim().to_string())
+                } else {
+                    None
+                }
             } else {
                 None
             }
@@ -73,12 +72,12 @@ fn main() {
             println!("cargo:rustc-env=QUORP_BUILD_ID={build_identifier}");
         }
 
-        if let Ok(build_profile) = std::env::var("PROFILE")
-            && build_profile == "release"
-        {
-            // This is currently the best way to make `cargo build ...`'s build script
-            // to print something to stdout without extra verbosity.
-            println!("cargo::warning=Info: using '{git_sha}' hash for QUORP_COMMIT_SHA env var");
+        if let Ok(build_profile) = std::env::var("PROFILE") {
+            if build_profile == "release" {
+                // This is currently the best way to make `cargo build ...`'s build script
+                // to print something to stdout without extra verbosity.
+                println!("cargo::warning=Info: using '{git_sha}' hash for QUORP_COMMIT_SHA env var");
+            }
         }
     }
 

@@ -123,11 +123,6 @@ pub struct TuiApp {
     _runtime: Option<tokio::runtime::Runtime>,
     _event_rx_keepalive: Option<std::sync::mpsc::Receiver<crate::quorp::tui::TuiEvent>>,
     pub overlay: Overlay,
-    pub app_state: Option<std::sync::Arc<crate::AppState>>,
-    pub unified_bridge_tx: Option<
-        futures::channel::mpsc::UnboundedSender<crate::quorp::tui::bridge::TuiToBackendRequest>,
-    >,
-
     last_full_area: Rect,
     pub theme: Theme,
     pub hitmap: HitMap,
@@ -148,10 +143,6 @@ pub struct TuiApp {
 }
 
 impl TuiApp {
-    pub fn app_state(&self) -> Option<&std::sync::Arc<crate::AppState>> {
-        self.app_state.as_ref()
-    }
-
     pub fn new() -> Self {
         let runtime = tokio::runtime::Runtime::new().expect("tokio runtime");
         let handle = runtime.handle().clone();
@@ -165,7 +156,7 @@ impl TuiApp {
         let default_model = crate::quorp::tui::model_registry::get_saved_model();
         ssd_moe.ensure_running(&project_root, &default_model);
         let theme = Theme::core_tui();
-        let chat = ChatPane::new(tx, handle, project_root, path_index, None, None);
+        let chat = ChatPane::new(tx, project_root, path_index, None, None);
         let models_pane = ModelsPane::sync_from_chat(&chat);
         Self {
             focused: Pane::EditorPane,
@@ -181,8 +172,6 @@ impl TuiApp {
             _runtime: Some(runtime),
             _event_rx_keepalive: Some(rx),
             overlay: Overlay::None,
-            app_state: None,
-            unified_bridge_tx: None,
             last_full_area: Rect::default(),
             theme,
             hitmap: HitMap::new(),
@@ -213,7 +202,7 @@ impl TuiApp {
         let default_model = crate::quorp::tui::model_registry::get_saved_model();
         ssd_moe.ensure_running(&project_root, &default_model);
         let theme = Theme::core_tui();
-        let chat = ChatPane::new(tx, handle, project_root, path_index, None, None);
+        let chat = ChatPane::new(tx, project_root, path_index, None, None);
         let models_pane = ModelsPane::sync_from_chat(&chat);
         Self {
             focused: Pane::EditorPane,
@@ -229,8 +218,6 @@ impl TuiApp {
             _runtime: None,
             _event_rx_keepalive: None,
             overlay: Overlay::None,
-            app_state: None,
-            unified_bridge_tx: None,
             last_full_area: Rect::default(),
             theme,
             hitmap: HitMap::new(),
@@ -248,7 +235,6 @@ impl TuiApp {
     }
 
     pub(crate) fn new_with_backend(
-        app_state: std::sync::Arc<workspace::AppState>,
         workspace_root: std::path::PathBuf,
         tx: std::sync::mpsc::SyncSender<crate::quorp::tui::TuiEvent>,
         handle: tokio::runtime::Handle,
@@ -294,14 +280,9 @@ impl TuiApp {
         let default_model = crate::quorp::tui::model_registry::get_saved_model();
         ssd_moe.ensure_running(&project_root, &default_model);
         let theme = Theme::core_tui();
-        let terminal = match &unified_language_model {
-            Some((tx, _, _)) => TerminalPane::with_bridge(Some(tx.clone())),
-            None => TerminalPane::new(),
-        };
         let chat_uses_language_model_registry = unified_language_model.is_some();
         let mut chat = ChatPane::new(
             tx,
-            handle,
             project_root,
             path_index,
             unified_language_model,
@@ -327,7 +308,10 @@ impl TuiApp {
             last_left_pane: Pane::EditorPane,
             file_tree,
             editor_pane: EditorPane::with_buffer_bridge(backend),
-            terminal: TerminalPane::with_bridge(unified_bridge_tx.clone()),
+            terminal: unified_bridge_tx
+                .clone()
+                .map(|tx| TerminalPane::with_bridge(Some(tx)))
+                .unwrap_or_else(TerminalPane::new),
             agent_pane: AgentPane::new(unified_bridge_tx.clone()),
             chat,
             models_pane,
@@ -335,8 +319,6 @@ impl TuiApp {
             _runtime: None,
             _event_rx_keepalive: None,
             overlay: Overlay::None,
-            app_state: Some(app_state),
-            unified_bridge_tx,
             last_full_area: Rect::default(),
             theme,
             hitmap: HitMap::new(),
@@ -870,7 +852,7 @@ impl TuiApp {
                 r,
                 &self.theme,
                 true,
-                self.ssd_moe.active_model.as_ref().map(|m| m.id),
+                self.ssd_moe.active_model().as_ref().map(|m| m.id),
                 &self.ssd_moe.status(),
             );
         }
@@ -1417,8 +1399,9 @@ impl TuiApp {
     ) -> Self {
         let mut ssd_moe = SsdMoeManager::new();
         ssd_moe.set_status_for_test(crate::quorp::tui::ssd_moe_tui::ModelStatus::Running);
-        ssd_moe.active_model =
-            Some(crate::quorp::tui::model_registry::local_moe_catalog()[0].clone());
+        ssd_moe.set_active_model_for_test(Some(
+            crate::quorp::tui::model_registry::local_moe_catalog()[0].clone(),
+        ));
         let path_index = std::sync::Arc::new(crate::quorp::tui::path_index::PathIndex::new(
             fixture_root.clone(),
         ));
@@ -1428,7 +1411,6 @@ impl TuiApp {
         let uses_language_model_registry = unified_language_model_boot.is_some();
         let mut chat = ChatPane::new(
             tx,
-            handle,
             fixture_root.clone(),
             path_index,
             unified_language_model_boot.clone(),
@@ -1457,8 +1439,6 @@ impl TuiApp {
             _runtime: runtime,
             _event_rx_keepalive: event_rx_keepalive,
             overlay: Overlay::None,
-            app_state: None,
-            unified_bridge_tx: None,
             last_full_area: Rect::default(),
             theme,
             hitmap: HitMap::new(),
@@ -1473,12 +1453,6 @@ impl TuiApp {
             tab_strip_focus: None,
             draw_frame_seq: 0,
         }
-    }
-}
-
-impl Drop for TuiApp {
-    fn drop(&mut self) {
-        self.ssd_moe.stop();
     }
 }
 
@@ -1524,7 +1498,7 @@ impl TuiApp {
         app
     }
 
-    /// Fixture-backed app with a live Tokio runtime for chat HTTP / streaming tests. Caller must
+    /// Fixture-backed app with a live Tokio runtime for chat flow tests. Caller must
     /// keep the returned receiver alive so the UI event channel stays open.
     pub fn new_for_flow_tests(
         fixture_root: std::path::PathBuf,
@@ -1536,8 +1510,8 @@ impl TuiApp {
         (app, rx)
     }
 
-    /// Same as [`Self::new_for_flow_tests`], but chat uses `provider/model` ids and the language-model
-    /// bridge sender (production-shaped). Returns the bridge receiver for tests that assert requests.
+    /// Same as [`Self::new_for_flow_tests`], but chat uses production-style `provider/model` ids and
+    /// exposes the backend request sender. Returns the receiver for tests that assert requests.
     #[cfg(test)]
     pub fn new_for_flow_tests_with_registry_chat(
         fixture_root: std::path::PathBuf,
@@ -1566,45 +1540,36 @@ impl TuiApp {
 
 #[cfg(test)]
 impl TuiApp {
-    /// Applies backend-driven events the same way as [`crate::quorp::tui::run`] (bridges on the GPUI side).
+    /// Applies backend-driven events the same way as [`crate::quorp::tui::run`].
     pub fn apply_tui_backend_event(&mut self, event: crate::quorp::tui::TuiEvent) {
         use crate::quorp::tui::TuiEvent;
         match event {
             TuiEvent::Chat(ev) => self.chat.apply_chat_event(ev, &self.theme),
             TuiEvent::TerminalFrame(frame) => self.terminal.apply_integrated_frame(frame),
             TuiEvent::TerminalClosed => self.terminal.mark_integrated_session_closed(),
-            TuiEvent::FileTreeListed { parent, result } => {
-                self.file_tree.apply_project_listing(parent, result);
+            TuiEvent::FileTreeListed(listing) => {
+                self.file_tree
+                    .apply_project_listing(listing.parent, listing.result);
             }
-            TuiEvent::UnifiedResponse(
-                crate::quorp::tui::bridge::BackendToTuiResponse::BufferChunk {
-                    path,
-                    lines,
-                    error,
-                    truncated,
-                },
-            ) => self
+            TuiEvent::BufferSnapshot(snapshot) => self
                 .editor_pane
-                .apply_editor_pane_buffer_snapshot(path, lines, error, truncated),
-            TuiEvent::UnifiedResponse(
+                .apply_editor_pane_buffer_snapshot(
+                    snapshot.path,
+                    snapshot.lines,
+                    snapshot.error,
+                    snapshot.truncated,
+                ),
+            TuiEvent::BackendResponse(
                 crate::quorp::tui::bridge::BackendToTuiResponse::AgentStatusUpdate(s),
             ) => {
                 self.agent_pane.apply_status_update(s);
             }
-            TuiEvent::PathIndexSnapshot {
-                root,
-                entries,
-                files_seen,
-            } => self
+            TuiEvent::PathIndexSnapshot(snapshot) => self
                 .chat
-                .apply_path_index_snapshot(root, entries, files_seen),
+                .apply_path_index_snapshot(snapshot.root, snapshot.entries, snapshot.files_seen),
             TuiEvent::Crossterm(ev) => {
                 let _ = self.handle_event(ev);
             }
-            TuiEvent::UnifiedResponse(resp) => {
-                log::debug!("Unhandled unified response in test: {:?}", resp);
-            }
-            TuiEvent::ThemeReloaded => {}
         }
     }
 }

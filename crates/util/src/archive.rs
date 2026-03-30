@@ -128,14 +128,14 @@ pub async fn extract_seekable_zip<R: AsyncRead + AsyncSeek + Unpin>(
                 .await
                 .with_context(|| format!("extracting into file {path:?}"))?;
 
-            if let Some(perms) = entry.unix_permissions()
-                && perms != 0o000
-            {
-                use std::os::unix::fs::PermissionsExt;
-                let permissions = std::fs::Permissions::from_mode(u32::from(perms));
-                file.set_permissions(permissions)
-                    .await
-                    .with_context(|| format!("setting permissions for file {path:?}"))?;
+            if let Some(perms) = entry.unix_permissions() {
+                if perms != 0o000 {
+                    use std::os::unix::fs::PermissionsExt;
+                    let permissions = std::fs::Permissions::from_mode(u32::from(perms));
+                    file.set_permissions(permissions)
+                        .await
+                        .with_context(|| format!("setting permissions for file {path:?}"))?;
+                }
             }
         }
     }

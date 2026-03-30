@@ -60,6 +60,14 @@ fn lines_from_plain_source(source: &str) -> Vec<Line<'static>> {
     lines
 }
 
+#[derive(Clone, Debug)]
+pub struct BufferSnapshot {
+    pub path: Option<PathBuf>,
+    pub lines: Vec<Line<'static>>,
+    pub error: Option<String>,
+    pub truncated: bool,
+}
+
 fn truncate_line_to_width(line: Line<'static>, max_width: usize) -> Line<'static> {
     if line.width() <= max_width {
         return line;
@@ -842,6 +850,66 @@ fn read_file_capped(path: &Path) -> Result<(Vec<u8>, bool), std::io::Error> {
     file.take(MAX_READ_BYTES as u64).read_to_end(&mut buf)?;
     let truncated = file_len > MAX_READ_BYTES;
     Ok((buf, truncated))
+}
+
+pub(crate) fn buffer_snapshot_from_disk(path: Option<PathBuf>, project_root: &Path) -> BufferSnapshot {
+    let Some(path) = path else {
+        return BufferSnapshot {
+            path: None,
+            lines: Vec::new(),
+            error: None,
+            truncated: false,
+        };
+    };
+
+    if !path_within_project(&path, project_root) {
+        return BufferSnapshot {
+            path: Some(path),
+            lines: Vec::new(),
+            error: Some("File path is outside the project root".to_string()),
+            truncated: false,
+        };
+    }
+
+    let (bytes, truncated_read) = match read_file_capped(&path) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            return BufferSnapshot {
+                path: Some(path),
+                lines: Vec::new(),
+                error: Some(error.to_string()),
+                truncated: false,
+            };
+        }
+    };
+
+    if bytes.contains(&0) {
+        return BufferSnapshot {
+            path: Some(path),
+            lines: Vec::new(),
+            error: Some("Binary file (contains NUL bytes)".to_string()),
+            truncated: false,
+        };
+    }
+
+    let source = match String::from_utf8(bytes) {
+        Ok(source) => source,
+        Err(_) => {
+            return BufferSnapshot {
+                path: Some(path),
+                lines: Vec::new(),
+                error: Some("File is not valid UTF-8".to_string()),
+                truncated: false,
+            };
+        }
+    };
+
+    BufferSnapshot {
+        path: Some(path),
+        lines: lines_from_plain_source(&source),
+        error: None,
+        truncated: truncated_read,
+    }
 }
 
 #[cfg(test)]

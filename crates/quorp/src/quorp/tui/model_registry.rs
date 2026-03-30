@@ -1,10 +1,8 @@
 //! Local SSD-MOE weight catalog and on-disk hint `~/.config/quorp-tui/active_model.txt` (**local infer
 //! weights only**).
 //!
-//! **Cloud chat defaults** live in Quorp settings (`agent.default_model`) and
-//! [`language_model::LanguageModelRegistry`]. The model picker persists those via
-//! [`crate::quorp::tui::chat_bridge`]; do not write `provider/model` strings into `active_model.txt`
-//! (see [`crate::quorp::tui::app`] picker handler). [`save_model`] is for local catalog ids and tests.
+//! Model ids stored here are local TUI infer selections only. Do not write provider-style ids such as
+//! `provider/model` into `active_model.txt`; [`save_model`] is for local catalog ids and tests.
 
 use serde::{Deserialize, Serialize};
 

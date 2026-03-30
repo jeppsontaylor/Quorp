@@ -12,12 +12,17 @@ if ! cargo check -p quorp --bin quorp; then
 fi
 
 echo "[tui-verify] Stage 2: run seam tests"
-cargo test -p quorp \
-  editor_pane::tests::backend_receives_open_for_selected_file \
-  editor_pane::tests::backend_open_failure_sets_disconnected_error \
-  file_tree::tests::load_children_uses_backend_request_when_configured
+cargo test -p quorp editor_pane::tests::backend_receives_open_for_selected_file
+cargo test -p quorp editor_pane::tests::backend_open_failure_sets_disconnected_error
+cargo test -p quorp file_tree::tests::load_children_uses_backend_request_when_configured
 
 echo "[tui-verify] Stage 3: run TUI flow tests"
 cargo test -p quorp tui_flow_tests
+
+echo "[tui-verify] Stage 4: export screenshot bundle"
+"$repo_root/script/tui-screenshot-suite"
+
+echo "[tui-verify] Stage 5: run visual regression checks"
+cargo test -p quorp tui_flow_tests::visual_regression
 
 echo "[tui-verify] All TUI verification stages passed."

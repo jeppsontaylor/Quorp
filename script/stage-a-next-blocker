@@ -10,6 +10,14 @@ if cargo check -p quorp --bin quorp >"$output_file" 2>&1; then
   exit 0
 fi
 
+if rg -q "Couldn't resolve host name|failed to download|download of .* failed|Updating crates.io index" "$output_file"; then
+  echo "cargo check failed because dependency resolution could not reach crates.io."
+  echo "This is a network/index failure, not a proven repo dependency blocker."
+  echo
+  sed -n '1,120p' "$output_file"
+  exit 1
+fi
+
 missing_pkg="$(awk '/no matching package named/ {print $6}' "$output_file" | tr -d '"' | tail -n1)"
 if [[ -n "$missing_pkg" ]]; then
   echo "Next Stage A blocker: $missing_pkg"

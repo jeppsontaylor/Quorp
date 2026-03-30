@@ -1,4 +1,4 @@
-//! Simulated GPUI / project bridge events (same [`crate::quorp::tui::TuiEvent`] payloads as production).
+//! Simulated backend events using the same [`crate::quorp::tui::TuiEvent`] payloads as production.
 
 use crossterm::event::{KeyCode, KeyModifiers};
 use ratatui::style::{Color, Style};
@@ -7,8 +7,10 @@ use ratatui::text::{Line, Span};
 use crate::quorp::tui::TuiEvent;
 use crate::quorp::tui::app::Pane;
 use crate::quorp::tui::chat::{ChatMessage, ChatUiEvent};
+use crate::quorp::tui::editor_pane::BufferSnapshot;
 use crate::quorp::tui::file_tree::TreeChild;
-use crate::quorp::tui::path_index::path_entry_from_parts;
+use crate::quorp::tui::file_tree::DirectoryListing;
+use crate::quorp::tui::path_index::{PathIndexSnapshot, path_entry_from_parts};
 
 use super::fixtures;
 use super::harness::TuiTestHarness;
@@ -24,7 +26,7 @@ fn simulated_editor_pane_buffer_snapshot_renders() {
         .editor_pane
         .sync_tree_selection(Some(path.as_path()), &root);
     h.app.editor_pane.ensure_active_loaded(&root);
-    h.apply_backend_event(TuiEvent::UnifiedResponse(crate::quorp::tui::bridge::BackendToTuiResponse::BufferChunk {
+    h.apply_backend_event(TuiEvent::BufferSnapshot(BufferSnapshot {
         path: Some(path.clone()),
         lines: vec![Line::from(Span::styled(
             "fn main() {}",
@@ -37,10 +39,10 @@ fn simulated_editor_pane_buffer_snapshot_renders() {
     h.assert_buffer_contains("fn main()");
 }
 
-/// Mirrors [`crate::quorp::tui::editor_pane_bridge`] when `open_local_buffer` fails: empty lines and
-/// a user-visible error string (red in the real draw path).
+/// Mirrors the native editor snapshot path when opening a buffer fails: empty lines and a
+/// user-visible error string (red in the real draw path).
 #[test]
-fn simulated_editor_pane_bridge_error_surfaces_in_buffer() {
+fn simulated_editor_pane_open_error_surfaces_in_buffer() {
     let dir = fixtures::temp_project_with_files(&[("missing.rs", "")]);
     let root = dir.path().to_path_buf();
     let path = root.join("missing.rs");
@@ -50,7 +52,7 @@ fn simulated_editor_pane_bridge_error_surfaces_in_buffer() {
         .editor_pane
         .sync_tree_selection(Some(path.as_path()), &root);
     h.app.editor_pane.ensure_active_loaded(&root);
-    h.apply_backend_event(TuiEvent::UnifiedResponse(crate::quorp::tui::bridge::BackendToTuiResponse::BufferChunk {
+    h.apply_backend_event(TuiEvent::BufferSnapshot(BufferSnapshot {
         path: Some(path),
         lines: Vec::new(),
         error: Some("Failed to open file in project: worktree path not found".to_string()),
@@ -66,14 +68,14 @@ fn simulated_file_tree_listing_then_open_preview() {
     let root = dir.path().to_path_buf();
     let file_path = root.join("sample.rs");
     let mut h = TuiTestHarness::new_with_backend_state(100, 32, root.clone());
-    h.apply_backend_event(TuiEvent::FileTreeListed {
+    h.apply_backend_event(TuiEvent::FileTreeListed(DirectoryListing {
         parent: root.clone(),
         result: Ok(vec![TreeChild {
             path: file_path.clone(),
             name: "sample.rs".to_string(),
             is_directory: false,
         }]),
-    });
+    }));
     h.app.focused = Pane::FileTree;
     h.draw();
     h.assert_buffer_contains("sample.rs");
@@ -93,7 +95,7 @@ fn simulated_file_tree_listing_then_open_preview() {
         .selected_file()
         .expect("sample.rs should be selected after Enter")
         .to_path_buf();
-    h.apply_backend_event(TuiEvent::UnifiedResponse(crate::quorp::tui::bridge::BackendToTuiResponse::BufferChunk {
+    h.apply_backend_event(TuiEvent::BufferSnapshot(BufferSnapshot {
         path: Some(opened),
         lines: vec![Line::from("fn main() {}")],
         error: None,
@@ -105,22 +107,22 @@ fn simulated_file_tree_listing_then_open_preview() {
 }
 
 /// Phase 5.2-style flow: Ctrl+l focuses the file tree, Down+Enter selects a file and moves focus
-/// to code preview. A simulated [`TuiEvent::UnifiedResponse(crate::quorp::tui::bridge::BackendToTuiResponse::BufferChunk`] matches what
-/// [`crate::quorp::tui::editor_pane_bridge`] delivers after `Project::open_buffer`.
+/// to code preview. A simulated buffer snapshot matches what the native file-opening backend feeds
+/// into the editor pane.
 #[test]
 fn playwright_open_file_from_tree_shows_fn_main_in_preview() {
     let dir = fixtures::temp_project_with_files(&[("hello.rs", "// pending")]);
     let root = dir.path().to_path_buf();
     let file_path = root.join("hello.rs");
     let mut h = TuiTestHarness::new_with_backend_state(100, 32, root.clone());
-    h.apply_backend_event(TuiEvent::FileTreeListed {
+    h.apply_backend_event(TuiEvent::FileTreeListed(DirectoryListing {
         parent: root.clone(),
         result: Ok(vec![TreeChild {
             path: file_path.clone(),
             name: "hello.rs".to_string(),
             is_directory: false,
         }]),
-    });
+    }));
     h.app.focused = Pane::EditorPane;
     h.key_press(KeyCode::Char('h'), KeyModifiers::CONTROL);
     h.assert_focus(Pane::FileTree);
@@ -138,7 +140,7 @@ fn playwright_open_file_from_tree_shows_fn_main_in_preview() {
         h.app.file_tree.root(),
     );
     h.app.editor_pane.ensure_active_loaded(&root);
-    h.apply_backend_event(TuiEvent::UnifiedResponse(crate::quorp::tui::bridge::BackendToTuiResponse::BufferChunk {
+    h.apply_backend_event(TuiEvent::BufferSnapshot(BufferSnapshot {
         path: Some(opened),
         lines: vec![Line::from("fn main() {}")],
         error: None,
@@ -158,11 +160,11 @@ fn simulated_path_index_snapshot_enables_mention_list() {
         path_entry_from_parts(".".to_string(), true, root.clone()),
         path_entry_from_parts("lib.rs".to_string(), false, lib_abs),
     ];
-    h.apply_backend_event(TuiEvent::PathIndexSnapshot {
+    h.apply_backend_event(TuiEvent::PathIndexSnapshot(PathIndexSnapshot {
         root: root.clone(),
         entries: std::sync::Arc::new(entries),
         files_seen: 2,
-    });
+    }));
     h.app.focused = Pane::Chat;
     h.key_press(KeyCode::Char('@'), KeyModifiers::NONE);
     h.draw();
@@ -184,11 +186,11 @@ fn backend_state_mentions_use_bridge_snapshot_not_disk_walk() {
             root.join("bridge_only.rs"),
         ),
     ];
-    h.apply_backend_event(TuiEvent::PathIndexSnapshot {
+    h.apply_backend_event(TuiEvent::PathIndexSnapshot(PathIndexSnapshot {
         root: root.clone(),
         entries: std::sync::Arc::new(entries),
         files_seen: 2,
-    });
+    }));
     h.app.focused = Pane::Chat;
     for ch in "@bridge_on".chars() {
         h.key_press(KeyCode::Char(ch), KeyModifiers::NONE);
@@ -219,24 +221,22 @@ fn theme_decoupled_buffer_snapshot_renders_with_syntax_color() {
         .editor_pane
         .sync_tree_selection(Some(path.as_path()), &root);
     h.app.editor_pane.ensure_active_loaded(&root);
-    h.apply_backend_event(TuiEvent::UnifiedResponse(
-        crate::quorp::tui::bridge::BackendToTuiResponse::BufferChunk {
-            path: Some(path),
-            lines: vec![
-                Line::from(vec![
-                    Span::styled("fn ", Style::default().fg(Color::Magenta)),
-                    Span::styled("hello", Style::default().fg(Color::Yellow)),
-                    Span::styled("() {}", Style::default().fg(Color::White)),
-                ]),
-                Line::from(Span::styled(
-                    "    println!(\"hi\");",
-                    Style::default().fg(Color::Green),
-                )),
-            ],
-            error: None,
-            truncated: false,
-        },
-    ));
+    h.apply_backend_event(TuiEvent::BufferSnapshot(BufferSnapshot {
+        path: Some(path),
+        lines: vec![
+            Line::from(vec![
+                Span::styled("fn ", Style::default().fg(Color::Magenta)),
+                Span::styled("hello", Style::default().fg(Color::Yellow)),
+                Span::styled("() {}", Style::default().fg(Color::White)),
+            ]),
+            Line::from(Span::styled(
+                "    println!(\"hi\");",
+                Style::default().fg(Color::Green),
+            )),
+        ],
+        error: None,
+        truncated: false,
+    }));
     h.draw();
     h.assert_buffer_contains("fn hello()");
     h.assert_buffer_contains("println!");
@@ -296,7 +296,7 @@ fn chat_stream_error_surfaces_in_transcript() {
 fn agent_status_update_routes_to_agent_pane() {
     let mut h = TuiTestHarness::new(120, 40);
     h.app.focused = Pane::Agent;
-    h.apply_backend_event(TuiEvent::UnifiedResponse(
+    h.apply_backend_event(TuiEvent::BackendResponse(
         crate::quorp::tui::bridge::BackendToTuiResponse::AgentStatusUpdate("building...".to_string()),
     ));
     assert!(h.app.agent_pane.status_lines.contains(&"building...".to_string()));
@@ -308,7 +308,7 @@ fn agent_status_update_routes_to_agent_pane() {
 fn dead_response_variants_logged_not_panicked() {
     let mut h = TuiTestHarness::new(80, 24);
     // Inject a response that has no specific handler in apply_tui_backend_event except the catch-all
-    h.apply_backend_event(TuiEvent::UnifiedResponse(
+    h.apply_backend_event(TuiEvent::BackendResponse(
         crate::quorp::tui::bridge::BackendToTuiResponse::AgentStatusUpdate("test".to_string()), 
     ));
     h.draw();
@@ -322,7 +322,7 @@ fn agent_enter_dispatches_start_action_request() {
         crate::quorp::tui::app::TuiApp::new_for_flow_tests_with_registry_chat(root.clone(), vec![], 0);
     app.focused = Pane::Agent;
     
-    app.handle_event(crossterm::event::Event::Key(
+    let _ = app.handle_event(crossterm::event::Event::Key(
         crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Enter, crossterm::event::KeyModifiers::NONE)
     ));
     
@@ -333,7 +333,6 @@ fn agent_enter_dispatches_start_action_request() {
         Ok(None) => println!("channel closed?"),
         Err(e) => println!("channel empty: e = {:?}", e),
     }
-    println!("test agent_enter complete!");
     app.leak_runtime_for_test_exit();
 }
 
@@ -353,14 +352,6 @@ fn editor_pane_respects_vim_normal_mode_keys() {
     // In FileTree, 'Ctrl-l' restores the last_left_pane (which was Chat)
     h.key_press(crossterm::event::KeyCode::Char('l'), crossterm::event::KeyModifiers::CONTROL);
     assert_eq!(h.app.focused, Pane::Chat);
-}
-
-#[test]
-fn live_theme_reload_updates_tui_colors() {
-    let mut h = TuiTestHarness::new(80, 24);
-    // Send ThemeReloaded and assume it doesn't cause a panic
-    h.apply_backend_event(TuiEvent::ThemeReloaded);
-    h.draw();
 }
 
 #[test]
@@ -389,7 +380,7 @@ fn terminal_enter_after_closed_sends_resize_to_restart() {
     app.apply_tui_backend_event(TuiEvent::TerminalClosed);
     assert_eq!(app.terminal.pty_exited, true);
 
-    app.handle_event(crossterm::event::Event::Key(
+    let _ = app.handle_event(crossterm::event::Event::Key(
         crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Enter, crossterm::event::KeyModifiers::NONE)
     ));
     
@@ -410,7 +401,7 @@ fn terminal_ctrl_c_sends_keystroke() {
         crate::quorp::tui::app::TuiApp::new_for_flow_tests_with_registry_chat(root.clone(), vec![], 0);
     app.focused = Pane::Terminal;
 
-    app.handle_event(crossterm::event::Event::Key(
+    let _ = app.handle_event(crossterm::event::Event::Key(
         crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char('c'), crossterm::event::KeyModifiers::CONTROL)
     ));
     
@@ -421,7 +412,6 @@ fn terminal_ctrl_c_sends_keystroke() {
         Ok(None) => println!("channel closed?"),
         Err(e) => println!("channel empty: e = {:?}", e),
     }
-    println!("test terminal keystroke complete!");
     app.leak_runtime_for_test_exit();
 }
 
@@ -433,7 +423,7 @@ fn terminal_printable_key_sends_input_bytes() {
         crate::quorp::tui::app::TuiApp::new_for_flow_tests_with_registry_chat(root.clone(), vec![], 0);
     app.focused = Pane::Terminal;
 
-    app.handle_event(crossterm::event::Event::Key(
+    let _ = app.handle_event(crossterm::event::Event::Key(
         crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char('a'), crossterm::event::KeyModifiers::NONE)
     ));
     
@@ -471,22 +461,20 @@ fn screenshot_editor_with_syntax_highlighting() {
     h.app.focused = Pane::EditorPane;
     h.app.editor_pane.sync_tree_selection(Some(path.as_path()), &root);
     h.app.editor_pane.ensure_active_loaded(&root);
-    h.apply_backend_event(TuiEvent::UnifiedResponse(
-        crate::quorp::tui::bridge::BackendToTuiResponse::BufferChunk {
-            path: Some(path),
-            lines: vec![
-                Line::from(vec![
-                    Span::styled("impl", Style::default().fg(Color::Magenta)),
-                    Span::styled(" ", Style::default()),
-                    Span::styled("MyStruct", Style::default().fg(Color::Yellow)),
-                    Span::styled(" {", Style::default()),
-                ]),
-                Line::from(Span::styled("}", Style::default())),
-            ],
-            error: None,
-            truncated: false,
-        },
-    ));
+    h.apply_backend_event(TuiEvent::BufferSnapshot(BufferSnapshot {
+        path: Some(path),
+        lines: vec![
+            Line::from(vec![
+                Span::styled("impl", Style::default().fg(Color::Magenta)),
+                Span::styled(" ", Style::default()),
+                Span::styled("MyStruct", Style::default().fg(Color::Yellow)),
+                Span::styled(" {", Style::default()),
+            ]),
+            Line::from(Span::styled("}", Style::default())),
+        ],
+        error: None,
+        truncated: false,
+    }));
     h.draw();
     if std::env::var("VISUAL_TEST_OUTPUT_DIR").is_ok() {
         h.save_screenshot("editor_syntax");
@@ -513,4 +501,3 @@ fn screenshot_terminal_with_ansi_output() {
         h.save_screenshot("terminal_ansi");
     }
 }
-

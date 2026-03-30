@@ -232,7 +232,6 @@ pub fn pixel_mismatch_fraction(a: &RgbaImage, b: &RgbaImage) -> Result<f64, Stri
     Ok(diff as f64 / total as f64)
 }
 
-/// Bottom `strip_frac` of image height (at least 4 px), full width.
 fn bottom_strip(img: &RgbaImage, strip_frac: f32) -> RgbaImage {
     let h = img.height();
     let strip_h = ((h as f32) * strip_frac).round() as u32;
@@ -241,67 +240,11 @@ fn bottom_strip(img: &RgbaImage, strip_frac: f32) -> RgbaImage {
     image::imageops::crop_imm(img, 0, y0, img.width(), strip_h).to_image()
 }
 
-/// Right `width_frac` of a horizontal strip.
-fn right_fraction(strip: &RgbaImage, width_frac: f32) -> RgbaImage {
-    let w = strip.width();
-    let rw = ((w as f32) * width_frac).round() as u32;
-    let rw = rw.max(4).min(w);
-    let x0 = w - rw;
-    image::imageops::crop_imm(strip, x0, 0, rw, strip.height()).to_image()
-}
-
 fn dist_rgb(a: [u8; 3], b: [u8; 3]) -> f32 {
     let dr = a[0] as f32 - b[0] as f32;
     let dg = a[1] as f32 - b[1] as f32;
     let db = a[2] as f32 - b[2] as f32;
     (dr * dr + dg * dg + db * db).sqrt()
-}
-
-fn blue_and_warm_fractions(img: &RgbaImage) -> (f64, f64) {
-    let status_blue = [0u8, 122, 204];
-    let status_gold = [123u8, 100, 0];
-    let strip = bottom_strip(img, 0.08);
-    let total = strip.width() as u64 * strip.height() as u64;
-    if total == 0 {
-        return (0.0, 0.0);
-    }
-    let mut blue_hits = 0u64;
-    for p in strip.pixels() {
-        let c = [p.0[0], p.0[1], p.0[2]];
-        if dist_rgb(c, status_blue) < 90.0 {
-            blue_hits += 1;
-        }
-    }
-    let blue_frac = blue_hits as f64 / total as f64;
-
-    let right = right_fraction(&strip, 0.38);
-    let rt = right.width() as u64 * right.height() as u64;
-    let mut warm_hits = 0u64;
-    if rt > 0 {
-        for p in right.pixels() {
-            let c = [p.0[0], p.0[1], p.0[2]];
-            if dist_rgb(c, status_gold) < 100.0 || (c[0] > 140 && c[1] > 90 && c[2] < 120) {
-                warm_hits += 1;
-            }
-        }
-    }
-    let warm_frac = if rt > 0 {
-        warm_hits as f64 / rt as f64
-    } else {
-        0.0
-    };
-    (blue_frac, warm_frac)
-}
-
-/// Heuristic 0.0–1.0 comparing bottom status strip of `tui` to `reference` (e.g. Core TUI IDE).
-///
-/// Uses blue-bar and warm-chip pixel fractions; not a perceptual match to the whole IDE frame.
-pub fn core_tui_likeness(tui: &RgbaImage, reference: &RgbaImage) -> f64 {
-    let (tb, tw) = blue_and_warm_fractions(tui);
-    let (rb, rw) = blue_and_warm_fractions(reference);
-    let blue_closeness = (1.0 - (tb - rb).abs()).clamp(0.0, 1.0);
-    let warm_closeness = (1.0 - (tw - rw).abs()).clamp(0.0, 1.0);
-    (blue_closeness * 0.4 + warm_closeness * 0.6).clamp(0.0, 1.0)
 }
 
 /// Subscores for [`prismforge_likeness`]: layout (edge structure), palette (role colors in ROIs), status strip.
