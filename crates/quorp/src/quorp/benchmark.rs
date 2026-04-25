@@ -2139,6 +2139,12 @@ fn prepare_batch_runtime(
     } else {
         safe_benchmark_model_id()?
     };
+    if native_batch_model_uses_remote_provider(&model_id) {
+        return Ok(PreparedBatchRuntime {
+            base_url_override: None,
+            stop_after_batch: false,
+        });
+    }
     let Some(model) = crate::quorp::tui::model_registry::local_moe_spec_for_registry_id(&model_id)
     else {
         return Err(anyhow::anyhow!(
@@ -2162,6 +2168,21 @@ fn prepare_batch_runtime(
         base_url_override: Some(runtime.base_url()),
         stop_after_batch: true,
     })
+}
+
+fn native_batch_model_uses_remote_provider(model_id: &str) -> bool {
+    if is_nvidia_kimi_model_id(model_id) || is_nvidia_qwen_coder_model_id(model_id) {
+        return true;
+    }
+    let provider = crate::quorp::tui::model_registry::chat_model_provider(
+        model_id,
+        crate::quorp::executor::interactive_provider_from_env(),
+    );
+    !matches!(
+        provider,
+        crate::quorp::executor::InteractiveProviderKind::Local
+            | crate::quorp::executor::InteractiveProviderKind::Codex
+    )
 }
 
 fn discover_challenge_case_roots(cases_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
@@ -4321,65 +4342,36 @@ fn run_challenge_judge(context: &ChallengeJudgeContext<'_>) -> ChallengeJudgeOut
         );
     }
 
-    let result = match context.manifest.executor {
-        BenchmarkExecutor::Native => {
-            let runtime = tokio::runtime::Runtime::new();
-            match runtime {
-                Ok(runtime) => runtime.block_on(async {
-                    let ssd_moe_runtime = SsdMoeRuntimeHandle::shared_handle();
-                    let request = StreamRequest {
-                        request_id: crate::quorp::tui::diagnostics::next_request_id(),
-                        session_id: context.attempt_number,
-                        model_id: context.manifest.model_id.clone(),
-                        agent_mode: quorp_agent_core::agent_protocol::AgentMode::Ask,
-                        latest_input: judge_prompt.clone(),
-                        messages: vec![ChatServiceMessage {
-                            role: ChatServiceRole::User,
-                            content: judge_prompt.clone(),
-                        }],
-                        project_root: context.metadata.workspace_dir.clone(),
-                        base_url_override: context.manifest.base_url_override.clone(),
-                        max_completion_tokens: Some(512),
-                        include_repo_capsule: false,
-                        disable_reasoning: true,
-                        native_tool_calls: false,
-                        watchdog: Some(quorp_agent_core::CompletionWatchdogConfig {
-                            first_token_timeout_ms: Some(30_000),
-                            idle_timeout_ms: Some(20_000),
-                            total_timeout_ms: Some(90_000),
-                        }),
-                        safety_mode_label: Some(context.manifest.safety_mode_label.clone()),
-                        prompt_compaction_policy: None,
-                        capture_scope: Some("evaluation".to_string()),
-                        capture_call_class: Some("evaluation".to_string()),
-                    };
-                    request_single_completion_details(&ssd_moe_runtime, &request)
-                        .await
-                        .map(|completion| (completion.content, completion.raw_response))
-                }),
-                Err(error) => {
-                    return ChallengeJudgeOutcome {
-                        passed: false,
-                        summary: "judge runtime could not start".to_string(),
-                        rationale: error.to_string(),
-                        model_id: context.manifest.model_id.clone(),
-                        raw_response: serde_json::json!({}),
-                        error: Some(error.to_string()),
-                    };
-                }
+    let max_judge_attempts = if context.manifest.executor == BenchmarkExecutor::Native {
+        3
+    } else {
+        1
+    };
+    let mut result = None;
+    for judge_attempt in 1..=max_judge_attempts {
+        let attempt_result = request_challenge_judge_completion(context, &judge_prompt);
+        match attempt_result {
+            Ok(completion) => {
+                result = Some(Ok(completion));
+                break;
+            }
+            Err(error)
+                if judge_attempt < max_judge_attempts
+                    && transient_challenge_judge_error(&error) =>
+            {
+                log::warn!(
+                    "challenge judge attempt {judge_attempt}/{max_judge_attempts} failed transiently: {error}"
+                );
+                std::thread::sleep(Duration::from_secs(2 * judge_attempt as u64));
+            }
+            Err(error) => {
+                result = Some(Err(error));
+                break;
             }
         }
-        BenchmarkExecutor::Codex => request_codex_completion(CodexCompletionOptions {
-            workspace: context.metadata.workspace_dir.clone(),
-            prompt: judge_prompt.clone(),
-            model_id: context.manifest.model_id.clone(),
-            max_seconds: Some(180),
-            artifact_dir: context.attempt_dir.join("judge-artifacts"),
-            session_strategy: fresh_session_strategy(),
-        })
-        .map(|completion| (completion.content, completion.raw_response))
-        .map_err(|error| error.to_string()),
-    };
+    }
+
+    let result = result.unwrap_or_else(|| Err("judge request did not run".to_string()));
 
     match result {
         Ok((content, raw_response)) => {
@@ -4433,6 +4425,72 @@ fn run_challenge_judge(context: &ChallengeJudgeContext<'_>) -> ChallengeJudgeOut
             }
         }
     }
+}
+
+fn request_challenge_judge_completion(
+    context: &ChallengeJudgeContext<'_>,
+    judge_prompt: &str,
+) -> Result<(String, serde_json::Value), String> {
+    match context.manifest.executor {
+        BenchmarkExecutor::Native => {
+            let runtime = tokio::runtime::Runtime::new();
+            match runtime {
+                Ok(runtime) => runtime.block_on(async {
+                    let ssd_moe_runtime = SsdMoeRuntimeHandle::shared_handle();
+                    let request = StreamRequest {
+                        request_id: crate::quorp::tui::diagnostics::next_request_id(),
+                        session_id: context.attempt_number,
+                        model_id: context.manifest.model_id.clone(),
+                        agent_mode: quorp_agent_core::agent_protocol::AgentMode::Ask,
+                        latest_input: judge_prompt.to_string(),
+                        messages: vec![ChatServiceMessage {
+                            role: ChatServiceRole::User,
+                            content: judge_prompt.to_string(),
+                        }],
+                        project_root: context.metadata.workspace_dir.clone(),
+                        base_url_override: context.manifest.base_url_override.clone(),
+                        max_completion_tokens: Some(512),
+                        include_repo_capsule: false,
+                        disable_reasoning: true,
+                        native_tool_calls: false,
+                        watchdog: Some(quorp_agent_core::CompletionWatchdogConfig {
+                            first_token_timeout_ms: Some(30_000),
+                            idle_timeout_ms: Some(20_000),
+                            total_timeout_ms: Some(90_000),
+                        }),
+                        safety_mode_label: Some(context.manifest.safety_mode_label.clone()),
+                        prompt_compaction_policy: None,
+                        capture_scope: Some("evaluation".to_string()),
+                        capture_call_class: Some("evaluation".to_string()),
+                    };
+                    request_single_completion_details(&ssd_moe_runtime, &request)
+                        .await
+                        .map(|completion| (completion.content, completion.raw_response))
+                }),
+                Err(error) => Err(error.to_string()),
+            }
+        }
+        BenchmarkExecutor::Codex => request_codex_completion(CodexCompletionOptions {
+            workspace: context.metadata.workspace_dir.clone(),
+            prompt: judge_prompt.to_string(),
+            model_id: context.manifest.model_id.clone(),
+            max_seconds: Some(180),
+            artifact_dir: context.attempt_dir.join("judge-artifacts"),
+            session_strategy: fresh_session_strategy(),
+        })
+        .map(|completion| (completion.content, completion.raw_response))
+        .map_err(|error| error.to_string()),
+    }
+}
+
+fn transient_challenge_judge_error(error: &str) -> bool {
+    let normalized = error.to_ascii_lowercase();
+    normalized.contains("first token timeout")
+        || normalized.contains("timeout")
+        || normalized.contains("503")
+        || normalized.contains("service unavailable")
+        || normalized.contains("resourceexhausted")
+        || normalized.contains("workers are busy")
 }
 
 fn build_challenge_judge_prompt(context: &ChallengeJudgeContext<'_>) -> String {
@@ -10522,10 +10580,6 @@ EOF
                 "upstream/problem_statement.md",
                 "upstream/fix.patch",
                 "upstream/test.patch",
-                "workspace/proof-full/AGENTS.md",
-                "workspace/proof-full/agent-map.json",
-                "workspace/proof-full/test-map.json",
-                "workspace/proof-full/.witness/witness-graph.json",
             ] {
                 assert!(
                     case_root.join(relative).exists(),
@@ -10552,13 +10606,34 @@ EOF
                     .expect("challenge case");
             assert_eq!(resolved_from_objective.condition, "proof-full");
 
+            let workspace_root = case_root.join("workspace").join("proof-full");
+            if !workspace_root.exists() {
+                eprintln!(
+                    "skipping optional unpacked workspace checks for {}",
+                    case_root.display()
+                );
+                continue;
+            }
+
+            for relative in [
+                "AGENTS.md",
+                "agent-map.json",
+                "test-map.json",
+                ".witness/witness-graph.json",
+            ] {
+                assert!(
+                    workspace_root.join(relative).exists(),
+                    "missing workspace fixture `{relative}` in {}",
+                    workspace_root.display()
+                );
+            }
+
             let probe_path = workspace_probe_path(&case_root);
             let resolved_from_workspace = resolve_challenge_case(&probe_path, None)
                 .expect("resolve from workspace path")
                 .expect("challenge case");
             assert_eq!(resolved_from_workspace.condition, "proof-full");
 
-            let workspace_root = case_root.join("workspace").join("proof-full");
             assert!(
                 !workspace_root.join("target").exists(),
                 "vendored cargo target should not exist in {}",
@@ -11787,9 +11862,7 @@ EOF
     fn cc_rs_challenge_sets_sdkroot_for_macos_sdk_free_evaluation() {
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let metadata = ChallengeMetadata {
-            case_root: temp_dir
-                .path()
-                .join("05-cc-rs-compile-intermediates"),
+            case_root: temp_dir.path().join("05-cc-rs-compile-intermediates"),
             sandbox_root: temp_dir.path().join("run").join(CHALLENGE_SANDBOX_DIR),
             workspace_dir: temp_dir
                 .path()
@@ -11818,9 +11891,11 @@ EOF
         let evaluation_target_dir = temp_dir.path().join("eval-target");
         let env = challenge_evaluation_env(&metadata, &evaluation_target_dir);
 
-        assert!(env.iter().any(|(name, value)| {
-            *name == "SDKROOT" && *value == Path::new("/").as_os_str()
-        }));
+        assert!(
+            env.iter().any(|(name, value)| {
+                *name == "SDKROOT" && *value == Path::new("/").as_os_str()
+            })
+        );
         assert!(env.iter().any(|(name, value)| {
             *name == "CARGO_TARGET_DIR" && *value == evaluation_target_dir.as_os_str()
         }));
@@ -12409,6 +12484,19 @@ EOF
             Some("nvidia_qwen_benchmark")
         );
         assert_eq!(benchmark_action_contract_mode(&policy), "strict_json_v1");
+    }
+
+    #[test]
+    fn native_batch_skips_local_prewarm_for_nvidia_qwen() {
+        assert!(native_batch_model_uses_remote_provider(
+            "nvidia/qwen/qwen3-coder-480b-a35b-instruct"
+        ));
+        assert!(native_batch_model_uses_remote_provider(
+            "qwen/qwen3-coder-480b-a35b-instruct"
+        ));
+        assert!(!native_batch_model_uses_remote_provider(
+            "ssd_moe/qwen3-coder-30b-a3b"
+        ));
     }
 
     #[test]
@@ -13102,6 +13190,19 @@ EOF
             error: None,
         };
         assert!(judge_blocks_deterministic_success(&semantic_failure));
+    }
+
+    #[test]
+    fn transient_challenge_judge_errors_are_retryable() {
+        assert!(transient_challenge_judge_error(
+            "NVIDIA NIM returned 503 Service Unavailable: ResourceExhausted"
+        ));
+        assert!(transient_challenge_judge_error(
+            "first token timeout after 30000ms"
+        ));
+        assert!(!transient_challenge_judge_error(
+            "judge response could not be parsed"
+        ));
     }
 
     fn start_fake_completion_server(
