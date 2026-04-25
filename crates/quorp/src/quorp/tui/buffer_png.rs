@@ -1,19 +1,105 @@
-//! Deterministic rasterization of a ratatui [`Buffer`] to PNG for visual regression and scoring.
+//! Deterministic rasterization of a ratatui [`Buffer`] to PNG for visual regression and review.
 //!
-//! Glyphs are approximated with per-codepoint dot patterns (not a real font) so output is stable
-//! across platforms and still changes when cell text or colors change.
+//! Screenshots must render readable text and behave like a terminal cell grid, not a centered
+//! proportional font. This module rasterizes each terminal cell from a fixed embedded bitmap
+//! atlas so screenshots stay deterministic across machines.
 
 use std::io::Cursor;
 use std::path::Path;
+use std::sync::OnceLock;
 
-use image::imageops::{resize, FilterType};
+use font8x8::{BASIC_FONTS, UnicodeFonts};
+use image::imageops::{FilterType, resize};
 use image::{ImageFormat, Rgba, RgbaImage};
 use ratatui::buffer::Buffer;
 use ratatui::style::Color;
+use std::collections::HashMap;
 use unicode_width::UnicodeWidthStr;
 
 const CELL_W: u32 = 8;
 const CELL_H: u32 = 16;
+const DEFAULT_PADDING_X: u32 = 0;
+const DEFAULT_PADDING_Y: u32 = 1;
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub struct CellRasterConfig {
+    pub cell_width: u32,
+    pub cell_height: u32,
+    pub padding_x: u32,
+    pub padding_y: u32,
+}
+
+impl Default for CellRasterConfig {
+    fn default() -> Self {
+        Self {
+            cell_width: CELL_W,
+            cell_height: CELL_H,
+            padding_x: DEFAULT_PADDING_X,
+            padding_y: DEFAULT_PADDING_Y,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub struct RenderedFrameArtifact {
+    pub png: RgbaImage,
+    pub plain_text_dump: String,
+}
+
+#[derive(Clone, Debug)]
+pub struct GlyphAtlas {
+    glyphs: HashMap<char, [u8; 8]>,
+}
+
+impl GlyphAtlas {
+    fn new() -> Self {
+        let mut glyphs = HashMap::new();
+        for codepoint in 0u8..=127u8 {
+            let character = char::from(codepoint);
+            if let Some(glyph) = BASIC_FONTS.get(character) {
+                glyphs.insert(character, glyph);
+            }
+        }
+        for (character, glyph) in manual_box_drawing_glyphs() {
+            glyphs.insert(character, glyph);
+        }
+        Self { glyphs }
+    }
+
+    pub fn glyph_for(&self, character: char) -> Option<&[u8; 8]> {
+        self.glyphs.get(&character)
+    }
+}
+
+fn glyph_atlas() -> &'static GlyphAtlas {
+    static GLYPH_ATLAS: OnceLock<GlyphAtlas> = OnceLock::new();
+    GLYPH_ATLAS.get_or_init(GlyphAtlas::new)
+}
+
+fn manual_box_drawing_glyphs() -> Vec<(char, [u8; 8])> {
+    vec![
+        ('│', [0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18, 0x18]),
+        ('┃', [0x3C, 0x3C, 0x3C, 0x3C, 0x3C, 0x3C, 0x3C, 0x3C]),
+        ('─', [0x00, 0x00, 0x00, 0x7E, 0x7E, 0x00, 0x00, 0x00]),
+        ('━', [0x00, 0x00, 0x7E, 0x7E, 0x7E, 0x7E, 0x00, 0x00]),
+        ('┌', [0x00, 0x00, 0x1E, 0x1E, 0x18, 0x18, 0x18, 0x18]),
+        ('┐', [0x00, 0x00, 0x78, 0x78, 0x18, 0x18, 0x18, 0x18]),
+        ('└', [0x18, 0x18, 0x18, 0x18, 0x1E, 0x1E, 0x00, 0x00]),
+        ('┘', [0x18, 0x18, 0x18, 0x18, 0x78, 0x78, 0x00, 0x00]),
+        ('├', [0x18, 0x18, 0x1E, 0x1E, 0x18, 0x18, 0x18, 0x18]),
+        ('┤', [0x18, 0x18, 0x78, 0x78, 0x18, 0x18, 0x18, 0x18]),
+        ('┬', [0x00, 0x00, 0x7E, 0x7E, 0x18, 0x18, 0x18, 0x18]),
+        ('┴', [0x18, 0x18, 0x18, 0x18, 0x7E, 0x7E, 0x00, 0x00]),
+        ('┼', [0x18, 0x18, 0x7E, 0x7E, 0x7E, 0x7E, 0x18, 0x18]),
+        ('╭', [0x00, 0x00, 0x0E, 0x1C, 0x18, 0x18, 0x18, 0x18]),
+        ('╮', [0x00, 0x00, 0x70, 0x38, 0x18, 0x18, 0x18, 0x18]),
+        ('╰', [0x18, 0x18, 0x18, 0x18, 0x1C, 0x0E, 0x00, 0x00]),
+        ('╯', [0x18, 0x18, 0x18, 0x18, 0x38, 0x70, 0x00, 0x00]),
+        ('▀', [0xFF, 0xFF, 0xFF, 0xFF, 0x00, 0x00, 0x00, 0x00]),
+        ('▄', [0x00, 0x00, 0x00, 0x00, 0xFF, 0xFF, 0xFF, 0xFF]),
+        ('█', [0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF, 0xFF]),
+    ]
+}
 
 /// Standard VGA-ish ANSI 0–7 (normal) and 8–15 (bright) RGB values.
 const ANSI16: [[u8; 3]; 16] = [
@@ -60,9 +146,12 @@ fn xterm_256_to_rgb(i: u8) -> [u8; 3] {
     }
 }
 
-fn color_to_rgb(color: Color) -> [u8; 3] {
+const DEFAULT_FG: [u8; 3] = [214, 214, 214];
+const DEFAULT_BG: [u8; 3] = [24, 24, 28];
+
+fn color_to_rgb(color: Color, reset_default: [u8; 3]) -> [u8; 3] {
     match color {
-        Color::Reset => [198, 198, 198],
+        Color::Reset => reset_default,
         Color::Black => [0, 0, 0],
         Color::Red => ANSI16[1],
         Color::Green => ANSI16[2],
@@ -91,26 +180,24 @@ fn brighten(mut rgb: [u8; 3], amount: f32) -> [u8; 3] {
     rgb
 }
 
-/// 4×4 patterns keyed by `code_point % 8` for non-space glyphs.
-const PATTERNS: [[u16; 4]; 8] = [
-    [0b1111, 0b1001, 0b1001, 0b1111],
-    [0b0110, 0b1111, 0b1111, 0b0110],
-    [0b1010, 0b0101, 0b1010, 0b0101],
-    [0b1100, 0b1100, 0b0011, 0b0011],
-    [0b0001, 0b0011, 0b0111, 0b1111],
-    [0b1111, 0b0111, 0b0011, 0b0001],
-    [0b0101, 0b1010, 0b0101, 0b1010],
-    [0b0011, 0b0110, 0b1100, 0b1001],
-];
+fn blend_pixel(img: &mut RgbaImage, x: u32, y: u32, fg: [u8; 3], alpha: f32) {
+    if x >= img.width() || y >= img.height() || alpha <= 0.0 {
+        return;
+    }
+    let existing = img.get_pixel(x, y).0;
+    let inv = 1.0 - alpha;
+    let red = (existing[0] as f32 * inv + fg[0] as f32 * alpha).round() as u8;
+    let green = (existing[1] as f32 * inv + fg[1] as f32 * alpha).round() as u8;
+    let blue = (existing[2] as f32 * inv + fg[2] as f32 * alpha).round() as u8;
+    img.put_pixel(x, y, Rgba([red, green, blue, 255]));
+}
 
-fn draw_glyph_for_symbol(
+fn fill_bg(
     img: &mut RgbaImage,
     origin_x: u32,
     origin_y: u32,
     cell_w: u32,
     cell_h: u32,
-    symbol: &str,
-    fg: [u8; 3],
     bg: [u8; 3],
 ) {
     for py in 0..cell_h {
@@ -122,40 +209,307 @@ fn draw_glyph_for_symbol(
             }
         }
     }
-    let ch = symbol.chars().next();
-    let Some(ch) = ch else {
-        return;
-    };
-    if ch == ' ' || ch == '\u{0}' {
+}
+
+fn draw_fallback_box(
+    img: &mut RgbaImage,
+    origin_x: u32,
+    origin_y: u32,
+    cell_w: u32,
+    cell_h: u32,
+    fg: [u8; 3],
+) {
+    if cell_w < 3 || cell_h < 3 {
         return;
     }
-    let idx = (ch as u32) as usize % PATTERNS.len();
-    let pat = PATTERNS[idx];
-    let ox = (cell_w.saturating_sub(4)) / 2;
-    let oy = (cell_h.saturating_sub(4)) / 2;
-    for row in 0..4u32 {
-        let bits = pat[row as usize];
-        for col in 0..4u32 {
-            if (bits >> (3 - col)) & 1 != 0 {
-                let px = origin_x + ox + col;
-                let py = origin_y + oy + row;
-                if px < img.width() && py < img.height() {
-                    img.put_pixel(px, py, Rgba([fg[0], fg[1], fg[2], 255]));
-                }
+    let left = origin_x + 1;
+    let right = origin_x + cell_w.saturating_sub(2);
+    let top = origin_y + 1;
+    let bottom = origin_y + cell_h.saturating_sub(2);
+    for x in left..=right {
+        blend_pixel(img, x, top, fg, 1.0);
+        blend_pixel(img, x, bottom, fg, 1.0);
+    }
+    for y in top..=bottom {
+        blend_pixel(img, left, y, fg, 1.0);
+        blend_pixel(img, right, y, fg, 1.0);
+    }
+}
+
+fn fill_pixel_rect(
+    img: &mut RgbaImage,
+    x0: u32,
+    y0: u32,
+    width: u32,
+    height: u32,
+    fg: [u8; 3],
+    alpha: f32,
+) {
+    for y in y0..y0.saturating_add(height) {
+        for x in x0..x0.saturating_add(width) {
+            blend_pixel(img, x, y, fg, alpha);
+        }
+    }
+}
+
+fn glyph_inner_rect(
+    origin_x: u32,
+    origin_y: u32,
+    cell_w: u32,
+    cell_h: u32,
+    config: CellRasterConfig,
+) -> (u32, u32, u32, u32) {
+    let padding_x = config.padding_x.min(cell_w.saturating_sub(1) / 2);
+    let padding_y = config.padding_y.min(cell_h.saturating_sub(1) / 2);
+    let inner_x = origin_x.saturating_add(padding_x);
+    let inner_y = origin_y.saturating_add(padding_y);
+    let inner_w = cell_w.saturating_sub(padding_x.saturating_mul(2)).max(1);
+    let inner_h = cell_h.saturating_sub(padding_y.saturating_mul(2)).max(1);
+    (inner_x, inner_y, inner_w, inner_h)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn draw_bitmap_glyph(
+    img: &mut RgbaImage,
+    origin_x: u32,
+    origin_y: u32,
+    cell_w: u32,
+    cell_h: u32,
+    config: CellRasterConfig,
+    glyph_rows: &[u8; 8],
+    fg: [u8; 3],
+) {
+    let (inner_x, inner_y, inner_w, inner_h) =
+        glyph_inner_rect(origin_x, origin_y, cell_w, cell_h, config);
+    for source_row in 0..8u32 {
+        let row_bits = glyph_rows[source_row as usize];
+        let y0 = inner_y + (source_row * inner_h) / 8;
+        let y1 = inner_y + ((source_row + 1) * inner_h) / 8;
+        let pixel_h = y1.saturating_sub(y0).max(1);
+        for source_col in 0..8u32 {
+            let bit = (row_bits >> source_col) & 1;
+            if bit == 0 {
+                continue;
             }
+            let glyph_col = source_col;
+            let x0 = inner_x + (glyph_col * inner_w) / 8;
+            let x1 = inner_x + ((glyph_col + 1) * inner_w) / 8;
+            let pixel_w = x1.saturating_sub(x0).max(1);
+            fill_pixel_rect(img, x0, y0, pixel_w, pixel_h, fg, 1.0);
+        }
+    }
+}
+
+fn draw_box_drawing(
+    img: &mut RgbaImage,
+    origin_x: u32,
+    origin_y: u32,
+    cell_w: u32,
+    cell_h: u32,
+    character: char,
+    fg: [u8; 3],
+) -> bool {
+    let mid_x = origin_x + cell_w / 2;
+    let mid_y = origin_y + cell_h / 2;
+    let left = origin_x + 1;
+    let right = origin_x + cell_w.saturating_sub(2);
+    let top = origin_y + 1;
+    let bottom = origin_y + cell_h.saturating_sub(2);
+    match character {
+        '│' | '┃' => {
+            for y in top..=bottom {
+                blend_pixel(img, mid_x, y, fg, 1.0);
+            }
+        }
+        '─' | '━' => {
+            for x in left..=right {
+                blend_pixel(img, x, mid_y, fg, 1.0);
+            }
+        }
+        '┌' | '┏' => {
+            for x in mid_x..=right {
+                blend_pixel(img, x, top, fg, 1.0);
+            }
+            for y in top..=mid_y {
+                blend_pixel(img, left, y, fg, 1.0);
+            }
+        }
+        '┐' | '┓' => {
+            for x in left..=mid_x {
+                blend_pixel(img, x, top, fg, 1.0);
+            }
+            for y in top..=mid_y {
+                blend_pixel(img, right, y, fg, 1.0);
+            }
+        }
+        '└' | '┗' => {
+            for x in mid_x..=right {
+                blend_pixel(img, x, bottom, fg, 1.0);
+            }
+            for y in mid_y..=bottom {
+                blend_pixel(img, left, y, fg, 1.0);
+            }
+        }
+        '┘' | '┛' => {
+            for x in left..=mid_x {
+                blend_pixel(img, x, bottom, fg, 1.0);
+            }
+            for y in mid_y..=bottom {
+                blend_pixel(img, right, y, fg, 1.0);
+            }
+        }
+        '├' | '┣' => {
+            for y in top..=bottom {
+                blend_pixel(img, left, y, fg, 1.0);
+            }
+            for x in left..=right {
+                blend_pixel(img, x, mid_y, fg, 1.0);
+            }
+        }
+        '┤' | '┫' => {
+            for y in top..=bottom {
+                blend_pixel(img, right, y, fg, 1.0);
+            }
+            for x in left..=right {
+                blend_pixel(img, x, mid_y, fg, 1.0);
+            }
+        }
+        '┬' | '┳' => {
+            for x in left..=right {
+                blend_pixel(img, x, top, fg, 1.0);
+            }
+            for y in top..=bottom {
+                blend_pixel(img, mid_x, y, fg, 1.0);
+            }
+        }
+        '┴' | '┻' => {
+            for x in left..=right {
+                blend_pixel(img, x, bottom, fg, 1.0);
+            }
+            for y in top..=bottom {
+                blend_pixel(img, mid_x, y, fg, 1.0);
+            }
+        }
+        '┼' | '╋' => {
+            for x in left..=right {
+                blend_pixel(img, x, mid_y, fg, 1.0);
+            }
+            for y in top..=bottom {
+                blend_pixel(img, mid_x, y, fg, 1.0);
+            }
+        }
+        _ => return false,
+    }
+    true
+}
+
+struct GlyphDrawArgs<'a> {
+    img: &'a mut RgbaImage,
+    origin_x: u32,
+    origin_y: u32,
+    cell_w: u32,
+    cell_h: u32,
+    config: CellRasterConfig,
+    symbol: &'a str,
+    fg: [u8; 3],
+}
+
+fn draw_glyph_for_symbol(args: GlyphDrawArgs<'_>) {
+    let GlyphDrawArgs {
+        img,
+        origin_x,
+        origin_y,
+        cell_w,
+        cell_h,
+        config,
+        symbol,
+        fg,
+    } = args;
+    let Some(character_count) = (!symbol.is_empty()).then_some(symbol.chars().count()) else {
+        return;
+    };
+    let per_char_w = (cell_w as f32 / character_count as f32).max(1.0);
+
+    for (index, character) in symbol.chars().enumerate() {
+        if character == ' ' || character == '\0' {
+            continue;
+        }
+        let char_origin_x = origin_x as f32 + per_char_w * index as f32;
+        let box_w = per_char_w;
+        if draw_box_drawing(
+            img,
+            char_origin_x.round() as u32,
+            origin_y,
+            box_w.round() as u32,
+            cell_h,
+            character,
+            fg,
+        ) {
+            continue;
+        }
+
+        if let Some(glyph_rows) = glyph_atlas().glyph_for(character) {
+            draw_bitmap_glyph(
+                img,
+                char_origin_x.round() as u32,
+                origin_y,
+                box_w.round() as u32,
+                cell_h,
+                config,
+                glyph_rows,
+                fg,
+            );
+        } else {
+            draw_fallback_box(
+                img,
+                char_origin_x.round() as u32,
+                origin_y,
+                box_w.round() as u32,
+                cell_h,
+                fg,
+            );
         }
     }
 }
 
 /// Rasterize the buffer using `CELL_W`×`CELL_H` pixels per terminal cell.
+#[allow(dead_code)]
 pub fn buffer_to_rgba(buffer: &Buffer) -> RgbaImage {
-    buffer_to_rgba_scaled(buffer, CELL_W, CELL_H)
+    render_frame_artifact(buffer, CellRasterConfig::default()).png
 }
 
 /// Rasterize with a custom cell size (width and height in pixels).
 pub fn buffer_to_rgba_scaled(buffer: &Buffer, cell_w: u32, cell_h: u32) -> RgbaImage {
-    let w = buffer.area.width as u32 * cell_w;
-    let h = buffer.area.height as u32 * cell_h;
+    render_frame_artifact(
+        buffer,
+        CellRasterConfig {
+            cell_width: cell_w,
+            cell_height: cell_h,
+            ..CellRasterConfig::default()
+        },
+    )
+    .png
+}
+
+pub fn buffer_to_plain_text_dump(buffer: &Buffer) -> String {
+    let mut out = String::new();
+    for y in 0..buffer.area.height {
+        for x in 0..buffer.area.width {
+            let symbol = buffer[(x, y)].symbol();
+            if symbol.is_empty() || symbol == "\0" {
+                out.push(' ');
+            } else {
+                out.push_str(symbol);
+            }
+        }
+        out.push('\n');
+    }
+    out
+}
+
+pub fn render_frame_artifact(buffer: &Buffer, config: CellRasterConfig) -> RenderedFrameArtifact {
+    let w = buffer.area.width as u32 * config.cell_width;
+    let h = buffer.area.height as u32 * config.cell_height;
     let mut img = RgbaImage::from_pixel(w, h, Rgba([0, 0, 0, 255]));
 
     for y in 0..buffer.area.height {
@@ -167,36 +521,51 @@ pub fn buffer_to_rgba_scaled(buffer: &Buffer, cell_w: u32, cell_h: u32) -> RgbaI
                 continue;
             }
             let sym = cell.symbol();
-            let sym_w = UnicodeWidthStr::width(sym).max(1).min(2) as u16;
-            let mut fg = color_to_rgb(cell.fg);
-            let bg = color_to_rgb(cell.bg);
+            let sym_w = UnicodeWidthStr::width(sym).clamp(1, 2) as u16;
+            let mut fg = color_to_rgb(cell.fg, DEFAULT_FG);
+            let bg = color_to_rgb(cell.bg, DEFAULT_BG);
             if cell.modifier.contains(ratatui::style::Modifier::BOLD) {
                 fg = brighten(fg, 0.15);
             }
 
-            let px0 = x as u32 * cell_w;
-            let py0 = y as u32 * cell_h;
-            let span_w = sym_w as u32 * cell_w;
-
-            for py in 0..cell_h {
-                for px in 0..span_w {
-                    let ix = px0 + px;
-                    let iy = py0 + py;
-                    if ix < w && iy < h {
-                        img.put_pixel(ix, iy, Rgba([bg[0], bg[1], bg[2], 255]));
-                    }
-                }
-            }
+            let px0 = x as u32 * config.cell_width;
+            let py0 = y as u32 * config.cell_height;
+            let span_w = sym_w as u32 * config.cell_width;
+            fill_bg(&mut img, px0, py0, span_w, config.cell_height, bg);
 
             if sym != " " && sym.chars().next().is_some() {
-                draw_glyph_for_symbol(&mut img, px0, py0, span_w, cell_h, sym, fg, bg);
+                draw_glyph_for_symbol(GlyphDrawArgs {
+                    img: &mut img,
+                    origin_x: px0,
+                    origin_y: py0,
+                    cell_w: span_w,
+                    cell_h: config.cell_height,
+                    config,
+                    symbol: sym,
+                    fg,
+                });
+                if cell.modifier.contains(ratatui::style::Modifier::BOLD) {
+                    draw_glyph_for_symbol(GlyphDrawArgs {
+                        img: &mut img,
+                        origin_x: px0.saturating_add(1),
+                        origin_y: py0,
+                        cell_w: span_w.saturating_sub(1).max(1),
+                        cell_h: config.cell_height,
+                        config,
+                        symbol: sym,
+                        fg,
+                    });
+                }
             }
 
             x += sym_w;
         }
     }
 
-    img
+    RenderedFrameArtifact {
+        png: img,
+        plain_text_dump: buffer_to_plain_text_dump(buffer),
+    }
 }
 
 /// Encode `RGBA8` as PNG bytes.
@@ -438,19 +807,36 @@ pub fn prismforge_likeness(candidate: &RgbaImage, reference: &RgbaImage) -> Pris
     let amber = [0xFFu8, 0xB2, 0x24];
 
     let (x, y, rw, rh) = roi_rect(w, h, 0.0, 0.025, 0.25, 0.95);
-    let p0 = palette_roi_closeness(&crop_roi(&c, x, y, rw, rh), &crop_roi(&r, x, y, rw, rh), emerald);
+    let p0 = palette_roi_closeness(
+        &crop_roi(&c, x, y, rw, rh),
+        &crop_roi(&r, x, y, rw, rh),
+        emerald,
+    );
     let (x, y, rw, rh) = roi_rect(w, h, 0.25, 0.025, 0.60, 0.60);
-    let p1 = palette_roi_closeness(&crop_roi(&c, x, y, rw, rh), &crop_roi(&r, x, y, rw, rh), violet);
+    let p1 = palette_roi_closeness(
+        &crop_roi(&c, x, y, rw, rh),
+        &crop_roi(&r, x, y, rw, rh),
+        violet,
+    );
     let (x, y, rw, rh) = roi_rect(w, h, 0.60, 0.025, 1.0, 0.95);
-    let p2 = palette_roi_closeness(&crop_roi(&c, x, y, rw, rh), &crop_roi(&r, x, y, rw, rh), cyan);
+    let p2 = palette_roi_closeness(
+        &crop_roi(&c, x, y, rw, rh),
+        &crop_roi(&r, x, y, rw, rh),
+        cyan,
+    );
     let (x, y, rw, rh) = roi_rect(w, h, 0.25, 0.55, 0.60, 0.95);
-    let p3 = palette_roi_closeness(&crop_roi(&c, x, y, rw, rh), &crop_roi(&r, x, y, rw, rh), amber);
+    let p3 = palette_roi_closeness(
+        &crop_roi(&c, x, y, rw, rh),
+        &crop_roi(&r, x, y, rw, rh),
+        amber,
+    );
 
     let palette_score = ((p0 + p1 + p2 + p3) / 4.0).clamp(0.0, 1.0);
 
     let status_bar_score = prismforge_status_score(&c, &r);
 
-    let composite = (layout_score * 0.35 + palette_score * 0.45 + status_bar_score * 0.20).clamp(0.0, 1.0);
+    let composite =
+        (layout_score * 0.35 + palette_score * 0.45 + status_bar_score * 0.20).clamp(0.0, 1.0);
 
     PrismScore {
         layout_score,
@@ -492,16 +878,84 @@ mod tests {
     use ratatui::layout::Rect;
     use ratatui::style::Color;
 
+    fn non_background_pixel_count(img: &RgbaImage, bg: [u8; 3]) -> usize {
+        img.pixels().filter(|pixel| pixel.0[0..3] != bg).count()
+    }
+
     #[test]
     fn buffer_png_smoke_single_cell() {
         let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
         buf[(0, 0)].set_symbol("X");
         buf[(0, 0)].fg = Color::Rgb(255, 0, 0);
         buf[(0, 0)].bg = Color::Rgb(0, 0, 255);
-        let img = buffer_to_rgba_scaled(&buf, 4, 4);
-        assert_eq!(img.dimensions(), (4, 4));
+        let img = buffer_to_rgba_scaled(&buf, 12, 18);
+        assert_eq!(img.dimensions(), (12, 18));
         let has_red_fg = img.pixels().any(|p| p.0[0] > 200 && p.0[2] < 100);
         assert!(has_red_fg, "expected some red foreground pixels");
+    }
+
+    #[test]
+    fn different_ascii_strings_render_distinct_images() {
+        let mut left = Buffer::empty(Rect::new(0, 0, 8, 1));
+        let mut right = Buffer::empty(Rect::new(0, 0, 8, 1));
+        for (index, character) in "XOXOX".chars().enumerate() {
+            left[(index as u16, 0)].set_char(character);
+            right[(index as u16, 0)].set_char(character);
+        }
+        right[(1, 0)].set_char('Z');
+        let left_img = buffer_to_rgba_scaled(&left, 10, 18);
+        let right_img = buffer_to_rgba_scaled(&right, 10, 18);
+        let mismatch = pixel_mismatch_fraction(&left_img, &right_img).expect("compare");
+        assert!(
+            mismatch > 0.01,
+            "expected readable text images to differ, got {mismatch}"
+        );
+    }
+
+    #[test]
+    fn box_drawing_glyphs_render_visible_lines() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
+        buf[(0, 0)].set_char('│');
+        buf[(0, 0)].fg = Color::Rgb(220, 220, 220);
+        buf[(0, 0)].bg = Color::Rgb(20, 20, 20);
+        let img = buffer_to_rgba_scaled(&buf, 12, 18);
+        assert!(
+            non_background_pixel_count(&img, [20, 20, 20]) > 5,
+            "expected visible vertical stroke for box-drawing glyph"
+        );
+    }
+
+    #[test]
+    fn unsupported_glyphs_use_visible_fallback() {
+        let mut buf = Buffer::empty(Rect::new(0, 0, 1, 1));
+        buf[(0, 0)].set_char('🧪');
+        buf[(0, 0)].fg = Color::Rgb(255, 255, 255);
+        buf[(0, 0)].bg = Color::Rgb(0, 0, 0);
+        let img = buffer_to_rgba_scaled(&buf, 12, 18);
+        assert!(
+            non_background_pixel_count(&img, [0, 0, 0]) > 8,
+            "expected visible fallback box for unsupported glyph"
+        );
+    }
+
+    #[test]
+    fn bold_text_renders_more_ink_than_regular_text() {
+        let mut regular = Buffer::empty(Rect::new(0, 0, 1, 1));
+        regular[(0, 0)].set_char('A');
+        regular[(0, 0)].fg = Color::Rgb(255, 255, 255);
+        regular[(0, 0)].bg = Color::Rgb(0, 0, 0);
+
+        let mut bold = regular.clone();
+        bold[(0, 0)].modifier = ratatui::style::Modifier::BOLD;
+
+        let regular_img = buffer_to_rgba_scaled(&regular, 12, 18);
+        let bold_img = buffer_to_rgba_scaled(&bold, 12, 18);
+        let regular_ink = non_background_pixel_count(&regular_img, [0, 0, 0]);
+        let bold_ink = non_background_pixel_count(&bold_img, [0, 0, 0]);
+        assert!(
+            bold_ink >= regular_ink,
+            "bold should render at least as much ink"
+        );
     }
 
     #[test]
@@ -512,21 +966,24 @@ mod tests {
         buf[(1, 0)].bg = Color::Rgb(40, 50, 60);
         let img = buffer_to_rgba_scaled(&buf, 2, 2);
         let png = rgba_to_png_bytes(&img).expect("encode");
-        let back = image::load_from_memory(&png)
-            .expect("decode")
-            .to_rgba8();
+        let back = image::load_from_memory(&png).expect("decode").to_rgba8();
         let frac = pixel_mismatch_fraction(&img, &back).expect("cmp");
         assert_eq!(frac, 0.0, "png roundtrip mismatch {frac}");
     }
 
     #[test]
     fn prismforge_all_black_scores_lower_than_self() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/visual/prismforge_target.png");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/visual/prismforge_target.png");
         if !path.exists() {
             return;
         }
         let reference = load_png_rgba(&path).expect("load prismforge target");
-        let black = RgbaImage::from_pixel(reference.width(), reference.height(), Rgba([0u8, 0, 0, 255]));
+        let black = RgbaImage::from_pixel(
+            reference.width(),
+            reference.height(),
+            Rgba([0u8, 0, 0, 255]),
+        );
         let s_black = prismforge_likeness(&black, &reference);
         let s_self = prismforge_likeness(&reference, &reference);
         assert!(
@@ -550,7 +1007,8 @@ mod tests {
 
     #[test]
     fn prismforge_reference_vs_self_is_high() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/visual/prismforge_target.png");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/visual/prismforge_target.png");
         if !path.exists() {
             return;
         }
@@ -562,7 +1020,8 @@ mod tests {
 
     #[test]
     fn prismforge_flipped_reference_lowers_layout() {
-        let path = Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures/visual/prismforge_target.png");
+        let path = Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/visual/prismforge_target.png");
         if !path.exists() {
             return;
         }

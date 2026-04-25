@@ -86,6 +86,60 @@ pub(crate) fn truncate_prefix_fit(text: &str, max_width: usize) -> String {
     text[..end_byte].to_string()
 }
 
+pub(crate) fn wrap_plain_lines(text: &str, max_width: usize) -> Vec<String> {
+    if max_width == 0 {
+        return vec![String::new()];
+    }
+    if text.is_empty() {
+        return vec![String::new()];
+    }
+
+    let mut wrapped = Vec::new();
+    for raw_line in text.split('\n') {
+        if raw_line.is_empty() {
+            wrapped.push(String::new());
+            continue;
+        }
+
+        let mut remaining = raw_line;
+        while !remaining.is_empty() {
+            let mut acc_width = 0usize;
+            let mut end_byte = 0usize;
+            for (byte_index, ch) in remaining.char_indices() {
+                let char_width = UnicodeWidthChar::width(ch).unwrap_or(0);
+                if acc_width + char_width > max_width {
+                    break;
+                }
+                acc_width += char_width;
+                end_byte = byte_index + ch.len_utf8();
+                if acc_width == max_width {
+                    break;
+                }
+            }
+
+            if end_byte == 0 {
+                let mut chars = remaining.chars();
+                if let Some(first_char) = chars.next() {
+                    let first_len = first_char.len_utf8();
+                    wrapped.push(remaining[..first_len].to_string());
+                    remaining = &remaining[first_len..];
+                } else {
+                    break;
+                }
+            } else {
+                wrapped.push(remaining[..end_byte].to_string());
+                remaining = &remaining[end_byte..];
+            }
+        }
+    }
+
+    if wrapped.is_empty() {
+        wrapped.push(String::new());
+    }
+
+    wrapped
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -109,5 +163,11 @@ mod tests {
         let s = truncate_middle_fit("crates/quorp_tui/src/chat.rs", 16);
         assert!(UnicodeWidthStr::width(s.as_str()) <= 16);
         assert!(s.contains('…'));
+    }
+
+    #[test]
+    fn wrap_plain_lines_respects_newlines_and_width() {
+        let wrapped = wrap_plain_lines("hello world\nabc", 5);
+        assert_eq!(wrapped, vec!["hello", " worl", "d", "abc"]);
     }
 }

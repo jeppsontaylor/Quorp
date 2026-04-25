@@ -1,3 +1,4 @@
+pub mod arc_cow;
 pub mod archive;
 pub mod command;
 pub mod fs;
@@ -13,6 +14,7 @@ pub mod shell;
 pub mod shell_builder;
 pub mod shell_env;
 pub mod size;
+pub mod support;
 #[cfg(any(test, feature = "test-support"))]
 pub mod test;
 pub mod time;
@@ -29,7 +31,7 @@ use std::{
 };
 use unicase::UniCase;
 
-pub use gpui_util::*;
+pub use support::*;
 
 pub use take_until::*;
 #[cfg(any(test, feature = "test-support"))]

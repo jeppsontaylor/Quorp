@@ -1,6 +1,6 @@
 use crossterm::event::{KeyCode, KeyModifiers};
 
-use crate::quorp::tui::app::Pane;
+use crate::quorp::tui::app::{Overlay, Pane};
 
 use super::harness::TuiTestHarness;
 
@@ -16,6 +16,7 @@ fn ctrl_h_from_editor_pane_focuses_file_tree() {
 fn ctrl_l_from_file_tree_returns_to_last_left_pane() {
     let mut h = TuiTestHarness::new(80, 24);
     h.key_press(KeyCode::Tab, KeyModifiers::NONE);
+    h.key_press(KeyCode::Char('g'), KeyModifiers::CONTROL);
     h.key_press(KeyCode::Tab, KeyModifiers::NONE);
     h.assert_focus(Pane::Chat);
     h.key_press(KeyCode::Char('h'), KeyModifiers::CONTROL);
@@ -37,6 +38,7 @@ fn ctrl_j_from_terminal_moves_to_chat() {
     let mut h = TuiTestHarness::new(80, 24);
     h.key_press(KeyCode::Char('j'), KeyModifiers::CONTROL);
     h.assert_focus(Pane::Terminal);
+    h.key_press(KeyCode::Char('g'), KeyModifiers::CONTROL);
     h.key_press(KeyCode::Char('j'), KeyModifiers::CONTROL);
     h.assert_focus(Pane::Chat);
 }
@@ -46,8 +48,10 @@ fn ctrl_k_from_terminal_moves_to_editor_pane() {
     let mut h = TuiTestHarness::new(80, 24);
     h.key_press(KeyCode::Char('j'), KeyModifiers::CONTROL);
     h.assert_focus(Pane::Terminal);
+    h.key_press(KeyCode::Char('g'), KeyModifiers::CONTROL);
     h.key_press(KeyCode::Char('k'), KeyModifiers::CONTROL);
-    h.assert_focus(Pane::EditorPane);
+    h.assert_focus(Pane::Terminal);
+    h.assert_overlay(Overlay::ActionDeck);
 }
 
 /// Full pane cycle via Tab, then ShiftTab back to origin.
@@ -57,10 +61,9 @@ fn full_pane_cycle_returns_to_origin() {
     h.assert_focus(Pane::EditorPane);
     h.key_press(KeyCode::Tab, KeyModifiers::NONE);
     h.assert_focus(Pane::Terminal);
+    h.key_press(KeyCode::Char('g'), KeyModifiers::CONTROL);
     h.key_press(KeyCode::Tab, KeyModifiers::NONE);
     h.assert_focus(Pane::Chat);
-    h.key_press(KeyCode::Tab, KeyModifiers::NONE);
-    h.assert_focus(Pane::Agent);
     h.key_press(KeyCode::Tab, KeyModifiers::NONE);
     h.assert_focus(Pane::FileTree);
     h.key_press(KeyCode::Tab, KeyModifiers::NONE);
@@ -69,11 +72,10 @@ fn full_pane_cycle_returns_to_origin() {
     h.key_press(KeyCode::Tab, KeyModifiers::SHIFT);
     h.assert_focus(Pane::FileTree);
     h.key_press(KeyCode::Tab, KeyModifiers::SHIFT);
-    h.assert_focus(Pane::Agent);
-    h.key_press(KeyCode::Tab, KeyModifiers::SHIFT);
     h.assert_focus(Pane::Chat);
     h.key_press(KeyCode::Tab, KeyModifiers::SHIFT);
     h.assert_focus(Pane::Terminal);
+    h.key_press(KeyCode::Char('g'), KeyModifiers::CONTROL);
     h.key_press(KeyCode::Tab, KeyModifiers::SHIFT);
     h.assert_focus(Pane::EditorPane);
 }
@@ -96,6 +98,8 @@ fn vim_j_then_k_roundtrip_from_editor() {
     h.assert_focus(Pane::EditorPane);
     h.key_press(KeyCode::Char('j'), KeyModifiers::CONTROL);
     h.assert_focus(Pane::Terminal);
+    h.key_press(KeyCode::Char('g'), KeyModifiers::CONTROL);
     h.key_press(KeyCode::Char('k'), KeyModifiers::CONTROL);
-    h.assert_focus(Pane::EditorPane);
+    h.assert_focus(Pane::Terminal);
+    h.assert_overlay(Overlay::ActionDeck);
 }

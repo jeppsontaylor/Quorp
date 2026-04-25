@@ -8,8 +8,8 @@ use crate::quorp::tui::TuiEvent;
 use crate::quorp::tui::app::Pane;
 use crate::quorp::tui::chat::{ChatMessage, ChatUiEvent};
 use crate::quorp::tui::editor_pane::BufferSnapshot;
-use crate::quorp::tui::file_tree::TreeChild;
 use crate::quorp::tui::file_tree::DirectoryListing;
+use crate::quorp::tui::file_tree::TreeChild;
 use crate::quorp::tui::path_index::{PathIndexSnapshot, path_entry_from_parts};
 
 use super::fixtures;
@@ -84,10 +84,9 @@ fn simulated_file_tree_listing_then_open_preview() {
     h.key_press(KeyCode::Enter, KeyModifiers::NONE);
     h.assert_focus(Pane::EditorPane);
     let tree_root = h.app.file_tree.root().to_path_buf();
-    h.app.editor_pane.sync_from_selected_file(
-        h.app.file_tree.selected_file(),
-        h.app.file_tree.root(),
-    );
+    h.app
+        .editor_pane
+        .sync_from_selected_file(h.app.file_tree.selected_file(), h.app.file_tree.root());
     h.app.editor_pane.ensure_active_loaded(&tree_root);
     let opened = h
         .app
@@ -135,10 +134,9 @@ fn playwright_open_file_from_tree_shows_fn_main_in_preview() {
         .selected_file()
         .expect("hello.rs selected")
         .to_path_buf();
-    h.app.editor_pane.sync_from_selected_file(
-        h.app.file_tree.selected_file(),
-        h.app.file_tree.root(),
-    );
+    h.app
+        .editor_pane
+        .sync_from_selected_file(h.app.file_tree.selected_file(), h.app.file_tree.root());
     h.app.editor_pane.ensure_active_loaded(&root);
     h.apply_backend_event(TuiEvent::BufferSnapshot(BufferSnapshot {
         path: Some(opened),
@@ -249,13 +247,16 @@ fn terminal_frame_event_renders_in_terminal_pane() {
     h.app.focused = Pane::Terminal;
     h.apply_backend_event(TuiEvent::TerminalFrame(
         crate::quorp::tui::bridge::TerminalFrame {
-            lines: vec![
+            snapshot: crate::quorp::tui::terminal_surface::TerminalSnapshot::from_lines(&[
                 Line::from("$ cargo build"),
                 Line::from(Span::styled(
                     "   Compiling quorp v0.231.0",
                     Style::default().fg(Color::Green),
                 )),
-            ],
+            ]),
+            cwd: Some(std::path::PathBuf::from("/Users/bentaylor/Code/quorp")),
+            shell_label: Some("zsh".to_string()),
+            window_title: None,
         },
     ));
     h.draw();
@@ -289,17 +290,25 @@ fn chat_stream_error_surfaces_in_transcript() {
         Some("Error: connection refused")
     );
     h.draw();
-    h.assert_buffer_contains("connection refused");
+    h.assert_buffer_contains("Error:");
+    h.assert_buffer_contains("connection");
 }
 
 #[test]
-fn agent_status_update_routes_to_agent_pane() {
+fn agent_status_update_routes_to_assistant_status() {
     let mut h = TuiTestHarness::new(120, 40);
-    h.app.focused = Pane::Agent;
+    h.app.focused = Pane::Chat;
     h.apply_backend_event(TuiEvent::BackendResponse(
-        crate::quorp::tui::bridge::BackendToTuiResponse::AgentStatusUpdate("building...".to_string()),
+        crate::quorp::tui::bridge::BackendToTuiResponse::AgentStatusUpdate(
+            "building...".to_string(),
+        ),
     ));
-    assert!(h.app.agent_pane.status_lines.contains(&"building...".to_string()));
+    assert!(
+        h.app
+            .agent_pane
+            .status_lines
+            .contains(&"building...".to_string())
+    );
     h.draw();
     h.assert_buffer_contains("building...");
 }
@@ -309,30 +318,36 @@ fn dead_response_variants_logged_not_panicked() {
     let mut h = TuiTestHarness::new(80, 24);
     // Inject a response that has no specific handler in apply_tui_backend_event except the catch-all
     h.apply_backend_event(TuiEvent::BackendResponse(
-        crate::quorp::tui::bridge::BackendToTuiResponse::AgentStatusUpdate("test".to_string()), 
+        crate::quorp::tui::bridge::BackendToTuiResponse::AgentStatusUpdate("test".to_string()),
     ));
     h.draw();
 }
 
 #[test]
-fn agent_enter_dispatches_start_action_request() {
+fn agent_enter_surfaces_honest_status_message() {
     let dir = fixtures::temp_project_with_files(&[]);
     let root = dir.path().to_path_buf();
-    let (mut app, _rx, mut bridge_rx) =
-        crate::quorp::tui::app::TuiApp::new_for_flow_tests_with_registry_chat(root.clone(), vec![], 0);
+    let (mut app, _rx, _bridge_rx) =
+        crate::quorp::tui::app::TuiApp::new_for_flow_tests_with_registry_chat(
+            root.clone(),
+            vec![],
+            0,
+        );
     app.focused = Pane::Agent;
-    
+
     let _ = app.handle_event(crossterm::event::Event::Key(
-        crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Enter, crossterm::event::KeyModifiers::NONE)
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
     ));
-    
-    match bridge_rx.try_next() {
-        Ok(Some(req)) => {
-            assert!(matches!(req, crate::quorp::tui::bridge::TuiToBackendRequest::StartAgentAction(_)));
-        }
-        Ok(None) => println!("channel closed?"),
-        Err(e) => println!("channel empty: e = {:?}", e),
-    }
+
+    assert!(
+        app.agent_pane
+            .status_lines
+            .iter()
+            .any(|line| line.contains("Launch autonomous runs from the Assistant pane"))
+    );
     app.leak_runtime_for_test_exit();
 }
 
@@ -340,17 +355,26 @@ fn agent_enter_dispatches_start_action_request() {
 fn editor_pane_respects_vim_normal_mode_keys() {
     let mut h = TuiTestHarness::new(80, 24);
     h.app.focused = Pane::EditorPane;
-    
+
     // In Editor, 'Ctrl-l' switches to Chat (right_pane)
-    h.key_press(crossterm::event::KeyCode::Char('l'), crossterm::event::KeyModifiers::CONTROL);
+    h.key_press(
+        crossterm::event::KeyCode::Char('l'),
+        crossterm::event::KeyModifiers::CONTROL,
+    );
     assert_eq!(h.app.focused, Pane::Chat);
-    
+
     // In Chat, 'Ctrl-h' switches to the left sidebar (FileTree)
-    h.key_press(crossterm::event::KeyCode::Char('h'), crossterm::event::KeyModifiers::CONTROL);
+    h.key_press(
+        crossterm::event::KeyCode::Char('h'),
+        crossterm::event::KeyModifiers::CONTROL,
+    );
     assert_eq!(h.app.focused, Pane::FileTree);
-    
+
     // In FileTree, 'Ctrl-l' restores the last_left_pane (which was Chat)
-    h.key_press(crossterm::event::KeyCode::Char('l'), crossterm::event::KeyModifiers::CONTROL);
+    h.key_press(
+        crossterm::event::KeyCode::Char('l'),
+        crossterm::event::KeyModifiers::CONTROL,
+    );
     assert_eq!(h.app.focused, Pane::Chat);
 }
 
@@ -359,10 +383,16 @@ fn editor_three_tabs_switch_preserves_content() {
     let mut h = TuiTestHarness::new(80, 24);
     let root = std::path::Path::new("/test");
     // Tab length max is handled in EditorPane logic, we just open files
-    h.app.editor_pane.sync_tree_selection(Some(std::path::Path::new("/a.rs")), root);
-    h.app.editor_pane.sync_tree_selection(Some(std::path::Path::new("/b.rs")), root);
-    h.app.editor_pane.sync_tree_selection(Some(std::path::Path::new("/c.rs")), root);
-    
+    h.app
+        .editor_pane
+        .sync_tree_selection(Some(std::path::Path::new("/a.rs")), root);
+    h.app
+        .editor_pane
+        .sync_tree_selection(Some(std::path::Path::new("/b.rs")), root);
+    h.app
+        .editor_pane
+        .sync_tree_selection(Some(std::path::Path::new("/c.rs")), root);
+
     // There are 4 tabs now (index 0 is the default empty tab)
     h.app.editor_pane.activate_file_tab(1, root);
     assert_eq!(h.app.editor_pane.active_tab_index(), 1);
@@ -375,22 +405,29 @@ fn terminal_enter_after_closed_sends_resize_to_restart() {
     let dir = fixtures::temp_project_with_files(&[]);
     let root = dir.path().to_path_buf();
     let (mut app, _rx, mut bridge_rx) =
-        crate::quorp::tui::app::TuiApp::new_for_flow_tests_with_registry_chat(root.clone(), vec![], 0);
+        crate::quorp::tui::app::TuiApp::new_for_flow_tests_with_registry_chat(
+            root.clone(),
+            vec![],
+            0,
+        );
     app.focused = Pane::Terminal;
     app.apply_tui_backend_event(TuiEvent::TerminalClosed);
-    assert_eq!(app.terminal.pty_exited, true);
+    assert!(app.terminal.pty_exited);
 
     let _ = app.handle_event(crossterm::event::Event::Key(
-        crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Enter, crossterm::event::KeyModifiers::NONE)
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Enter,
+            crossterm::event::KeyModifiers::NONE,
+        ),
     ));
-    
-    match bridge_rx.try_next() {
-        Ok(Some(req)) => {
-            assert!(matches!(req, crate::quorp::tui::bridge::TuiToBackendRequest::TerminalResize { .. }));
-        }
-        Ok(None) => println!("channel closed?"),
-        Err(e) => println!("channel empty: e = {:?}", e),
-    }
+
+    let req = bridge_rx
+        .try_recv()
+        .expect("expected terminal restart resize request");
+    assert!(matches!(
+        req,
+        crate::quorp::tui::bridge::TuiToBackendRequest::TerminalResize { .. }
+    ));
 }
 
 #[test]
@@ -398,20 +435,27 @@ fn terminal_ctrl_c_sends_keystroke() {
     let dir = fixtures::temp_project_with_files(&[]);
     let root = dir.path().to_path_buf();
     let (mut app, _rx, mut bridge_rx) =
-        crate::quorp::tui::app::TuiApp::new_for_flow_tests_with_registry_chat(root.clone(), vec![], 0);
+        crate::quorp::tui::app::TuiApp::new_for_flow_tests_with_registry_chat(
+            root.clone(),
+            vec![],
+            0,
+        );
     app.focused = Pane::Terminal;
 
     let _ = app.handle_event(crossterm::event::Event::Key(
-        crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char('c'), crossterm::event::KeyModifiers::CONTROL)
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('c'),
+            crossterm::event::KeyModifiers::CONTROL,
+        ),
     ));
-    
-    match bridge_rx.try_next() {
-        Ok(Some(req)) => {
-            assert!(matches!(req, crate::quorp::tui::bridge::TuiToBackendRequest::TerminalKeystroke(_)));
-        }
-        Ok(None) => println!("channel closed?"),
-        Err(e) => println!("channel empty: e = {:?}", e),
-    }
+
+    let req = bridge_rx
+        .try_recv()
+        .expect("expected terminal ctrl-c keystroke request");
+    assert!(matches!(
+        req,
+        crate::quorp::tui::bridge::TuiToBackendRequest::TerminalKeystroke(_)
+    ));
     app.leak_runtime_for_test_exit();
 }
 
@@ -420,23 +464,33 @@ fn terminal_printable_key_sends_input_bytes() {
     let dir = fixtures::temp_project_with_files(&[]);
     let root = dir.path().to_path_buf();
     let (mut app, _rx, mut bridge_rx) =
-        crate::quorp::tui::app::TuiApp::new_for_flow_tests_with_registry_chat(root.clone(), vec![], 0);
+        crate::quorp::tui::app::TuiApp::new_for_flow_tests_with_registry_chat(
+            root.clone(),
+            vec![],
+            0,
+        );
     app.focused = Pane::Terminal;
 
     let _ = app.handle_event(crossterm::event::Event::Key(
-        crossterm::event::KeyEvent::new(crossterm::event::KeyCode::Char('a'), crossterm::event::KeyModifiers::NONE)
+        crossterm::event::KeyEvent::new(
+            crossterm::event::KeyCode::Char('a'),
+            crossterm::event::KeyModifiers::NONE,
+        ),
     ));
-    
-    match bridge_rx.try_next() {
-        Ok(Some(req)) => {
-            if let crate::quorp::tui::bridge::TuiToBackendRequest::TerminalKeystroke(ks) = req {
-                assert_eq!(ks.key, "a");
-            } else {
-                panic!("Expected TerminalKeystroke(a), got something else: {:?}", req);
-            }
+
+    match bridge_rx
+        .try_recv()
+        .expect("expected terminal printable keystroke request")
+    {
+        crate::quorp::tui::bridge::TuiToBackendRequest::TerminalKeystroke(ks) => {
+            assert_eq!(ks.key, "a");
         }
-        Ok(None) => println!("channel closed?"),
-        Err(e) => println!("channel empty: e = {:?}", e),
+        req => {
+            panic!(
+                "Expected TerminalKeystroke(a), got something else: {:?}",
+                req
+            );
+        }
     }
     println!("test terminal input complete!");
     app.leak_runtime_for_test_exit();
@@ -459,7 +513,9 @@ fn screenshot_editor_with_syntax_highlighting() {
     let path = root.join("styled.rs");
     let mut h = TuiTestHarness::new_with_backend_state(120, 40, root.clone());
     h.app.focused = Pane::EditorPane;
-    h.app.editor_pane.sync_tree_selection(Some(path.as_path()), &root);
+    h.app
+        .editor_pane
+        .sync_tree_selection(Some(path.as_path()), &root);
     h.app.editor_pane.ensure_active_loaded(&root);
     h.apply_backend_event(TuiEvent::BufferSnapshot(BufferSnapshot {
         path: Some(path),
@@ -487,13 +543,16 @@ fn screenshot_terminal_with_ansi_output() {
     h.app.focused = Pane::Terminal;
     h.apply_backend_event(TuiEvent::TerminalFrame(
         crate::quorp::tui::bridge::TerminalFrame {
-            lines: vec![
+            snapshot: crate::quorp::tui::terminal_surface::TerminalSnapshot::from_lines(&[
                 Line::from("$ cargo build"),
                 Line::from(Span::styled(
                     "   Compiling quorp v0.231.0",
                     Style::default().fg(Color::Green),
                 )),
-            ],
+            ]),
+            cwd: Some(std::path::PathBuf::from("/Users/bentaylor/Code/quorp")),
+            shell_label: Some("zsh".to_string()),
+            window_title: None,
         },
     ));
     h.draw();

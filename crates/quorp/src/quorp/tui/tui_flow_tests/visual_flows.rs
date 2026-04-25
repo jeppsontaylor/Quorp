@@ -10,7 +10,7 @@ use super::harness::TuiTestHarness;
 fn welcome_fixture_buffer_contains_project_hint() {
     let mut h = TuiTestHarness::new(120, 40);
     h.draw();
-    h.assert_buffer_contains("/fixture/project");
+    h.assert_buffer_contains("fixture_project");
 }
 
 #[test]
@@ -19,7 +19,7 @@ fn harness_resize_keeps_status_bar_coherent() {
     h.resize(120, 40);
     h.app.focused = Pane::EditorPane;
     h.draw();
-    h.assert_status_contains("Mode: Code");
+    h.assert_status_contains("Mode: Preview");
 }
 
 #[test]
@@ -40,5 +40,5 @@ fn resize_redraws_all_panes_without_panic() {
     h.resize(200, 60);
     h.draw();
     h.assert_status_contains("Mode:");
-    h.assert_buffer_contains("/fixture/project");
+    h.assert_buffer_contains("fixture_project");
 }

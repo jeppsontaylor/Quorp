@@ -1,0 +1,24 @@
+{
+  "dataset": "user2f86/rustbench",
+  "split": "train",
+  "instance_id": "tokio-rs__axum-529",
+  "repo": "tokio-rs/axum",
+  "base_commit": "f9a437d0813c0e2f784ca90eccccb4fbad9126cb",
+  "version": "0.3",
+  "issue_url": "https://github.com/tokio-rs/axum/issues/488",
+  "pr_url": "https://github.com/tokio-rs/axum/pull/529",
+  "evaluate_command": "cargo test --quiet -p axum --lib routing::tests::",
+  "expected_files_touched": [
+    "axum/CHANGELOG.md",
+    "axum/src/docs/routing/fallback.md",
+    "axum/src/docs/routing/merge.md",
+    "axum/src/docs/routing/nest.md",
+    "axum/src/routing/mod.rs"
+  ],
+  "fail_to_pass": [
+    "routing::tests::merging_routers_with_fallbacks_panics - should panic",
+    "routing::tests::nesting_router_with_fallbacks_panics - should panic"
+  ],
+  "pass_to_pass_count": 198,
+  "hints_text": "\ud83d\udc4d for panicking. Silently discarding a fallback service will almost definitely end up causing issue for someone. "
+}

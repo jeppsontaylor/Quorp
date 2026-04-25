@@ -1,4 +1,5 @@
 use crate::quorp::tui::app::{Pane, SplitterVisualState};
+use crate::quorp::tui::shell::ShellGeometry;
 use crate::quorp::tui::theme::Theme;
 use crate::quorp::tui::workbench;
 
@@ -10,7 +11,7 @@ fn prism_vertical_split_center(h: &mut TuiTestHarness) -> (u16, u16) {
     // DFS order: root vertical (editor stack | chat) first, then horizontal (editor | terminal).
     let div = layout
         .splitters
-        .get(0)
+        .first()
         .expect("expected PrismForge vertical splitter at index 0");
     (
         div.x,
@@ -21,20 +22,25 @@ fn prism_vertical_split_center(h: &mut TuiTestHarness) -> (u16, u16) {
 #[test]
 fn clicks_focus_code_terminal_and_chat_regions() {
     let mut h = TuiTestHarness::new(232, 64);
+    h.app.terminal_dock_open = true;
+    h.app.explorer_collapsed = false;
     h.draw();
+    let full = *h.buffer().area();
+    let state = h.app.shell_state_snapshot(full);
+    let geometry = ShellGeometry::for_state(full, &state);
+    let explorer = geometry.explorer.expect("explorer");
+    let dock = geometry.dock.expect("terminal dock");
+    let center = geometry.center;
 
-    h.app.focused = Pane::EditorPane;
-    h.mouse_left_down(10, 10);
+    h.app.focused = Pane::Chat;
+    h.mouse_left_down(explorer.x + 2, explorer.y + 2);
     h.assert_focus(Pane::FileTree);
 
-    h.mouse_left_down(50, 5);
-    h.assert_focus(Pane::EditorPane);
-
-    h.mouse_left_down(50, 30);
-    h.assert_focus(Pane::Terminal);
-
-    h.mouse_left_down(150, 30);
+    h.mouse_left_down(center.x + 2, center.y + 2);
     h.assert_focus(Pane::Chat);
+
+    h.mouse_left_down(dock.x + 2, dock.y + 2);
+    h.assert_focus(Pane::Terminal);
 }
 
 #[test]

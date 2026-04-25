@@ -1,5 +1,5 @@
 [package]
-name = "ztracing"
+name = "quorp_tracing"
 version = "0.1.0"
 edition.workspace = true
 publish.workspace = true
@@ -12,7 +12,7 @@ workspace = true
 tracy = ["tracing-tracy", "tracy-client"]
 
 [dependencies]
-zlog.workspace = true
+quorp_log.workspace = true
 tracing.workspace = true
 
 tracing-subscriber = "0.3.22"

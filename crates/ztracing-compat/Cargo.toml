@@ -1,0 +1,16 @@
+[package]
+name = "ztracing"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lints]
+workspace = true
+
+[features]
+default = []
+tracy = ["quorp_tracing/tracy"]
+
+[dependencies]
+quorp_tracing.workspace = true

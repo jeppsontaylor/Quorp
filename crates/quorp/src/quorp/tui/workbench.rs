@@ -53,22 +53,31 @@ pub struct WorkbenchLayout {
 pub fn default_core_tui_tree() -> WorkspaceNode {
     WorkspaceNode::Split {
         axis: Axis::Vertical,
-        ratio_bp: 3560,
+        ratio_bp: 7000,
         divider: 1,
         a: Box::new(WorkspaceNode::Split {
             axis: Axis::Horizontal,
-            ratio_bp: 1700,
-            divider: 0,
+            ratio_bp: 7800,
+            divider: 1,
             a: Box::new(WorkspaceNode::Leaf(LeafId(1))),
             b: Box::new(WorkspaceNode::Leaf(LeafId(2))),
         }),
-        b: Box::new(WorkspaceNode::Split {
-            axis: Axis::Horizontal,
-            ratio_bp: 7500,
-            divider: 1,
-            a: Box::new(WorkspaceNode::Leaf(LeafId(3))),
-            b: Box::new(WorkspaceNode::Leaf(LeafId(4))),
-        }),
+        b: Box::new(WorkspaceNode::Leaf(LeafId(3))),
+    }
+}
+
+pub fn compact_workspace_tree(metrics: &Metrics) -> WorkspaceNode {
+    let terminal_height = metrics.default_terminal_height.clamp(8u16, 16u16);
+    let total_height = 24u16;
+    let usable = total_height.saturating_sub(1);
+    let top_height = usable.saturating_sub(terminal_height);
+    let ratio_bp = ratio_bp_for_left_segment(usable, top_height);
+    WorkspaceNode::Split {
+        axis: Axis::Horizontal,
+        ratio_bp,
+        divider: 1,
+        a: Box::new(WorkspaceNode::Leaf(LeafId(1))),
+        b: Box::new(WorkspaceNode::Leaf(LeafId(2))),
     }
 }
 
@@ -87,7 +96,9 @@ pub fn clamp_prismforge_horizontal_triple(
     explorer_divider: u16,
 ) -> (u16, u16) {
     let explorer = explorer_desired.clamp(PRISMFORGE_EXPLORER_MIN, PRISMFORGE_EXPLORER_MAX);
-    let before_workspace = activity_w.saturating_add(explorer).saturating_add(explorer_divider);
+    let before_workspace = activity_w
+        .saturating_add(explorer)
+        .saturating_add(explorer_divider);
     let workspace_w = full_width.saturating_sub(before_workspace);
     (explorer, workspace_w)
 }
@@ -98,7 +109,10 @@ fn ratio_bp_for_left_segment(usable: u16, left_cols: u16) -> u16 {
     }
     let left = (left_cols.min(usable)) as u32;
     let u = usable as u32;
-    let numerator = left.saturating_mul(10000).saturating_sub(5000).saturating_add(u - 1);
+    let numerator = left
+        .saturating_mul(10000)
+        .saturating_sub(5000)
+        .saturating_add(u - 1);
     (numerator / u).min(65535) as u16
 }
 
@@ -110,8 +124,7 @@ pub fn clamp_prismforge_chat_cols(workspace_cols: u16, chat_desired: u16) -> u16
         return PRISMFORGE_CHAT_MIN;
     }
     let desired = chat_desired.clamp(PRISMFORGE_CHAT_MIN, PRISMFORGE_CHAT_MAX);
-    let min_usable_for_center_rule =
-        PRISMFORGE_CENTER_MIN.saturating_add(PRISMFORGE_CHAT_MIN);
+    let min_usable_for_center_rule = PRISMFORGE_CENTER_MIN.saturating_add(PRISMFORGE_CHAT_MIN);
     if usable >= min_usable_for_center_rule {
         let mut chat = desired.min(usable.saturating_sub(1));
         let left = usable.saturating_sub(chat);
@@ -164,13 +177,7 @@ pub fn prismforge_tree_with_ratios(
             a: Box::new(WorkspaceNode::Leaf(LeafId(1))),
             b: Box::new(WorkspaceNode::Leaf(LeafId(2))),
         }),
-        b: Box::new(WorkspaceNode::Split {
-            axis: Axis::Horizontal,
-            ratio_bp: 7500,
-            divider: h_div,
-            a: Box::new(WorkspaceNode::Leaf(LeafId(3))),
-            b: Box::new(WorkspaceNode::Leaf(LeafId(4))),
-        }),
+        b: Box::new(WorkspaceNode::Leaf(LeafId(3))),
     }
 }
 
@@ -208,7 +215,12 @@ pub fn expand_splitter_hit_rect(div: Rect) -> Rect {
 /// DFS order matches [`collect_leaves`]: push divider, recurse `a`, recurse `b`.
 pub fn set_splitter_ratio_bp(tree: &mut WorkspaceNode, target_index: usize, ratio_bp: u16) -> bool {
     let mut index = 0usize;
-    set_splitter_ratio_bp_inner(tree, target_index, clamp_splitter_ratio_bp(ratio_bp), &mut index)
+    set_splitter_ratio_bp_inner(
+        tree,
+        target_index,
+        clamp_splitter_ratio_bp(ratio_bp),
+        &mut index,
+    )
 }
 
 fn set_splitter_ratio_bp_inner(
@@ -320,7 +332,10 @@ pub fn prismforge_ratios_from_tree(node: &WorkspaceNode) -> (u16, u16) {
             _ => (*v, 5000),
         },
         _ => {
-            let t = prismforge_tree_for_workspace(Rect::new(0, 0, 85, 38), &crate::quorp::tui::theme::Theme::prism_forge().metrics);
+            let t = prismforge_tree_for_workspace(
+                Rect::new(0, 0, 85, 38),
+                &crate::quorp::tui::theme::Theme::prism_forge().metrics,
+            );
             prismforge_ratios_from_tree(&t)
         }
     }
@@ -398,7 +413,10 @@ pub fn ratio_bp_from_drag_position(
 
 /// PrismForge tree for a **120×40** shell (`workspace` **85×38** with `Theme::prism_forge()` metrics).
 pub fn default_prismforge_tree() -> WorkspaceNode {
-    prismforge_tree_for_workspace(Rect::new(0, 0, 85, 38), &crate::quorp::tui::theme::Theme::prism_forge().metrics)
+    prismforge_tree_for_workspace(
+        Rect::new(0, 0, 85, 38),
+        &crate::quorp::tui::theme::Theme::prism_forge().metrics,
+    )
 }
 
 pub fn compute_shell(full: Rect, metrics: &Metrics) -> ShellRects {
@@ -480,12 +498,7 @@ pub fn leaf_internal_rects(leaf_rect: Rect, leaf_id: LeafId, metrics: &Metrics) 
     let content_h = leaf_rect.height.saturating_sub(tab_h);
     let content_w = leaf_rect.width.saturating_sub(scrollbar_w);
 
-    let scrollbar = Rect::new(
-        leaf_rect.x + content_w,
-        content_y,
-        scrollbar_w,
-        content_h,
-    );
+    let scrollbar = Rect::new(leaf_rect.x + content_w, content_y, scrollbar_w, content_h);
 
     match leaf_id {
         LeafId(3) => {
@@ -494,12 +507,7 @@ pub fn leaf_internal_rects(leaf_rect: Rect, leaf_id: LeafId, metrics: &Metrics) 
             let body_h = content_h.saturating_sub(banner_h + composer_h);
 
             let banner = Rect::new(leaf_rect.x, content_y, content_w, banner_h);
-            let body = Rect::new(
-                leaf_rect.x,
-                content_y + banner_h,
-                content_w,
-                body_h,
-            );
+            let body = Rect::new(leaf_rect.x, content_y + banner_h, content_w, body_h);
             let composer = Rect::new(
                 leaf_rect.x,
                 content_y + banner_h + body_h,
@@ -517,7 +525,12 @@ pub fn leaf_internal_rects(leaf_rect: Rect, leaf_id: LeafId, metrics: &Metrics) 
         }
         LeafId(2) => {
             let panel_h = metrics.header_height;
-            let body = Rect::new(leaf_rect.x, content_y, content_w, content_h.saturating_sub(panel_h));
+            let body = Rect::new(
+                leaf_rect.x,
+                content_y,
+                content_w,
+                content_h.saturating_sub(panel_h),
+            );
             let panel_tabs = Rect::new(
                 leaf_rect.x,
                 content_y + content_h.saturating_sub(panel_h),
@@ -606,11 +619,17 @@ mod tests {
     #[test]
     fn shell_geometry_correct() {
         let (_, shell) = golden_shell();
-        assert_eq!(shell.titlebar.height, 2, "titlebar should be 2 rows");
+        assert_eq!(shell.titlebar.height, 1, "titlebar should be 1 row");
         assert_eq!(shell.statusbar.height, 1, "statusbar should be 1 row");
         assert_eq!(shell.activity.width, 5, "activity rail should be 5 cols");
-        assert_eq!(shell.explorer_header.width, 23, "explorer header should be 23 cols");
-        assert_eq!(shell.explorer_body.width, 23, "explorer body should be 23 cols");
+        assert_eq!(
+            shell.explorer_header.width, 23,
+            "explorer header should be 23 cols"
+        );
+        assert_eq!(
+            shell.explorer_body.width, 23,
+            "explorer body should be 23 cols"
+        );
         assert_eq!(shell.explorer_divider.width, 1, "divider should be 1 col");
         assert_eq!(
             shell.workspace.width,
@@ -621,28 +640,28 @@ mod tests {
     }
 
     #[test]
-    fn core_tui_left_leaf_72_cols() {
+    fn core_tui_main_leaf_is_primary_width() {
         let (_, shell) = golden_shell();
         let tree = default_core_tui_tree();
         let layout = compute_workbench(shell.workspace, &tree, &golden_metrics());
         let left_editor = layout.leaves.get(&LeafId(1)).expect("leaf 1");
         let left_total_w = left_editor.tabs.width + left_editor.scrollbar.width;
         assert!(
-            (71..=73).contains(&left_total_w),
-            "left leaf total width should be ~72, got {left_total_w}"
+            (139..=143).contains(&left_total_w),
+            "main leaf total width should be ~141, got {left_total_w}"
         );
     }
 
     #[test]
-    fn core_tui_right_leaf_130_cols() {
+    fn core_tui_assistant_leaf_is_secondary_width() {
         let (_, shell) = golden_shell();
         let tree = default_core_tui_tree();
         let layout = compute_workbench(shell.workspace, &tree, &golden_metrics());
         let right = layout.leaves.get(&LeafId(3)).expect("leaf 3");
         let right_total_w = right.tabs.width;
         assert!(
-            (129..=131).contains(&right_total_w),
-            "right leaf should be ~130 cols, got {right_total_w}"
+            (59..=63).contains(&right_total_w),
+            "assistant leaf should be ~61 cols, got {right_total_w}"
         );
     }
 
@@ -666,20 +685,35 @@ mod tests {
         let tree = default_core_tui_tree();
         let layout = compute_workbench(shell.workspace, &tree, &golden_metrics());
         let terminal = layout.leaves.get(&LeafId(2)).expect("leaf 2");
-        assert!(terminal.panel_tabs.is_some(), "terminal leaf should have panel_tabs");
-        assert!(terminal.composer.is_none(), "terminal leaf should not have composer");
-        assert!(terminal.banner.is_none(), "terminal leaf should not have banner");
+        assert!(
+            terminal.panel_tabs.is_some(),
+            "terminal leaf should have panel_tabs"
+        );
+        assert!(
+            terminal.composer.is_none(),
+            "terminal leaf should not have composer"
+        );
+        assert!(
+            terminal.banner.is_none(),
+            "terminal leaf should not have banner"
+        );
     }
 
     #[test]
-    fn leaf_rects_agent_has_banner_and_composer() {
+    fn leaf_rects_chat_has_banner_and_composer() {
         let (_, shell) = golden_shell();
         let tree = default_core_tui_tree();
         let layout = compute_workbench(shell.workspace, &tree, &golden_metrics());
-        let agent = layout.leaves.get(&LeafId(3)).expect("leaf 3");
-        assert!(agent.banner.is_some(), "agent leaf should have banner");
-        assert!(agent.composer.is_some(), "agent leaf should have composer");
-        assert!(agent.panel_tabs.is_none(), "agent leaf should not have panel_tabs");
+        let chat = layout.leaves.get(&LeafId(3)).expect("leaf 3");
+        assert!(chat.banner.is_some(), "assistant leaf should have banner");
+        assert!(
+            chat.composer.is_some(),
+            "assistant leaf should have composer"
+        );
+        assert!(
+            chat.panel_tabs.is_none(),
+            "assistant leaf should not have panel tabs"
+        );
     }
 
     fn prism_metrics() -> Metrics {

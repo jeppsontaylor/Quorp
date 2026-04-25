@@ -1,7 +1,6 @@
 use std::path::PathBuf;
 
 use crossterm::event::{KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
-use ratatui::text::Line;
 
 use crate::quorp::tui::tui_backend::TuiBackend;
 
@@ -26,13 +25,10 @@ pub enum TuiToBackendRequest {
     CloseBuffer,
     TerminalKeystroke(TuiKeystroke),
     TerminalInput(Vec<u8>),
-    TerminalResize {
-        cols: u16,
-        rows: u16,
-    },
+    TerminalResize { cols: u16, rows: u16 },
+    TerminalFocusChanged { focused: bool },
     TerminalScrollPageUp,
     TerminalScrollPageDown,
-    StartAgentAction(String),
 }
 
 pub struct UnifiedBridgeTuiBackend {
@@ -73,7 +69,10 @@ pub enum BackendToTuiResponse {
 
 #[derive(Debug, Clone)]
 pub struct TerminalFrame {
-    pub lines: Vec<Line<'static>>,
+    pub snapshot: crate::quorp::tui::terminal_surface::TerminalSnapshot,
+    pub cwd: Option<PathBuf>,
+    pub shell_label: Option<String>,
+    pub window_title: Option<String>,
 }
 
 pub fn crossterm_key_event_to_keystroke(key: &KeyEvent) -> Option<TuiKeystroke> {

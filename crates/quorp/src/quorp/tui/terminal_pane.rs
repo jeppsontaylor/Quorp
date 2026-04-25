@@ -8,13 +8,31 @@ use ratatui::layout::Rect;
 use ratatui::style::{Color, Style};
 use ratatui::text::Line;
 use ratatui::widgets::Paragraph;
+use std::path::{Path, PathBuf};
+
+use crate::quorp::tui::terminal_trace::{
+    SharedTerminalTraceBuffer, new_shared_terminal_trace, record_trace,
+};
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Default)]
+pub enum TerminalInteractionMode {
+    #[default]
+    Capture,
+    Navigate,
+}
 
 pub struct TerminalPane {
     last_grid: (u16, u16),
     pub pty_exited: bool,
-    bridge_tx:
-        Option<futures::channel::mpsc::UnboundedSender<crate::quorp::tui::bridge::TuiToBackendRequest>>,
-    integrated_lines: Vec<Line<'static>>,
+    bridge_tx: Option<
+        futures::channel::mpsc::UnboundedSender<crate::quorp::tui::bridge::TuiToBackendRequest>,
+    >,
+    snapshot: crate::quorp::tui::terminal_surface::TerminalSnapshot,
+    latest_cwd: Option<PathBuf>,
+    shell_label: Option<String>,
+    window_title: Option<String>,
+    interaction_mode: TerminalInteractionMode,
+    trace: Option<SharedTerminalTraceBuffer>,
 }
 
 impl TerminalPane {
@@ -23,14 +41,23 @@ impl TerminalPane {
             last_grid: (80, 24),
             pty_exited: false,
             bridge_tx: None,
-            integrated_lines: Vec::new(),
+            snapshot: crate::quorp::tui::terminal_surface::TerminalSnapshot::blank(24, 80),
+            latest_cwd: None,
+            shell_label: None,
+            window_title: None,
+            interaction_mode: TerminalInteractionMode::Capture,
+            trace: if cfg!(any(test, debug_assertions)) {
+                Some(new_shared_terminal_trace())
+            } else {
+                None
+            },
         }
     }
 
     pub fn with_bridge(
-        bridge_tx: Option<futures::channel::mpsc::UnboundedSender<
-            crate::quorp::tui::bridge::TuiToBackendRequest,
-        >>,
+        bridge_tx: Option<
+            futures::channel::mpsc::UnboundedSender<crate::quorp::tui::bridge::TuiToBackendRequest>,
+        >,
     ) -> Self {
         Self {
             bridge_tx,
@@ -47,6 +74,7 @@ impl TerminalPane {
                 return Ok(());
             }
             self.last_grid = (cols, rows);
+            self.trace(format!("sync-grid cols={cols} rows={rows}"));
             let _ = tx.unbounded_send(
                 crate::quorp::tui::bridge::TuiToBackendRequest::TerminalResize { cols, rows },
             );
@@ -62,6 +90,7 @@ impl TerminalPane {
         }
         self.last_grid = (cols, rows);
         self.pty_exited = false;
+        self.trace(format!("spawn-pty cols={cols} rows={rows}"));
         if let Some(tx) = &self.bridge_tx {
             let _ = tx.unbounded_send(
                 crate::quorp::tui::bridge::TuiToBackendRequest::TerminalResize { cols, rows },
@@ -81,8 +110,7 @@ impl TerminalPane {
             return;
         }
 
-        let w = self.render_integrated(area, focused, Color::Reset);
-        frame.render_widget(w, area);
+        self.render_snapshot(frame.buffer_mut(), area, focused, Color::Reset);
     }
 
     pub fn render_in_leaf(
@@ -131,25 +159,30 @@ impl TerminalPane {
             let _ = self.sync_grid(inner.width, inner.height);
         }
 
-        let w = self.render_integrated(inner, focused, theme.palette.editor_bg);
-        w.render(inner, buf);
+        self.render_snapshot(buf, inner, focused, theme.palette.editor_bg);
     }
 
     pub fn try_handle_key(&mut self, key: &KeyEvent) -> anyhow::Result<bool> {
         if self.pty_exited {
-            if key.code == KeyCode::Enter && key.kind == KeyEventKind::Press {
-                if let Some(tx) = self.bridge_tx.clone() {
-                    let (c, r) = self.last_grid;
-                    self.pty_exited = false;
-                    let _ = tx.unbounded_send(
-                        crate::quorp::tui::bridge::TuiToBackendRequest::TerminalResize {
-                            cols: c,
-                            rows: r,
-                        },
-                    );
-                }
+            if key.code == KeyCode::Enter
+                && key.kind == KeyEventKind::Press
+                && let Some(tx) = self.bridge_tx.clone()
+            {
+                let (c, r) = self.last_grid;
+                self.pty_exited = false;
+                self.trace(format!("restart-after-exit cols={c} rows={r}"));
+                let _ = tx.unbounded_send(
+                    crate::quorp::tui::bridge::TuiToBackendRequest::TerminalResize {
+                        cols: c,
+                        rows: r,
+                    },
+                );
             }
             return Ok(true);
+        }
+
+        if self.interaction_mode == TerminalInteractionMode::Navigate {
+            return Ok(false);
         }
 
         if self.bridge_tx.is_some() {
@@ -158,21 +191,16 @@ impl TerminalPane {
             }
             use crate::quorp::tui::bridge::TuiToBackendRequest;
             match key.code {
-                KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc => return Ok(false),
-                KeyCode::Char('h' | 'j' | 'k' | 'l')
-                    if key.modifiers.contains(KeyModifiers::CONTROL) =>
-                {
-                    return Ok(false);
-                }
-                KeyCode::Char('?') if key.modifiers.is_empty() => return Ok(false),
                 KeyCode::PageUp if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     if let Some(tx) = &self.bridge_tx {
+                        self.trace("scroll-page-up");
                         let _ = tx.unbounded_send(TuiToBackendRequest::TerminalScrollPageUp);
                     }
                     return Ok(true);
                 }
                 KeyCode::PageDown if key.modifiers.contains(KeyModifiers::SHIFT) => {
                     if let Some(tx) = &self.bridge_tx {
+                        self.trace("scroll-page-down");
                         let _ = tx.unbounded_send(TuiToBackendRequest::TerminalScrollPageDown);
                     }
                     return Ok(true);
@@ -180,10 +208,12 @@ impl TerminalPane {
                 _ => {}
             }
 
-            if let Some(ks) =
-                crate::quorp::tui::bridge::crossterm_key_event_to_keystroke(key)
-            {
+            if let Some(ks) = crate::quorp::tui::bridge::crossterm_key_event_to_keystroke(key) {
                 if let Some(tx) = &self.bridge_tx {
+                    self.trace(format!(
+                        "keystroke key={} ctrl={} alt={} shift={}",
+                        ks.key, ks.modifiers.control, ks.modifiers.alt, ks.modifiers.shift
+                    ));
                     let _ = tx.unbounded_send(TuiToBackendRequest::TerminalKeystroke(ks));
                 }
                 return Ok(true);
@@ -194,6 +224,7 @@ impl TerminalPane {
                 return Ok(false);
             }
             if let Some(tx) = &self.bridge_tx {
+                self.trace(format!("input-bytes len={}", bytes.len()));
                 let _ = tx.unbounded_send(TuiToBackendRequest::TerminalInput(bytes));
             }
             return Ok(true);
@@ -204,7 +235,9 @@ impl TerminalPane {
         }
         match key.code {
             KeyCode::Tab | KeyCode::BackTab | KeyCode::Esc => Ok(false),
-            KeyCode::Char('h' | 'j' | 'k' | 'l') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+            KeyCode::Char('h' | 'j' | 'k' | 'l')
+                if key.modifiers.contains(KeyModifiers::CONTROL) =>
+            {
                 Ok(false)
             }
             KeyCode::Char('?') if key.modifiers.is_empty() => Ok(false),
@@ -213,11 +246,124 @@ impl TerminalPane {
     }
 
     pub fn apply_integrated_frame(&mut self, frame: crate::quorp::tui::bridge::TerminalFrame) {
-        self.integrated_lines = frame.lines;
+        self.snapshot = frame.snapshot;
+        if let Some(cwd) = frame.cwd {
+            self.latest_cwd = Some(cwd);
+        }
+        if let Some(shell_label) = frame.shell_label {
+            self.shell_label = Some(shell_label);
+        }
+        self.window_title = frame.window_title;
+        self.trace(format!(
+            "frame rows={} cols={} scrollback={} alt={} paste={} cursor={:?}",
+            self.snapshot.rows,
+            self.snapshot.cols,
+            self.snapshot.scrollback,
+            self.snapshot.alternate_screen,
+            self.snapshot.bracketed_paste,
+            self.snapshot.cursor
+        ));
+    }
+
+    pub fn shell_title(&self) -> String {
+        "Terminal".to_string()
+    }
+
+    pub fn shell_label(&self) -> String {
+        self.shell_label.clone().unwrap_or_else(default_shell_label)
+    }
+
+    pub fn shell_window_title(&self) -> Option<String> {
+        self.window_title.clone()
+    }
+
+    pub fn shell_path_label(&self, fallback_root: &Path) -> String {
+        self.latest_cwd
+            .as_ref()
+            .map(|path| path.display().to_string())
+            .unwrap_or_else(|| fallback_root.display().to_string())
+    }
+
+    pub fn shell_lines(&self, max_lines: usize) -> Vec<String> {
+        self.snapshot.row_strings(max_lines)
+    }
+
+    pub fn snapshot(&self) -> crate::quorp::tui::terminal_surface::TerminalSnapshot {
+        self.snapshot.clone()
+    }
+
+    pub fn alternate_screen_active(&self) -> bool {
+        self.snapshot.alternate_screen
+    }
+
+    pub fn bracketed_paste_enabled(&self) -> bool {
+        self.snapshot.bracketed_paste
+    }
+
+    pub fn in_capture_mode(&self) -> bool {
+        self.interaction_mode == TerminalInteractionMode::Capture
+    }
+
+    pub fn enter_capture_mode(&mut self) {
+        self.interaction_mode = TerminalInteractionMode::Capture;
+        self.trace("mode=capture");
+    }
+
+    pub fn enter_navigation_mode(&mut self) {
+        self.interaction_mode = TerminalInteractionMode::Navigate;
+        self.trace("mode=navigate");
+    }
+
+    pub fn toggle_interaction_mode(&mut self) {
+        self.interaction_mode = match self.interaction_mode {
+            TerminalInteractionMode::Capture => TerminalInteractionMode::Navigate,
+            TerminalInteractionMode::Navigate => TerminalInteractionMode::Capture,
+        };
+    }
+
+    pub fn interaction_hint(&self) -> &'static str {
+        match self.interaction_mode {
+            TerminalInteractionMode::Capture => "Shell capture  Ctrl+g navigate  Ctrl+` hide dock",
+            TerminalInteractionMode::Navigate => {
+                "Terminal navigation  Enter capture  Tab next focus  Ctrl+` hide dock"
+            }
+        }
+    }
+
+    pub fn handle_paste(&mut self, text: &str) -> anyhow::Result<bool> {
+        let Some(tx) = &self.bridge_tx else {
+            return Ok(false);
+        };
+        let mut bytes = Vec::new();
+        if self.bracketed_paste_enabled() {
+            bytes.extend_from_slice(b"\x1b[200~");
+        }
+        bytes.extend_from_slice(text.as_bytes());
+        if self.bracketed_paste_enabled() {
+            bytes.extend_from_slice(b"\x1b[201~");
+        }
+        self.trace(format!(
+            "paste len={} bracketed={}",
+            text.len(),
+            self.bracketed_paste_enabled()
+        ));
+        let _ =
+            tx.unbounded_send(crate::quorp::tui::bridge::TuiToBackendRequest::TerminalInput(bytes));
+        Ok(true)
+    }
+
+    pub fn notify_focus_changed(&self, focused: bool) {
+        if let Some(tx) = &self.bridge_tx {
+            record_trace(self.trace.as_ref(), format!("focus={focused}"));
+            let _ = tx.unbounded_send(
+                crate::quorp::tui::bridge::TuiToBackendRequest::TerminalFocusChanged { focused },
+            );
+        }
     }
 
     pub fn mark_integrated_session_closed(&mut self) {
         self.pty_exited = true;
+        self.trace("closed");
     }
 
     #[cfg(test)]
@@ -225,26 +371,61 @@ impl TerminalPane {
         self.pty_exited
     }
 
-    fn render_integrated(&self, area: Rect, focused: bool, bg: Color) -> Paragraph<'static> {
-        let cols = area.width as usize;
-        let rows = area.height as usize;
-        let pad_line = || Line::from(" ".repeat(cols.max(1)));
-        let mut lines: Vec<Line> = self
-            .integrated_lines
-            .iter()
-            .take(rows)
-            .cloned()
-            .collect();
-        while lines.len() < rows {
-            lines.push(pad_line());
-        }
-        let _ = focused;
-        Paragraph::new(lines).style(Style::default().bg(bg))
+    #[cfg(test)]
+    pub fn trace_dump_for_test(&self) -> String {
+        crate::quorp::tui::terminal_trace::dump_trace(self.trace.as_ref())
+    }
+
+    #[cfg(test)]
+    pub fn snapshot_dump_for_test(&self) -> String {
+        let rows = self.snapshot.row_strings(usize::from(self.snapshot.rows));
+        format!(
+            "rows={} cols={} cursor={:?} hide_cursor={} scrollback={} alternate_screen={} bracketed_paste={} cwd={:?} shell_label={:?} window_title={:?}\n{}",
+            self.snapshot.rows,
+            self.snapshot.cols,
+            self.snapshot.cursor,
+            self.snapshot.hide_cursor,
+            self.snapshot.scrollback,
+            self.snapshot.alternate_screen,
+            self.snapshot.bracketed_paste,
+            self.latest_cwd,
+            self.shell_label,
+            self.window_title,
+            rows.join("\n")
+        )
+    }
+
+    fn render_snapshot(
+        &self,
+        buf: &mut ratatui::buffer::Buffer,
+        area: Rect,
+        focused: bool,
+        bg: Color,
+    ) {
+        self.snapshot
+            .render(buf, area, bg, focused && self.in_capture_mode());
+    }
+
+    fn trace(&self, entry: impl Into<String>) {
+        record_trace(self.trace.as_ref(), entry);
     }
 }
 
 fn cols_rows_nonzero(cols: u16, rows: u16) -> bool {
     cols > 0 && rows > 0
+}
+
+fn default_shell_label() -> String {
+    std::env::var("SHELL")
+        .ok()
+        .and_then(|shell| {
+            Path::new(&shell)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .map(ToOwned::to_owned)
+        })
+        .filter(|label| !label.is_empty())
+        .unwrap_or_else(|| "shell".to_string())
 }
 
 pub fn key_event_to_pty_bytes(key: &KeyEvent) -> Vec<u8> {
@@ -291,9 +472,9 @@ fn f_key_bytes(n: u8) -> Vec<u8> {
 }
 
 fn char_to_pty_bytes(c: char, modifiers: KeyModifiers) -> Vec<u8> {
-    if modifiers.contains(KeyModifiers::CONTROL) {
+    let mut bytes = if modifiers.contains(KeyModifiers::CONTROL) {
         let lower = c.to_ascii_lowercase();
-        return match lower {
+        match lower {
             'a'..='z' => vec![(lower as u8).saturating_sub(b'a') + 1],
             ' ' => vec![0],
             '[' => vec![0x1b],
@@ -303,17 +484,18 @@ fn char_to_pty_bytes(c: char, modifiers: KeyModifiers) -> Vec<u8> {
             '_' | '?' => vec![0x1f],
             '8' | '@' => vec![0],
             _ => Vec::new(),
-        };
-    }
-    if modifiers.contains(KeyModifiers::ALT) {
-        let mut v = vec![0x1b];
+        }
+    } else {
         let mut buf = [0u8; 4];
-        let s = c.encode_utf8(&mut buf);
-        v.extend_from_slice(s.as_bytes());
-        return v;
+        c.encode_utf8(&mut buf).as_bytes().to_vec()
+    };
+    if modifiers.contains(KeyModifiers::ALT) && !bytes.is_empty() {
+        let mut alt_prefixed = vec![0x1b];
+        alt_prefixed.append(&mut bytes);
+        alt_prefixed
+    } else {
+        bytes
     }
-    let mut buf = [0u8; 4];
-    c.encode_utf8(&mut buf).as_bytes().to_vec()
 }
 
 #[cfg(test)]

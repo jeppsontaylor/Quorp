@@ -1,0 +1,224 @@
+diff --git a/book/src/config.md b/book/src/config.md
+--- a/book/src/config.md
++++ b/book/src/config.md
+@@ -305,6 +305,24 @@ Prior to 0.1.0 we didn't set the correct flags in our CI scripts to do this, but
+ This flag was introduced to allow you to restore the old behaviour if you prefer.
+ 
+ 
++### create-release
++
++> since 0.2.0
++
++Example: `create-release = false`
++
++**This can only be set globally**
++
++Whether we should create the Github Release for you in your Release CI.
++
++If true (default), cargo-dist will create a new Github Release and generate
++a title/body for it based on your changelog.
++
++If false, cargo-dist will assume a draft Github Release for the current git tag
++already exists with the title/body you want, and just upload artifacts to it.
++At the end of a successful publish it will undraft the Github Release.
++
++
+ ### install-path
+ 
+ > since 0.1.0
+diff --git a/cargo-dist/src/backend/ci/github.rs b/cargo-dist/src/backend/ci/github.rs
+--- a/cargo-dist/src/backend/ci/github.rs
++++ b/cargo-dist/src/backend/ci/github.rs
+@@ -18,6 +18,7 @@ struct CiInfo {
+     install_dist_sh: String,
+     install_dist_ps1: String,
+     fail_fast: bool,
++    create_release: bool,
+     local_tasks: Vec<CiTask>,
+     global_task: Option<CiTask>,
+     tap: Option<String>,
+diff --git a/cargo-dist/src/backend/ci/github.rs b/cargo-dist/src/backend/ci/github.rs
+--- a/cargo-dist/src/backend/ci/github.rs
++++ b/cargo-dist/src/backend/ci/github.rs
+@@ -64,6 +65,7 @@ fn compute_ci_info(dist: &DistGraph) -> CiInfo {
+         .as_ref()
+         .unwrap_or(&self_dist_version);
+     let fail_fast = dist.fail_fast;
++    let create_release = dist.create_release;
+ 
+     // Figure out what builds we need to do
+     let mut needs_global_build = false;
+diff --git a/cargo-dist/src/backend/ci/github.rs b/cargo-dist/src/backend/ci/github.rs
+--- a/cargo-dist/src/backend/ci/github.rs
++++ b/cargo-dist/src/backend/ci/github.rs
+@@ -123,6 +125,7 @@ fn compute_ci_info(dist: &DistGraph) -> CiInfo {
+         install_dist_sh,
+         install_dist_ps1,
+         fail_fast,
++        create_release,
+         local_tasks,
+         global_task,
+         tap,
+diff --git a/cargo-dist/src/config.rs b/cargo-dist/src/config.rs
+--- a/cargo-dist/src/config.rs
++++ b/cargo-dist/src/config.rs
+@@ -228,6 +228,18 @@ pub struct DistMetadata {
+     #[serde(skip_serializing_if = "Option::is_none")]
+     #[serde(rename = "publish-jobs")]
+     pub publish_jobs: Option<Vec<PublishStyle>>,
++
++    /// Whether we should create the Github Release for you when you push a tag.
++    ///
++    /// If true (default), cargo-dist will create a new Github Release and generate
++    /// a title/body for it based on your changelog.
++    ///
++    /// If false, cargo-dist will assume a draft Github Release already exists
++    /// with the title/body you want. At the end of a successful publish it will
++    /// undraft the Github Release.
++    #[serde(skip_serializing_if = "Option::is_none")]
++    #[serde(rename = "create-release")]
++    pub create_release: Option<bool>,
+ }
+ 
+ impl DistMetadata {
+diff --git a/cargo-dist/src/config.rs b/cargo-dist/src/config.rs
+--- a/cargo-dist/src/config.rs
++++ b/cargo-dist/src/config.rs
+@@ -256,6 +268,7 @@ impl DistMetadata {
+             default_features: _,
+             all_features: _,
+             publish_jobs: _,
++            create_release: _,
+         } = self;
+         if let Some(include) = include {
+             for include in include {
+diff --git a/cargo-dist/src/config.rs b/cargo-dist/src/config.rs
+--- a/cargo-dist/src/config.rs
++++ b/cargo-dist/src/config.rs
+@@ -293,6 +306,7 @@ impl DistMetadata {
+             default_features,
+             all_features,
+             publish_jobs,
++            create_release,
+         } = self;
+ 
+         // Check for global settings on local packages
+diff --git a/cargo-dist/src/config.rs b/cargo-dist/src/config.rs
+--- a/cargo-dist/src/config.rs
++++ b/cargo-dist/src/config.rs
+@@ -314,6 +328,9 @@ impl DistMetadata {
+         if fail_fast.is_some() {
+             warn!("package.metadata.dist.fail-fast is set, but this is only accepted in workspace.metadata (value is being ignored): {}", package_manifest_path);
+         }
++        if create_release.is_some() {
++            warn!("package.metadata.dist.create-release is set, but this is only accepted in workspace.metadata (value is being ignored): {}", package_manifest_path);
++        }
+ 
+         // Merge non-global settings
+         if installers.is_none() {
+diff --git a/cargo-dist/src/init.rs b/cargo-dist/src/init.rs
+--- a/cargo-dist/src/init.rs
++++ b/cargo-dist/src/init.rs
+@@ -204,6 +204,7 @@ fn get_new_dist_metadata(
+             default_features: None,
+             all_features: None,
+             publish_jobs: None,
++            create_release: None,
+         }
+     };
+ 
+diff --git a/cargo-dist/src/init.rs b/cargo-dist/src/init.rs
+--- a/cargo-dist/src/init.rs
++++ b/cargo-dist/src/init.rs
+@@ -632,6 +633,7 @@ fn update_toml_metadata(
+         all_features,
+         default_features,
+         publish_jobs,
++        create_release,
+     } = &meta;
+ 
+     apply_optional_value(
+diff --git a/cargo-dist/src/init.rs b/cargo-dist/src/init.rs
+--- a/cargo-dist/src/init.rs
++++ b/cargo-dist/src/init.rs
+@@ -746,6 +748,13 @@ fn update_toml_metadata(
+         *fail_fast,
+     );
+ 
++    apply_optional_value(
++        table,
++        "create-release",
++        "# Whether cargo-dist should create a Github Release or use an existing draft\n",
++        *create_release,
++    );
++
+     apply_optional_value(
+         table,
+         "install-path",
+diff --git a/cargo-dist/src/tasks.rs b/cargo-dist/src/tasks.rs
+--- a/cargo-dist/src/tasks.rs
++++ b/cargo-dist/src/tasks.rs
+@@ -149,6 +149,8 @@ pub struct DistGraph {
+     pub merge_tasks: bool,
+     /// Whether failing tasks should make us give up on all other tasks
+     pub fail_fast: bool,
++    /// Whether to creat a github release or edit an existing draft
++    pub create_release: bool,
+     /// The desired cargo-dist version for handling this project
+     pub desired_cargo_dist_version: Option<Version>,
+     /// The desired rust toolchain for handling this project
+diff --git a/cargo-dist/src/tasks.rs b/cargo-dist/src/tasks.rs
+--- a/cargo-dist/src/tasks.rs
++++ b/cargo-dist/src/tasks.rs
+@@ -628,6 +630,7 @@ impl<'pkg_graph> DistGraphBuilder<'pkg_graph> {
+             features,
+             default_features: no_default_features,
+             all_features,
++            create_release,
+         } = &workspace_metadata;
+ 
+         let desired_cargo_dist_version = cargo_dist_version.clone();
+diff --git a/cargo-dist/src/tasks.rs b/cargo-dist/src/tasks.rs
+--- a/cargo-dist/src/tasks.rs
++++ b/cargo-dist/src/tasks.rs
+@@ -637,6 +640,7 @@ impl<'pkg_graph> DistGraphBuilder<'pkg_graph> {
+         }
+         let merge_tasks = merge_tasks.unwrap_or(false);
+         let fail_fast = fail_fast.unwrap_or(false);
++        let create_release = create_release.unwrap_or(true);
+         let mut packages_with_mismatched_features = vec![];
+         // Compute/merge package configs
+         let mut package_metadata = vec![];
+diff --git a/cargo-dist/src/tasks.rs b/cargo-dist/src/tasks.rs
+--- a/cargo-dist/src/tasks.rs
++++ b/cargo-dist/src/tasks.rs
+@@ -684,6 +688,7 @@ impl<'pkg_graph> DistGraphBuilder<'pkg_graph> {
+                 precise_builds,
+                 fail_fast,
+                 merge_tasks,
++                create_release,
+                 desired_cargo_dist_version,
+                 desired_rust_toolchain,
+                 tools,
+diff --git a/cargo-dist/templates/ci/github_ci.yml.j2 b/cargo-dist/templates/ci/github_ci.yml.j2
+--- a/cargo-dist/templates/ci/github_ci.yml.j2
++++ b/cargo-dist/templates/ci/github_ci.yml.j2
+@@ -69,12 +69,18 @@ jobs:
+           echo "dist plan ran successfully"
+           cat dist-manifest.json
+ 
++      {{%- if create_release %}}
++
+           # Create the Github Release™ based on what cargo-dist thinks it should be
+           ANNOUNCEMENT_TITLE=$(jq --raw-output ".announcement_title" dist-manifest.json)
+           IS_PRERELEASE=$(jq --raw-output ".announcement_is_prerelease" dist-manifest.json)
+           jq --raw-output ".announcement_github_body" dist-manifest.json > new_dist_announcement.md
+           gh release create ${{ github.ref_name }} --draft --prerelease="$IS_PRERELEASE" --title="$ANNOUNCEMENT_TITLE" --notes-file=new_dist_announcement.md
+           echo "created announcement!"
++      {{%- else %}}
++
++          # We're assuming a draft Github Release™ with the desired name/tag/body already exists
++      {{%- endif %}}
+ 
+           # Upload the manifest to the Github Release™
+           gh release upload ${{ github.ref_name }} dist-manifest.json

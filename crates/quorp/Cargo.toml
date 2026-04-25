@@ -12,36 +12,51 @@ default-run = "quorp"
 workspace = true
 
 [features]
-tracy = ["ztracing/tracy"]
+tracy = ["quorp_tracing/tracy"]
 test-support = []
+tui-e2e-smoke = []
 
 [[bin]]
 name = "quorp"
 path = "src/main.rs"
 
 [dependencies]
+font8x8 = "0.3"
 anyhow.workspace = true
+async_zip.workspace = true
 clap = { workspace = true, features = ["derive"] }
 crossterm = "0.28"
 flash_moe_defaults.workspace = true
 futures.workspace = true
 ignore.workspace = true
 image.workspace = true
+libc.workspace = true
 log.workspace = true
 notify = "=8.2.0"
 paths.workspace = true
 portable-pty.workspace = true
+rand.workspace = true
 ratatui = "0.29"
 reqwest = { workspace = true, features = ["json", "stream"] }
+regex.workspace = true
+rusqlite = "0.37.0"
 serde.workspace = true
 serde_json.workspace = true
+ssd-moe-client = { path = "../../../ssd-moe-shared/crates/ssd-moe-client" }
+ssd-moe-contract = { path = "../../../ssd-moe-shared/crates/ssd-moe-contract" }
+ssd-moe-launch = { path = "../../../ssd-moe-shared/crates/ssd-moe-launch" }
 syntect = "5"
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
+toml.workspace = true
+toml_edit.workspace = true
 unicode-width.workspace = true
 url.workspace = true
 util.workspace = true
-zlog.workspace = true
-ztracing.workspace = true
+vt100 = { package = "fnug-vt100", version = "0.15.2" }
+walkdir.workspace = true
+quorp_log.workspace = true
+quorp_agent_core = { path = "../quorp_agent_core" }
+quorp_tracing.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 ashpd.workspace = true
@@ -54,37 +69,5 @@ image.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
 
-[package.metadata.bundle-dev]
-icon = ["resources/app-icon-dev@2x.png", "resources/app-icon-dev.png"]
-identifier = "dev.quorp.Quorp-Dev"
-name = "Quorp Dev"
-osx_minimum_system_version = "10.15.7"
-osx_info_plist_exts = ["resources/info/*"]
-osx_url_schemes = ["quorp"]
-
-[package.metadata.bundle-nightly]
-icon = ["resources/app-icon-nightly@2x.png", "resources/app-icon-nightly.png"]
-identifier = "dev.quorp.Quorp-Nightly"
-name = "Quorp Nightly"
-osx_minimum_system_version = "10.15.7"
-osx_info_plist_exts = ["resources/info/*"]
-osx_url_schemes = ["quorp"]
-
-[package.metadata.bundle-preview]
-icon = ["resources/app-icon-preview@2x.png", "resources/app-icon-preview.png"]
-identifier = "dev.quorp.Quorp-Preview"
-name = "Quorp Preview"
-osx_minimum_system_version = "10.15.7"
-osx_info_plist_exts = ["resources/info/*"]
-osx_url_schemes = ["quorp"]
-
-[package.metadata.bundle-stable]
-icon = ["resources/app-icon@2x.png", "resources/app-icon.png"]
-identifier = "dev.quorp.Quorp"
-name = "Quorp"
-osx_minimum_system_version = "10.15.7"
-osx_info_plist_exts = ["resources/info/*"]
-osx_url_schemes = ["quorp"]
-
 [package.metadata.cargo-machete]
-ignored = ["ztracing"]
+ignored = ["quorp_tracing"]

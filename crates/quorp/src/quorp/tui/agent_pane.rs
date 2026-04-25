@@ -1,23 +1,19 @@
-#![allow(unused)]
+use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::layout::Rect;
 use ratatui::style::Style;
-use crossterm::event::{KeyCode, KeyEvent, KeyEventKind};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
 
-use crate::quorp::tui::bridge::TuiToBackendRequest;
+use crate::quorp::tui::agent_runtime::{AgentRuntimeStatus, AgentUiEvent};
 use crate::quorp::tui::theme;
-use crate::quorp::tui::workbench::LeafRects;
 
 pub struct AgentPane {
-    bridge_tx: Option<futures::channel::mpsc::UnboundedSender<TuiToBackendRequest>>,
     pub status_lines: Vec<String>,
 }
 
 impl AgentPane {
-    pub fn new(bridge_tx: Option<futures::channel::mpsc::UnboundedSender<TuiToBackendRequest>>) -> Self {
+    pub fn new() -> Self {
         Self {
-            bridge_tx,
             status_lines: Vec::new(),
         }
     }
@@ -28,11 +24,9 @@ impl AgentPane {
         }
         match key.code {
             KeyCode::Enter => {
-                if let Some(tx) = &self.bridge_tx {
-                    let _ = tx.unbounded_send(TuiToBackendRequest::StartAgentAction(
-                        "Sample TUI Agent Request".to_string(),
-                    ));
-                }
+                self.apply_status_update(
+                    "Launch autonomous runs from the Assistant pane with `/agent <goal>`. This pane shows runtime status and verifier progress.".to_string(),
+                );
                 Ok(true)
             }
             _ => Ok(false),
@@ -43,6 +37,41 @@ impl AgentPane {
         self.status_lines.push(update);
     }
 
+    pub fn apply_event(&mut self, event: AgentUiEvent) {
+        match event {
+            AgentUiEvent::StatusUpdate(status) => match status {
+                AgentRuntimeStatus::Idle => {
+                    self.apply_status_update("[Idle] Waiting for background tasks.".to_string())
+                }
+                AgentRuntimeStatus::Thinking => {
+                    self.apply_status_update("[Thinking] Generating actions...".to_string())
+                }
+                AgentRuntimeStatus::ExecutingTool(tool) => {
+                    self.apply_status_update(format!("[Executing] {}", tool))
+                }
+                AgentRuntimeStatus::Validating(check) => {
+                    self.apply_status_update(format!("[Validating] {}", check))
+                }
+                AgentRuntimeStatus::Failed(err) => {
+                    self.apply_status_update(format!("[Failed] {}", err))
+                }
+                AgentRuntimeStatus::Success => {
+                    self.apply_status_update("[Success] Task completed!".to_string())
+                }
+            },
+            AgentUiEvent::TurnCompleted(_) => {
+                self.apply_status_update("[Turn Completed]".to_string())
+            }
+            AgentUiEvent::ArtifactsReady(path) => {
+                self.apply_status_update(format!("[Artifacts] {}", path.display()))
+            }
+            AgentUiEvent::FatalError(err) => {
+                self.apply_status_update(format!("[Fatal Error] {}", err))
+            }
+        }
+    }
+
+    #[allow(dead_code)]
     pub fn render(
         &mut self,
         frame: &mut ratatui::Frame<'_>,
@@ -53,6 +82,7 @@ impl AgentPane {
         self.render_in_leaf(frame.buffer_mut(), area, focused, theme);
     }
 
+    #[allow(dead_code)]
     pub fn render_in_leaf(
         &mut self,
         buf: &mut ratatui::buffer::Buffer,
@@ -86,8 +116,16 @@ impl AgentPane {
                 .fg(theme.palette.text_muted)
                 .bg(theme.palette.editor_bg)
         };
-        crate::quorp::tui::paint::fill_rect(buf, header_rect, if focused { theme.palette.raised_bg } else { theme.palette.editor_bg });
-        let header_text = " Agent [Press Enter to dispatch]";
+        crate::quorp::tui::paint::fill_rect(
+            buf,
+            header_rect,
+            if focused {
+                theme.palette.raised_bg
+            } else {
+                theme.palette.editor_bg
+            },
+        );
+        let header_text = " Agent Status [Enter explains current limitation]";
         let header_line = Line::from(Span::styled(header_text, header_style));
         Paragraph::new(header_line).render(header_rect, buf);
 
@@ -102,17 +140,20 @@ impl AgentPane {
         let mut text = Vec::new();
         if self.status_lines.is_empty() {
             text.push(Line::from(Span::styled(
-                "  Agent [Press Enter to dispatch]",
+                "  Launch autonomous work from the Assistant pane with `/agent <goal>`.",
+                Style::default()
+                    .fg(theme.palette.text_muted)
+                    .bg(theme.palette.editor_bg),
+            )));
+            text.push(Line::from(Span::styled(
+                "  This pane visualizes background runtime status, verifier progress, and failures.",
                 Style::default()
                     .fg(theme.palette.text_muted)
                     .bg(theme.palette.editor_bg),
             )));
         } else {
             for line in &self.status_lines {
-                text.push(Line::from(Span::styled(
-                    format!("  {}", line),
-                    body_style,
-                )));
+                text.push(Line::from(Span::styled(format!("  {}", line), body_style)));
             }
         }
 

@@ -1,0 +1,29 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+issue_dir="${QUORP_BENCHMARK_ISSUE_DIR:-${repo_root}/benchmark/exhaustive/issues/ISSUE-00-toy-preview}"
+model_id="${1:-${QUORP_BENCHMARK_MODEL:-${QUORP_PARITY_MODEL:-gpt-5.3-codex-spark}}}"
+max_steps="${QUORP_BENCHMARK_MAX_STEPS:-1}"
+max_seconds="${QUORP_BENCHMARK_MAX_SECONDS:-1800}"
+result_dir="${QUORP_BENCHMARK_RESULT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/quorp-benchmark-smoke.XXXXXX")}"
+
+mkdir -p "$result_dir"
+
+cd "$repo_root"
+
+echo "[quorp-benchmark-smoke] issue_dir=$issue_dir"
+echo "[quorp-benchmark-smoke] result_dir=$result_dir"
+echo "[quorp-benchmark-smoke] model=$model_id"
+
+cargo run -p quorp -- benchmark run \
+  --path "$issue_dir" \
+  --executor codex \
+  --model "$model_id" \
+  --max-steps "$max_steps" \
+  --max-seconds "$max_seconds" \
+  --max-attempts 1 \
+  --result-dir "$result_dir"
+
+echo "[quorp-benchmark-smoke] report=$result_dir/benchmark-report.json"

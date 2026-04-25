@@ -26,6 +26,15 @@ fn esc_dismisses_help_overlay() {
 }
 
 #[test]
+fn question_toggles_help_overlay() {
+    let mut h = TuiTestHarness::new(120, 40);
+    h.key_press(KeyCode::Char('?'), KeyModifiers::NONE);
+    h.assert_overlay(Overlay::Help);
+    h.key_press(KeyCode::Char('?'), KeyModifiers::NONE);
+    h.assert_overlay(Overlay::None);
+}
+
+#[test]
 fn mouse_click_dismisses_help() {
     let mut h = TuiTestHarness::new(232, 64);
     h.draw();
@@ -48,16 +57,19 @@ fn ctrl_m_toggles_model_picker() {
 #[test]
 fn ctrl_s_sets_flash_moe_ready_when_running() {
     let mut h = TuiTestHarness::new(80, 24);
+    h.app.ssd_moe = crate::quorp::tui::ssd_moe_tui::SsdMoeManager::new_detached_for_test(59_999);
+    h.app.ssd_moe.set_status_for_test(ModelStatus::Running);
     h.draw();
     assert!(
         matches!(h.app.ssd_moe.status(), ModelStatus::Running),
         "fixture app should report running flash status for tests"
     );
     h.key_press(KeyCode::Char('s'), KeyModifiers::CONTROL);
-    assert!(matches!(
-        h.app.ssd_moe.status(),
-        ModelStatus::Ready | ModelStatus::Stopping
-    ));
+    assert!(matches!(h.app.ssd_moe.status(), ModelStatus::Ready));
+    assert!(
+        h.app.ssd_moe.last_transition_reason().is_some(),
+        "Ctrl+S should record a transition reason"
+    );
 }
 
 #[test]
@@ -66,8 +78,18 @@ fn tab_cycles_focus_forward() {
     h.assert_focus(Pane::EditorPane);
     h.key_press(KeyCode::Tab, KeyModifiers::NONE);
     h.assert_focus(Pane::Terminal);
+    h.key_press(KeyCode::Char('g'), KeyModifiers::CONTROL);
     h.key_press(KeyCode::Tab, KeyModifiers::NONE);
     h.assert_focus(Pane::Chat);
+}
+
+#[test]
+fn tab_stays_in_terminal_while_capture_mode_is_active() {
+    let mut h = TuiTestHarness::new(80, 24);
+    h.key_press(KeyCode::Tab, KeyModifiers::NONE);
+    h.assert_focus(Pane::Terminal);
+    h.key_press(KeyCode::Tab, KeyModifiers::NONE);
+    h.assert_focus(Pane::Terminal);
 }
 
 #[test]

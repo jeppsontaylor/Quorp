@@ -1,0 +1,37 @@
+{
+  "id": "04-cargo-dist-create-release",
+  "title": "Add create-release configuration so CI can reuse an existing draft release",
+  "difficulty": "hard",
+  "category": "release-engineering",
+  "repo_condition": [
+    "proof-full"
+  ],
+  "objective_file": "START_HERE.md",
+  "success_file": "SUCCESS.md",
+  "reset_command": "./reset.sh <condition>",
+  "evaluate_command": "./evaluate.sh <condition>",
+  "estimated_minutes": 120,
+  "expected_files_touched": [
+    "book/src/config.md",
+    "cargo-dist/src/backend/ci/github.rs",
+    "cargo-dist/src/config.rs",
+    "cargo-dist/src/init.rs",
+    "cargo-dist/src/tasks.rs",
+    "cargo-dist/templates/ci/github_ci.yml.j2"
+  ],
+  "allowed_generated_files": [
+    "cargo-dist/tests/snapshots/axolotlsay_edit_existing.snap"
+  ],
+  "primary_metrics": [
+    "evaluate_passed",
+    "changed_files",
+    "widening_happened"
+  ],
+  "tags": [
+    "rust",
+    "rust-swebench",
+    "cargo-dist",
+    "release",
+    "config"
+  ]
+}

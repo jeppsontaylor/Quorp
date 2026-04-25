@@ -26,7 +26,11 @@ fn rust_screenshot_export_for_core_tui_flows() {
     let mut harness = TuiTestHarness::new(120, 40);
 
     let default_path = harness.save_screenshot("core_tui_default");
-    assert!(default_path.exists(), "missing screenshot {:?}", default_path);
+    assert!(
+        default_path.exists(),
+        "missing screenshot {:?}",
+        default_path
+    );
 
     harness.key_press(KeyCode::Char('?'), KeyModifiers::NONE);
     let help_path = harness.save_screenshot("core_tui_help_overlay");

@@ -31,6 +31,14 @@ pub struct DirectoryListing {
     pub result: Result<Vec<TreeChild>, String>,
 }
 
+#[derive(Clone, Debug)]
+pub struct ExplorerRowSnapshot {
+    pub label: String,
+    pub selected: bool,
+    pub path: PathBuf,
+    pub is_dir: bool,
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum FileTreeKeyOutcome {
     NotHandled,
@@ -218,8 +226,42 @@ impl FileTree {
         &self.root
     }
 
+    pub fn set_root(&mut self, root: PathBuf) {
+        let replacement = FileTree::with_root(root);
+        *self = replacement;
+    }
+
     pub fn set_selected_file(&mut self, path: Option<PathBuf>) {
         self.selected_file = path;
+    }
+
+    pub fn explorer_rows_snapshot(&self, max_rows: usize) -> Vec<ExplorerRowSnapshot> {
+        let start = self.scroll_offset.min(self.visible_rows.len());
+        self.visible_rows
+            .iter()
+            .enumerate()
+            .skip(start)
+            .take(max_rows)
+            .map(|(index, row)| ExplorerRowSnapshot {
+                label: format!("{}{}", "  ".repeat(row.depth), row.display_label),
+                selected: index == self.selected_index,
+                path: row.path.clone(),
+                is_dir: row.is_dir,
+            })
+            .collect()
+    }
+
+    pub fn explorer_rows_snapshot_all(&self) -> Vec<ExplorerRowSnapshot> {
+        self.visible_rows
+            .iter()
+            .enumerate()
+            .map(|(index, row)| ExplorerRowSnapshot {
+                label: format!("{}{}", "  ".repeat(row.depth), row.display_label),
+                selected: index == self.selected_index,
+                path: row.path.clone(),
+                is_dir: row.is_dir,
+            })
+            .collect()
     }
 
     fn load_children(&mut self, path: &Path) -> bool {
@@ -444,10 +486,10 @@ impl FileTree {
                 }
             }
             KeyCode::Right => {
-                if let Some(row) = self.visible_rows.get(self.selected_index).cloned() {
-                    if row.is_dir {
-                        self.expand_only(&row.path);
-                    }
+                if let Some(row) = self.visible_rows.get(self.selected_index).cloned()
+                    && row.is_dir
+                {
+                    self.expand_only(&row.path);
                 }
                 FileTreeKeyOutcome::Handled
             }
@@ -455,10 +497,10 @@ impl FileTree {
                 if let Some(row) = self.visible_rows.get(self.selected_index).cloned() {
                     if row.is_dir {
                         self.collapse_only(&row.path);
-                    } else if let Some(parent) = row.path.parent() {
-                        if let Some(idx) = self.visible_rows.iter().position(|r| r.path == parent) {
-                            self.selected_index = idx;
-                        }
+                    } else if let Some(parent) = row.path.parent()
+                        && let Some(idx) = self.visible_rows.iter().position(|r| r.path == parent)
+                    {
+                        self.selected_index = idx;
                     }
                 }
                 FileTreeKeyOutcome::Handled
@@ -828,7 +870,7 @@ mod tests {
         fs::write(temp.path().join("f.txt"), "").expect("write");
         fs::create_dir(temp.path().join("d")).expect("dir");
         let mut tree = FileTree::with_root(temp.path().to_path_buf());
-        assert!(tree.visible_rows.len() >= 1);
+        assert!(!tree.visible_rows.is_empty());
         let root_idx = tree
             .visible_rows
             .iter()

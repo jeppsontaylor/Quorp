@@ -1,37 +1,37 @@
 pub use tracing::{Level, field};
 
-#[cfg(ztracing)]
+#[cfg(quorp_tracing)]
 pub use tracing::{
     Span, debug_span, error_span, event, info_span, instrument, span, trace_span, warn_span,
 };
 
-#[cfg(not(ztracing))]
+#[cfg(not(quorp_tracing))]
 pub use ztracing_macro::instrument;
 
-#[cfg(ztracing)]
+#[cfg(quorp_tracing)]
 const MAX_CALLSTACK_DEPTH: u16 = 16;
 
-#[cfg(all(ztracing, ztracing_with_memory))]
+#[cfg(all(quorp_tracing, quorp_tracing_with_memory))]
 #[global_allocator]
 static GLOBAL: tracy_client::ProfiledAllocator<std::alloc::System> =
     tracy_client::ProfiledAllocator::new(std::alloc::System, MAX_CALLSTACK_DEPTH);
 
-#[cfg(not(ztracing))]
+#[cfg(not(quorp_tracing))]
 pub use __consume_all_tokens as trace_span;
-#[cfg(not(ztracing))]
+#[cfg(not(quorp_tracing))]
 pub use __consume_all_tokens as info_span;
-#[cfg(not(ztracing))]
+#[cfg(not(quorp_tracing))]
 pub use __consume_all_tokens as debug_span;
-#[cfg(not(ztracing))]
+#[cfg(not(quorp_tracing))]
 pub use __consume_all_tokens as warn_span;
-#[cfg(not(ztracing))]
+#[cfg(not(quorp_tracing))]
 pub use __consume_all_tokens as error_span;
-#[cfg(not(ztracing))]
+#[cfg(not(quorp_tracing))]
 pub use __consume_all_tokens as event;
-#[cfg(not(ztracing))]
+#[cfg(not(quorp_tracing))]
 pub use __consume_all_tokens as span;
 
-#[cfg(not(ztracing))]
+#[cfg(not(quorp_tracing))]
 #[macro_export]
 macro_rules! __consume_all_tokens {
     ($($t:tt)*) => {
@@ -39,10 +39,10 @@ macro_rules! __consume_all_tokens {
     };
 }
 
-#[cfg(not(ztracing))]
+#[cfg(not(quorp_tracing))]
 pub struct Span;
 
-#[cfg(not(ztracing))]
+#[cfg(not(quorp_tracing))]
 impl Span {
     pub fn current() -> Self {
         Self
@@ -53,7 +53,7 @@ impl Span {
     pub fn record<T, S>(&self, _t: T, _s: S) {}
 }
 
-#[cfg(ztracing)]
+#[cfg(quorp_tracing)]
 pub fn init() {
     use tracing_subscriber::fmt::format::DefaultFields;
     use tracing_subscriber::prelude::*;
@@ -83,7 +83,7 @@ pub fn init() {
         }
     }
 
-    zlog::info!("Starting tracy subscriber, you can now connect the profiler");
+    quorp_log::info!("Starting tracy subscriber, you can now connect the profiler");
     tracing::subscriber::set_global_default(
         tracing_subscriber::registry()
             .with(tracing_tracy::TracyLayer::new(TracyLayerConfig::default())),
@@ -91,5 +91,5 @@ pub fn init() {
     .expect("setup tracy layer");
 }
 
-#[cfg(not(ztracing))]
+#[cfg(not(quorp_tracing))]
 pub fn init() {}

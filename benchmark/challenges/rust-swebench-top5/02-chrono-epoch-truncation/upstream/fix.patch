@@ -1,0 +1,46 @@
+diff --git a/src/round.rs b/src/round.rs
+--- a/src/round.rs
++++ b/src/round.rs
+@@ -177,9 +177,6 @@ where
+             return Err(RoundingError::DurationExceedsLimit);
+         }
+         let stamp = naive.timestamp_nanos_opt().ok_or(RoundingError::TimestampExceedsLimit)?;
+-        if span > stamp.abs() {
+-            return Err(RoundingError::DurationExceedsTimestamp);
+-        }
+         if span == 0 {
+             return Ok(original);
+         }
+diff --git a/src/round.rs b/src/round.rs
+--- a/src/round.rs
++++ b/src/round.rs
+@@ -216,9 +213,6 @@ where
+             return Err(RoundingError::DurationExceedsLimit);
+         }
+         let stamp = naive.timestamp_nanos_opt().ok_or(RoundingError::TimestampExceedsLimit)?;
+-        if span > stamp.abs() {
+-            return Err(RoundingError::DurationExceedsTimestamp);
+-        }
+         let delta_down = stamp % span;
+         match delta_down.cmp(&0) {
+             Ordering::Equal => Ok(original),
+diff --git a/src/round.rs b/src/round.rs
+--- a/src/round.rs
++++ b/src/round.rs
+@@ -237,15 +231,7 @@ where
+ pub enum RoundingError {
+     /// Error when the TimeDelta exceeds the TimeDelta from or until the Unix epoch.
+     ///
+-    /// ``` rust
+-    /// # use chrono::{DurationRound, TimeDelta, RoundingError, TimeZone, Utc};
+-    /// let dt = Utc.with_ymd_and_hms(1970, 12, 12, 0, 0, 0).unwrap();
+-    ///
+-    /// assert_eq!(
+-    ///     dt.duration_round(TimeDelta::days(365)),
+-    ///     Err(RoundingError::DurationExceedsTimestamp),
+-    /// );
+-    /// ```
++    /// Note: this error is not produced anymore.
+     DurationExceedsTimestamp,
+ 
+     /// Error when `TimeDelta.num_nanoseconds` exceeds the limit.

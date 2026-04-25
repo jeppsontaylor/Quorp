@@ -3,7 +3,7 @@ use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, Borders, BorderType, Paragraph, Widget};
+use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Widget};
 
 use crate::quorp::tui::theme::Theme;
 
@@ -62,10 +62,7 @@ impl Widget for StatusBar<'_> {
         let center_display =
             crate::quorp::tui::text_width::truncate_fit(self.center, center_w as usize);
 
-        buf.set_style(
-            Rect::new(area.x, area.y, left_take, area.height),
-            bg_blue,
-        );
+        buf.set_style(Rect::new(area.x, area.y, left_take, area.height), bg_blue);
         buf.set_line(
             area.x,
             area.y,
@@ -89,10 +86,7 @@ impl Widget for StatusBar<'_> {
         );
 
         let right_x = area.x + left_take + center_w;
-        buf.set_style(
-            Rect::new(right_x, area.y, right_take, area.height),
-            bg_gold,
-        );
+        buf.set_style(Rect::new(right_x, area.y, right_take, area.height), bg_gold);
         buf.set_line(
             right_x,
             area.y,
@@ -119,7 +113,7 @@ impl Widget for ExplorerHeader<'_> {
             .fg(self.theme.palette.text_faint);
         buf.set_style(area, bg);
 
-        let line = Line::from(Span::styled(" EXPLORER", bg));
+        let line = Line::from(Span::styled(" Files", bg.add_modifier(Modifier::BOLD)));
         buf.set_line(area.x, area.y, &line, area.width);
     }
 }
@@ -148,22 +142,22 @@ impl Widget for TabStrip<'_> {
             } else {
                 inactive_bg
             };
-            
+
             let text = format!(" {} {} ", self.theme.glyphs.file_icon, label);
             let width = text.chars().count() as u16;
             let close_text = format!("{} ", self.theme.glyphs.close_icon);
             let close_width = close_text.chars().count() as u16;
-            
+
             if x + width + close_width > area.right() {
                 break;
             }
-            
+
             buf.set_string(x, area.y, text, style);
             x += width;
-            
+
             buf.set_string(x, area.y, close_text, style);
             x += close_width;
-            
+
             // right border for tab
             if x < area.right() {
                 buf.set_string(x, area.y, " ", inactive_bg);
@@ -205,7 +199,7 @@ impl Widget for PanelTabs<'_> {
             buf.set_string(x, area.y, text, style);
             x += width + 1; // 1 space gap between tabs
         }
-        
+
         // Toolbar icons on the right
         let toolbar = " ×  ^ ";
         let toolbar_width = toolbar.chars().count() as u16;
@@ -234,13 +228,23 @@ impl Widget for AssistantHeader<'_> {
         let left_padding = "  ";
         let label_text = format!("{} ", self.label);
         buf.set_string(area.x, area.y, left_padding, bg);
-        buf.set_string(area.x + 2, area.y, label_text, bg.add_modifier(Modifier::BOLD));
-        
+        buf.set_string(
+            area.x + 2,
+            area.y,
+            label_text,
+            bg.add_modifier(Modifier::BOLD),
+        );
+
         let pill_style = Style::default()
             .bg(self.theme.palette.pill_bg)
             .fg(self.theme.palette.text_muted);
         let model_text = format!(" {} ", self.model);
-        buf.set_string(area.x + 2 + self.label.len() as u16 + 1, area.y, model_text, pill_style);
+        buf.set_string(
+            area.x + 2 + self.label.len() as u16 + 1,
+            area.y,
+            model_text,
+            pill_style,
+        );
     }
 }
 
@@ -274,10 +278,7 @@ impl Widget for Composer<'_> {
 
         let chunks = Layout::default()
             .direction(Direction::Vertical)
-            .constraints([
-                Constraint::Min(1),
-                Constraint::Length(1),
-            ])
+            .constraints([Constraint::Min(1), Constraint::Length(1)])
             .split(inner);
 
         Paragraph::new(self.placeholder)

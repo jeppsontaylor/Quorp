@@ -8,16 +8,36 @@ pub enum HitTarget {
     Activity(usize),
     ExplorerRow(usize),
     ExplorerMenu,
-    LeafTab { leaf: LeafId, tab: usize },
-    LeafTabClose { leaf: LeafId, tab: usize },
+    SidebarNewThread,
+    SidebarProject(usize),
+    SidebarThread(usize),
+    SidebarSettings,
+    FileDrawerToggle,
+    TerminalDrawerToggle,
+    LeafTab {
+        leaf: LeafId,
+        tab: usize,
+    },
+    LeafTabClose {
+        leaf: LeafId,
+        tab: usize,
+    },
     /// Pane content (not tab strip): clears tab-strip sub-focus on click.
     LeafBody(LeafId),
     Splitter(usize),
-    PanelTab { leaf: LeafId, tab: usize },
+    PanelTab {
+        leaf: LeafId,
+        tab: usize,
+    },
     AgentBlock(usize),
+    AssistantFeed,
+    AssistantFeedScrollbar,
+    AssistantFeedLink(usize),
+    AssistantHeader,
     ComposerInput(LeafId),
     ComposerAction(LeafId, usize),
     StatusChip,
+    NewThreadChooserRow(usize),
 }
 
 #[derive(Clone, Debug)]

@@ -85,9 +85,7 @@ pub fn render_mention_popup(buf: &mut Buffer, rect: Rect, vm: &MentionPopupVm, p
                 .bg(palette.pill_bg)
                 .add_modifier(Modifier::BOLD)
         } else {
-            Style::default()
-                .fg(palette.text)
-                .bg(palette.raised_bg)
+            Style::default().fg(palette.text).bg(palette.raised_bg)
         };
         draw_text(
             buf,
@@ -127,20 +125,18 @@ pub struct LeafTabLayoutCell {
 const TAB_GAP: u16 = 1;
 const OVERFLOW_HINT_MIN_W: u16 = 4;
 
-fn fit_tab_label(
-    available: u16,
-    icon_w: u16,
-    close_w: u16,
-    label: &str,
-) -> (String, u16, u16) {
+fn fit_tab_label(available: u16, icon_w: u16, close_w: u16, label: &str) -> (String, u16, u16) {
     if available < icon_w + close_w + 3 {
         let t = crate::quorp::tui::text_width::truncate_fit(label, 1);
         let lw = UnicodeWidthStr::width(t.as_str()) as u16 + 2;
         let tw = icon_w + lw + close_w;
         return (t, lw, tw.min(available));
     }
-    let mut label_max = (available.saturating_sub(icon_w).saturating_sub(close_w).saturating_sub(2))
-        .max(1) as usize;
+    let mut label_max = (available
+        .saturating_sub(icon_w)
+        .saturating_sub(close_w)
+        .saturating_sub(2))
+    .max(1) as usize;
     loop {
         let truncated = crate::quorp::tui::text_width::truncate_fit(label, label_max);
         let label_inner = UnicodeWidthStr::width(truncated.as_str()) as u16 + 2;
@@ -189,7 +185,8 @@ pub fn layout_leaf_tabs(strip: Rect, tabs: &[LeafTabSpec]) -> (Vec<LeafTabLayout
             return (cells, tabs.len().saturating_sub(placed));
         }
 
-        let (truncated, _label_inner, tab_w) = fit_tab_label(max_for_tab, icon_w, close_w, &tab.label);
+        let (truncated, _label_inner, tab_w) =
+            fit_tab_label(max_for_tab, icon_w, close_w, &tab.label);
         let tab_w = tab_w.min(max_for_tab);
         let label_inner = tab_w.saturating_sub(icon_w).saturating_sub(close_w);
         let select_w = icon_w + label_inner;
@@ -295,7 +292,12 @@ pub fn render_leaf_tabs_laid_out(
 }
 
 /// Renders a "+N" overflow hint at the right side of the strip when some tabs did not fit.
-pub fn render_tab_overflow_hint(buf: &mut Buffer, strip: Rect, overflow_count: usize, palette: &Palette) {
+pub fn render_tab_overflow_hint(
+    buf: &mut Buffer,
+    strip: Rect,
+    overflow_count: usize,
+    palette: &Palette,
+) {
     if overflow_count == 0 || strip.width < OVERFLOW_HINT_MIN_W {
         return;
     }
@@ -319,7 +321,9 @@ pub fn render_tab_overflow_hint(buf: &mut Buffer, strip: Rect, overflow_count: u
 
 pub fn render_titlebar(buf: &mut Buffer, rect: Rect, vm: &TitleBarVm, palette: &Palette) {
     fill_rect(buf, rect, palette.titlebar_bg);
-    let style = Style::default().fg(palette.text_muted).bg(palette.titlebar_bg);
+    let style = Style::default()
+        .fg(palette.text_muted)
+        .bg(palette.titlebar_bg);
 
     let mut left_col = rect.x + 2;
     for item in &vm.left {
@@ -375,20 +379,45 @@ pub fn render_titlebar(buf: &mut Buffer, rect: Rect, vm: &TitleBarVm, palette: &
     }
 }
 
-pub fn render_statusbar(buf: &mut Buffer, rect: Rect, left: &str, right_chip: &str, palette: &Palette) {
+pub fn render_statusbar(
+    buf: &mut Buffer,
+    rect: Rect,
+    left: &str,
+    right_chip: &str,
+    palette: &Palette,
+) {
     fill_rect(buf, rect, palette.status_blue);
     let style = Style::default().fg(Color::White).bg(palette.status_blue);
-    draw_text(buf, rect.x + 1, rect.y, left, style, rect.width.saturating_sub(2));
+    draw_text(
+        buf,
+        rect.x + 1,
+        rect.y,
+        left,
+        style,
+        rect.width.saturating_sub(2),
+    );
 
     if !right_chip.is_empty() {
         let chip_w = right_chip.len() as u16 + 2;
         let chip_x = rect.x + rect.width.saturating_sub(chip_w + 1);
         let chip_style = Style::default().fg(Color::White).bg(palette.status_gold);
-        draw_text(buf, chip_x, rect.y, &format!(" {} ", right_chip), chip_style, chip_w);
+        draw_text(
+            buf,
+            chip_x,
+            rect.y,
+            &format!(" {} ", right_chip),
+            chip_style,
+            chip_w,
+        );
     }
 }
 
-pub fn render_activity_bar(buf: &mut Buffer, rect: Rect, items: &[ActivityItemVm], palette: &Palette) {
+pub fn render_activity_bar(
+    buf: &mut Buffer,
+    rect: Rect,
+    items: &[ActivityItemVm],
+    palette: &Palette,
+) {
     fill_rect(buf, rect, palette.activity_bg);
 
     let mut row = rect.y + 1;
@@ -457,10 +486,10 @@ pub fn render_leaf_tab_strip(buf: &mut Buffer, rect: Rect, tabs: &[LeafTabVm], p
             if let Some(cell) = buf.cell_mut((x, rect.y)) {
                 cell.set_symbol(" ").set_bg(bg);
             }
-            if rect.height > 1 {
-                if let Some(cell) = buf.cell_mut((x, rect.y + 1)) {
-                    cell.set_symbol(" ").set_bg(bg);
-                }
+            if rect.height > 1
+                && let Some(cell) = buf.cell_mut((x, rect.y + 1))
+            {
+                cell.set_symbol(" ").set_bg(bg);
             }
         }
 
@@ -479,10 +508,18 @@ pub fn render_leaf_tab_strip(buf: &mut Buffer, rect: Rect, tabs: &[LeafTabVm], p
     }
 }
 
-pub fn render_panel_tabs(buf: &mut Buffer, rect: Rect, tabs: &[PanelTabVm], shell_badge: Option<&str>, palette: &Palette) {
+pub fn render_panel_tabs(
+    buf: &mut Buffer,
+    rect: Rect,
+    tabs: &[PanelTabVm],
+    shell_badge: Option<&str>,
+    palette: &Palette,
+) {
     fill_rect(buf, rect, palette.editor_bg);
 
-    let style_inactive = Style::default().fg(palette.text_muted).bg(palette.editor_bg);
+    let style_inactive = Style::default()
+        .fg(palette.text_muted)
+        .bg(palette.editor_bg);
 
     let mut col = rect.x + 1;
     for tab in tabs {
@@ -495,7 +532,14 @@ pub fn render_panel_tabs(buf: &mut Buffer, rect: Rect, tabs: &[PanelTabVm], shel
                 }
             }
             let active_style = Style::default().fg(palette.text).bg(palette.pill_bg);
-            draw_text(buf, col + 1, rect.y, label, active_style, label.len() as u16);
+            draw_text(
+                buf,
+                col + 1,
+                rect.y,
+                label,
+                active_style,
+                label.len() as u16,
+            );
             if rect.height > 1 {
                 for x in col..col.saturating_add(pill_w).min(rect.right()) {
                     if let Some(cell) = buf.cell_mut((x, rect.y + 1)) {
@@ -513,22 +557,47 @@ pub fn render_panel_tabs(buf: &mut Buffer, rect: Rect, tabs: &[PanelTabVm], shel
     if let Some(badge) = shell_badge {
         let badge_w = badge.len() as u16 + 2;
         let badge_x = rect.right().saturating_sub(badge_w + 2);
-        let badge_style = Style::default().fg(palette.text_faint).bg(palette.editor_bg);
+        let badge_style = Style::default()
+            .fg(palette.text_faint)
+            .bg(palette.editor_bg);
         draw_text(buf, badge_x, rect.y, badge, badge_style, badge_w);
     }
 }
 
-pub fn render_agent_banner(buf: &mut Buffer, rect: Rect, icon: &str, text: &str, palette: &Palette) {
+pub fn render_agent_banner(
+    buf: &mut Buffer,
+    rect: Rect,
+    icon: &str,
+    text: &str,
+    palette: &Palette,
+) {
     fill_rect(buf, rect, palette.banner_bg);
     let style = Style::default().fg(palette.text).bg(palette.banner_bg);
     let icon_style = Style::default().fg(palette.link_blue).bg(palette.banner_bg);
     draw_text(buf, rect.x + 1, rect.y, icon, icon_style, 2);
-    draw_text(buf, rect.x + 3, rect.y, text, style, rect.width.saturating_sub(4));
+    draw_text(
+        buf,
+        rect.x + 3,
+        rect.y,
+        text,
+        style,
+        rect.width.saturating_sub(4),
+    );
 }
 
-pub fn render_agent_block(buf: &mut Buffer, x: u16, y: u16, width: u16, block: &AgentBlockVm, palette: &Palette) -> u16 {
+pub fn render_agent_block(
+    buf: &mut Buffer,
+    x: u16,
+    y: u16,
+    width: u16,
+    block: &AgentBlockVm,
+    palette: &Palette,
+) -> u16 {
     match block {
-        AgentBlockVm::PromptCard { text, trailing_icon } => {
+        AgentBlockVm::PromptCard {
+            text,
+            trailing_icon,
+        } => {
             let bg = palette.raised_bg;
             for col in x..x.saturating_add(width) {
                 if let Some(cell) = buf.cell_mut((col, y)) {
@@ -551,14 +620,26 @@ pub fn render_agent_block(buf: &mut Buffer, x: u16, y: u16, width: u16, block: &
             draw_text(buf, x + 3, y, label, style, width.saturating_sub(4));
             1
         }
-        AgentBlockVm::Activity { icon, label, target, accent } => {
+        AgentBlockVm::Activity {
+            icon,
+            label,
+            target,
+            accent,
+        } => {
             let icon_style = Style::default().fg(accent.unwrap_or(palette.text_muted));
             draw_text(buf, x + 2, y, icon, icon_style, 2);
             let label_style = Style::default().fg(palette.text_muted);
             let label_len = label.len() as u16;
             draw_text(buf, x + 4, y, label, label_style, label_len);
             let target_style = Style::default().fg(palette.text);
-            draw_text(buf, x + 4 + label_len + 1, y, target, target_style, width.saturating_sub(6 + label_len));
+            draw_text(
+                buf,
+                x + 4 + label_len + 1,
+                y,
+                target,
+                target_style,
+                width.saturating_sub(6 + label_len),
+            );
             1
         }
         AgentBlockVm::Paragraph(text) => {
@@ -647,15 +728,39 @@ pub fn render_composer(buf: &mut Buffer, rect: Rect, vm: &ComposerVm, palette: &
         1,
     );
 
-    let text_y = inner_y + 1;
     let text_x = inner_x + 2;
     let text_w = inner_w.saturating_sub(4);
+    let text_y = inner_y + 1;
+    let text_h = inner_h.saturating_sub(2);
     if vm.input.is_empty() {
         let placeholder_style = Style::default().fg(palette.text_muted).bg(palette.inset_bg);
-        draw_text(buf, text_x, text_y, &vm.placeholder, placeholder_style, text_w);
+        draw_text(
+            buf,
+            text_x,
+            text_y,
+            &vm.placeholder,
+            placeholder_style,
+            text_w,
+        );
     } else {
         let text_style = Style::default().fg(palette.text).bg(palette.inset_bg);
-        draw_text(buf, text_x, text_y, &vm.input, text_style, text_w);
+        let wrapped = crate::quorp::tui::text_width::wrap_plain_lines(&vm.input, text_w as usize);
+        let start_index = wrapped.len().saturating_sub(text_h as usize);
+        for (row_index, line) in wrapped
+            .into_iter()
+            .skip(start_index)
+            .take(text_h as usize)
+            .enumerate()
+        {
+            draw_text(
+                buf,
+                text_x,
+                text_y.saturating_add(row_index as u16),
+                &line,
+                text_style,
+                text_w,
+            );
+        }
     }
 
     if !vm.mode_chips.is_empty() {
@@ -682,10 +787,26 @@ pub fn default_titlebar_vm(theme: &Theme) -> TitleBarVm {
 
 pub fn default_activity_items() -> Vec<ActivityItemVm> {
     vec![
-        ActivityItemVm { icon: "☰", active: true, badge: None },
-        ActivityItemVm { icon: "⌕", active: false, badge: None },
-        ActivityItemVm { icon: "◈", active: false, badge: Some(3) },
-        ActivityItemVm { icon: "⚙", active: false, badge: None },
+        ActivityItemVm {
+            icon: "☰",
+            active: true,
+            badge: None,
+        },
+        ActivityItemVm {
+            icon: "⌕",
+            active: false,
+            badge: None,
+        },
+        ActivityItemVm {
+            icon: "◈",
+            active: false,
+            badge: Some(3),
+        },
+        ActivityItemVm {
+            icon: "⚙",
+            active: false,
+            badge: None,
+        },
     ]
 }
 
@@ -741,7 +862,11 @@ mod tab_layout_tests {
         assert_eq!(overflow, 0);
         assert_eq!(cells.len(), 1);
         let w = UnicodeWidthStr::width(cells[0].truncated_label.as_str());
-        let inner = cells[0].select_rect.width.saturating_sub(2).saturating_sub(2);
+        let inner = cells[0]
+            .select_rect
+            .width
+            .saturating_sub(2)
+            .saturating_sub(2);
         assert!(w as u16 <= inner);
     }
 }

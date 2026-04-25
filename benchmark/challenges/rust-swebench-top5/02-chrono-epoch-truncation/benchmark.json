@@ -1,0 +1,29 @@
+{
+  "id": "02-chrono-epoch-truncation",
+  "title": "Fix duration truncation and rounding behavior near the Unix epoch",
+  "difficulty": "hard",
+  "category": "date-time",
+  "repo_condition": [
+    "proof-full"
+  ],
+  "objective_file": "START_HERE.md",
+  "success_file": "SUCCESS.md",
+  "reset_command": "./reset.sh <condition>",
+  "evaluate_command": "./evaluate.sh <condition>",
+  "estimated_minutes": 75,
+  "expected_files_touched": [
+    "src/round.rs"
+  ],
+  "primary_metrics": [
+    "evaluate_passed",
+    "changed_files",
+    "widening_happened"
+  ],
+  "tags": [
+    "rust",
+    "rust-swebench",
+    "chrono",
+    "time",
+    "rounding"
+  ]
+}

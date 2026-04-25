@@ -1,13 +1,17 @@
 use std::path::PathBuf;
-use std::time::Duration;
+
+use futures::channel::oneshot;
+
+use crate::quorp::tui::agent_protocol::{ActionOutcome, AgentAction};
 
 #[cfg_attr(not(test), allow(dead_code))]
-#[derive(Debug)]
 pub enum CommandBridgeRequest {
-    Run {
+    ExecuteAction {
         session_id: usize,
-        command: String,
+        action: AgentAction,
+        project_root: PathBuf,
         cwd: PathBuf,
-        timeout: Duration,
+        responder: Option<oneshot::Sender<ActionOutcome>>,
+        enable_rollback_on_validation_failure: bool,
     },
 }

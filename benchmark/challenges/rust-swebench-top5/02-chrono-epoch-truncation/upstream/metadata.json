@@ -1,0 +1,21 @@
+{
+  "dataset": "user2f86/rustbench",
+  "split": "train",
+  "instance_id": "chronotope__chrono-1403",
+  "repo": "chronotope/chrono",
+  "base_commit": "ef9a4c9539da5e463a0b8c9dd45920f3a265f421",
+  "version": "0.4",
+  "issue_url": "https://github.com/chronotope/chrono/issues/1375",
+  "pr_url": "https://github.com/chronotope/chrono/pull/1403",
+  "evaluate_command": "cargo test --quiet --lib round::tests::",
+  "expected_files_touched": [
+    "src/round.rs"
+  ],
+  "fail_to_pass": [
+    "round::tests::test_duration_round_close_to_epoch",
+    "round::tests::test_duration_round_close_to_min_max",
+    "round::tests::test_duration_trunc_close_to_epoch"
+  ],
+  "pass_to_pass_count": 503,
+  "hints_text": "I'd be happy to review a PR -- I probably won't have time to work on this myself.\nIt's not urgent for me but I think I will find time for it\r\n\nTo be honest in my opinion the API and approach in the `round` module is fundamentally flawed. A lot of the behavior doesn't make sense, especially for a library that tries to do handle dates and timezones correctly like chrono. And I don't think it is even possible to fix all logic bugs.\r\n\r\nBut we would need to have an alternative before it can be deprecated.\n> But we would need to have an alternative before it can be deprecated.\r\n\r\nWhy? If we think this API is silly or wrong or dangerous, we could deprecate it without providing an alternative.\r\n\r\nDoes the time crate provide this functionality?\nThere are some cases where it works and gives correct results. For example rounding or truncating a `NaiveTime` to a reasonable `Duration` such as 10 seconds. But rounding to for example 7 seconds, and especially when involving dates becomes a mess. And that is ignoring DST :smile:.\r\n\r\n> Why? If we think this API is silly or wrong or dangerous, we could deprecate it without providing an alternative.\r\n\r\nMaybe you are right. It does not really feel like an inconvenience yet, but we can expect more issues like this.\r\n\r\n> Does the time crate provide this functionality?\r\n\r\nIt doesn't seem to.\nAnother issue with `duration_trunc`: https://github.com/chronotope/chrono/issues/584."
+}

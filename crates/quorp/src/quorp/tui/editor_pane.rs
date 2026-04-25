@@ -92,9 +92,17 @@ fn truncate_line_to_width(line: Line<'static>, max_width: usize) -> Line<'static
     Line::from(new_spans)
 }
 
+fn line_to_plain_text(line: &Line<'_>) -> String {
+    line.spans
+        .iter()
+        .map(|span| span.content.as_ref())
+        .collect::<String>()
+}
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct FileTab {
     pub path: Option<PathBuf>,
+    pub detached: bool,
 }
 
 pub struct EditorPane {
@@ -120,7 +128,10 @@ impl EditorPane {
 
     pub(crate) fn with_buffer_bridge(backend: Option<SharedTuiBackend>) -> Self {
         Self {
-            tabs: vec![FileTab { path: None }],
+            tabs: vec![FileTab {
+                path: None,
+                detached: false,
+            }],
             active_tab: 0,
             displayed_path: None,
             highlighted: Vec::new(),
@@ -165,12 +176,18 @@ impl EditorPane {
         project_root: &Path,
     ) {
         if paths.is_empty() {
-            self.tabs = vec![FileTab { path: None }];
+            self.tabs = vec![FileTab {
+                path: None,
+                detached: false,
+            }];
             self.active_tab = 0;
         } else {
             self.tabs = paths
                 .into_iter()
-                .map(|path| FileTab { path: Some(path) })
+                .map(|path| FileTab {
+                    path: Some(path),
+                    detached: false,
+                })
                 .collect();
             self.active_tab = active.min(self.tabs.len().saturating_sub(1));
         }
@@ -185,27 +202,105 @@ impl EditorPane {
         self.active_tab
     }
 
+    pub fn shell_tab_pills(&self, max_tabs: usize) -> Vec<(String, bool)> {
+        self.tabs
+            .iter()
+            .take(max_tabs)
+            .enumerate()
+            .map(|(index, tab)| {
+                let label = tab
+                    .path
+                    .as_ref()
+                    .and_then(|path| path.file_name())
+                    .and_then(|name| name.to_str())
+                    .unwrap_or("Welcome")
+                    .to_string();
+                (label, index == self.active_tab)
+            })
+            .collect()
+    }
+
+    pub fn shell_title(&self) -> String {
+        self.active_file_path()
+            .and_then(|path| path.file_name())
+            .and_then(|name| name.to_str())
+            .unwrap_or("Welcome")
+            .to_string()
+    }
+
+    pub fn shell_preview_lines(&self, max_lines: usize) -> Vec<String> {
+        if let Some(error) = &self.load_error {
+            return vec![format!("Error: {error}")];
+        }
+
+        if self.displayed_path.is_none() && self.highlighted.is_empty() {
+            return vec!["Select a file in the tree to preview it.".to_string()];
+        }
+
+        let mut lines = Vec::new();
+        if self.truncated {
+            lines.push(TRUNCATION_BANNER.to_string());
+        }
+        lines.extend(
+            self.highlighted
+                .iter()
+                .skip(self.vertical_scroll)
+                .take(max_lines.saturating_sub(lines.len()))
+                .map(line_to_plain_text),
+        );
+        lines
+    }
+
     fn active_file_path(&self) -> Option<&Path> {
         self.tabs
             .get(self.active_tab)
             .and_then(|t| t.path.as_deref())
     }
 
+    pub fn active_preview_path(&self) -> Option<&Path> {
+        self.active_file_path()
+    }
+
+    pub fn focus_line(&mut self, line: Option<usize>) {
+        let Some(line) = line else {
+            return;
+        };
+        let target_scroll = line.saturating_sub(1).saturating_sub(2);
+        self.vertical_scroll = target_scroll;
+        self.clamp_scroll(self.viewport_height.max(1));
+    }
+
+    fn active_tab_detached(&self) -> bool {
+        self.tabs
+            .get(self.active_tab)
+            .map(|tab| tab.detached)
+            .unwrap_or(false)
+    }
+
     /// Open the tree-selected file in a tab, or focus an existing tab for that path.
-    pub fn sync_tree_selection(&mut self, selected: Option<&Path>, _project_root: &Path) {
+    pub fn sync_tree_selection(&mut self, selected: Option<&Path>, project_root: &Path) {
         let Some(path) = selected else {
             return;
         };
+        self.open_preview_target(path, project_root);
+    }
+
+    pub fn open_preview_target(&mut self, path: &Path, project_root: &Path) {
+        let detached = !path_within_project(path, project_root);
         if let Some(index) = self
             .tabs
             .iter()
             .position(|t| t.path.as_deref() == Some(path))
         {
+            if let Some(tab) = self.tabs.get_mut(index) {
+                tab.detached = detached;
+            }
             self.active_tab = index;
             return;
         }
         self.tabs.push(FileTab {
             path: Some(path.to_path_buf()),
+            detached,
         });
         self.active_tab = self.tabs.len().saturating_sub(1);
     }
@@ -233,13 +328,16 @@ impl EditorPane {
         };
 
         self.vertical_scroll = self.scroll_by_path.get(path).copied().unwrap_or(0);
+        let detached = self.active_tab_detached();
 
-        if !path_within_project(path, project_root) {
+        if !detached && !path_within_project(path, project_root) {
             self.load_error = Some("File path is outside the project root".to_string());
             return;
         }
 
-        if let Some(backend) = &self.backend {
+        if let Some(backend) = &self.backend
+            && !detached
+        {
             self.bridge_load_pending = true;
             if backend.request_open_buffer(path.clone()).is_err() {
                 self.bridge_load_pending = false;
@@ -356,7 +454,10 @@ impl EditorPane {
     }
 
     pub fn close_all_file_tabs(&mut self, project_root: &Path) {
-        self.tabs = vec![FileTab { path: None }];
+        self.tabs = vec![FileTab {
+            path: None,
+            detached: false,
+        }];
         self.active_tab = 0;
         self.displayed_path = None;
         self.ensure_active_loaded(project_root);
@@ -407,11 +508,7 @@ impl EditorPane {
         if viewport_lines == 0 {
             return;
         }
-        let max_scroll = if viewport_lines >= total {
-            0
-        } else {
-            total - viewport_lines
-        };
+        let max_scroll = total.saturating_sub(viewport_lines);
         if self.vertical_scroll > max_scroll {
             self.vertical_scroll = max_scroll;
         }
@@ -852,7 +949,10 @@ fn read_file_capped(path: &Path) -> Result<(Vec<u8>, bool), std::io::Error> {
     Ok((buf, truncated))
 }
 
-pub(crate) fn buffer_snapshot_from_disk(path: Option<PathBuf>, project_root: &Path) -> BufferSnapshot {
+pub(crate) fn buffer_snapshot_from_disk(
+    path: Option<PathBuf>,
+    project_root: &Path,
+) -> BufferSnapshot {
     let Some(path) = path else {
         return BufferSnapshot {
             path: None,
@@ -999,8 +1099,9 @@ mod tests {
         std::fs::write(&outside, "fn x() {}\n").expect("write");
         let mut preview = EditorPane::new();
         preview.sync_from_selected_file(Some(outside.as_path()), root_dir.path());
-        assert!(preview.load_error.is_some());
-        assert!(preview.highlighted.is_empty());
+        assert!(preview.load_error.is_none());
+        assert!(!preview.highlighted.is_empty());
+        assert!(preview.active_tab_detached());
     }
 
     #[test]

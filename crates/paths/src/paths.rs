@@ -210,6 +210,12 @@ pub fn old_log_file() -> &'static PathBuf {
     OLD_LOG_FILE.get_or_init(|| logs_dir().join("Quorp.log.old"))
 }
 
+/// Returns the path to the `QuorpMemory.log` file.
+pub fn memory_log_file() -> &'static PathBuf {
+    static MEMORY_LOG_FILE: OnceLock<PathBuf> = OnceLock::new();
+    MEMORY_LOG_FILE.get_or_init(|| logs_dir().join("QuorpMemory.log"))
+}
+
 /// Returns the path to the database directory.
 pub fn database_dir() -> &'static PathBuf {
     static DATABASE_DIR: OnceLock<PathBuf> = OnceLock::new();
@@ -438,19 +444,34 @@ pub fn devcontainer_dir() -> &'static PathBuf {
 }
 
 /// Environment variable that overrides [`user_models_dir`] (tests and isolated installs).
-pub const QUORP_USER_MODELS_DIR_VAR: &str = "QUORP_USER_MODELS_DIR";
+pub const GARY_MODELS_DIR_VAR: &str = "GARY_MODELS_DIR";
+/// Shared environment variable that overrides [`user_models_dir`].
+pub const SSD_MOE_MODELS_DIR_VAR: &str = "SSD_MOE_MODELS_DIR";
+/// Shared environment variable that overrides [`ssd_moe_state_dir`].
+pub const SSD_MOE_STATE_DIR_VAR: &str = "SSD_MOE_STATE_DIR";
+/// App-specific environment variable that overrides [`ssd_moe_state_dir`].
+pub const QUORP_SSD_MOE_STATE_DIR_VAR: &str = "QUORP_SSD_MOE_STATE_DIR";
+
+const DEFAULT_SHARED_MODELS_DIR: &str = "/Volumes/MOE/models";
 
 /// Root directory for large downloaded model artifacts (e.g. SSD-MOE packed weights).
 ///
-/// Uses [`QUORP_USER_MODELS_DIR_VAR`] when set to a non-empty value; otherwise `~/models`.
+/// Uses [`GARY_MODELS_DIR_VAR`] or [`SSD_MOE_MODELS_DIR_VAR`] when set to a non-empty value;
+/// otherwise `/Volumes/MOE/models`.
 pub fn user_models_dir() -> PathBuf {
-    if let Ok(override_dir) = env::var(QUORP_USER_MODELS_DIR_VAR) {
-        let trimmed = override_dir.trim();
+    if let Ok(shared_dir) = env::var(GARY_MODELS_DIR_VAR) {
+        let trimmed = shared_dir.trim();
         if !trimmed.is_empty() {
             return PathBuf::from(trimmed);
         }
     }
-    home_dir().join("models")
+    if let Ok(shared_dir) = env::var(SSD_MOE_MODELS_DIR_VAR) {
+        let trimmed = shared_dir.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    PathBuf::from(DEFAULT_SHARED_MODELS_DIR)
 }
 
 /// Creates [`user_models_dir`] if missing.
@@ -458,6 +479,23 @@ pub fn ensure_user_models_dir() -> std::io::Result<PathBuf> {
     let dir = user_models_dir();
     std::fs::create_dir_all(&dir)?;
     Ok(dir)
+}
+
+/// Shared state directory for the SSD-MOE broker and lease metadata.
+pub fn ssd_moe_state_dir() -> PathBuf {
+    if let Ok(state_dir) = env::var(QUORP_SSD_MOE_STATE_DIR_VAR) {
+        let trimmed = state_dir.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    if let Ok(state_dir) = env::var(SSD_MOE_STATE_DIR_VAR) {
+        let trimmed = state_dir.trim();
+        if !trimmed.is_empty() {
+            return PathBuf::from(trimmed);
+        }
+    }
+    home_dir().join(".local").join("state").join("ssd-moe")
 }
 
 /// Returns the relative path to a `.quorp` folder within a project.
@@ -611,4 +649,56 @@ pub fn global_gitignore_path() -> Option<PathBuf> {
     GLOBAL_GITIGNORE_PATH
         .get_or_init(::ignore::gitignore::gitconfig_excludes_path)
         .clone()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::Mutex;
+
+    static ENV_LOCK: Mutex<()> = Mutex::new(());
+
+    #[test]
+    fn memory_log_path_uses_logs_directory() {
+        assert_eq!(memory_log_file(), &logs_dir().join("QuorpMemory.log"));
+    }
+
+    #[test]
+    fn user_models_dir_prefers_gary_models_dir() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        unsafe {
+            std::env::set_var(GARY_MODELS_DIR_VAR, "/tmp/gary-models");
+        }
+
+        assert_eq!(user_models_dir(), PathBuf::from("/tmp/gary-models"));
+
+        unsafe {
+            std::env::remove_var(GARY_MODELS_DIR_VAR);
+        }
+    }
+
+    #[test]
+    fn user_models_dir_defaults_to_moe_root() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        unsafe {
+            std::env::remove_var(GARY_MODELS_DIR_VAR);
+            std::env::remove_var(SSD_MOE_MODELS_DIR_VAR);
+        }
+
+        assert_eq!(user_models_dir(), PathBuf::from("/Volumes/MOE/models"));
+    }
+
+    #[test]
+    fn ssd_moe_state_dir_defaults_to_shared_local_state() {
+        let _guard = ENV_LOCK.lock().expect("env lock");
+        unsafe {
+            std::env::remove_var(QUORP_SSD_MOE_STATE_DIR_VAR);
+            std::env::remove_var(SSD_MOE_STATE_DIR_VAR);
+        }
+
+        assert_eq!(
+            ssd_moe_state_dir(),
+            home_dir().join(".local").join("state").join("ssd-moe")
+        );
+    }
 }

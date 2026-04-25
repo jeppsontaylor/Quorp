@@ -1,0 +1,24 @@
+{
+  "dataset": "user2f86/rustbench",
+  "split": "train",
+  "instance_id": "axodotdev__cargo-dist-367",
+  "repo": "axodotdev/cargo-dist",
+  "base_commit": "b3c413953f319841c755dc9247035122f26918f3",
+  "version": "4.0",
+  "issue_url": "https://github.com/axodotdev/cargo-dist/issues/366",
+  "pr_url": "https://github.com/axodotdev/cargo-dist/pull/367",
+  "evaluate_command": "cargo test --quiet -p cargo-dist --test integration-tests axolotlsay_edit_existing -- --exact",
+  "expected_files_touched": [
+    "book/src/config.md",
+    "cargo-dist/src/backend/ci/github.rs",
+    "cargo-dist/src/config.rs",
+    "cargo-dist/src/init.rs",
+    "cargo-dist/src/tasks.rs",
+    "cargo-dist/templates/ci/github_ci.yml.j2"
+  ],
+  "fail_to_pass": [
+    "axolotlsay_edit_existing"
+  ],
+  "pass_to_pass_count": 15,
+  "hints_text": ""
+}
