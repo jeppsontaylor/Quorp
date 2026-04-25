@@ -72,6 +72,9 @@ Action variants:
 - {"ListDirectory":{"path":"."}}
 - {"SearchText":{"query":"AgentTurnResponse","limit":6}}
 - {"SearchSymbols":{"query":"render_agent_turn_text","limit":6}}
+- {"FindFiles":{"query":"benchmark","limit":10}}
+- {"StructuralSearch":{"pattern":"impl $T { $$$ }","language":"rust","path":"crates/quorp","limit":8}}
+- {"CargoDiagnostics":{"include_clippy":false}}
 - {"GetRepoCapsule":{"query":"agent runtime","limit":8}}
 - {"WriteFile":{"path":"src/main.rs","content":"full file contents"}}
 - {"ApplyPatch":{"path":"src/main.rs","patch":"--- a/src/main.rs\n+++ b/src/main.rs\n@@ -1 +1 @@\n-old\n+new"}}
@@ -131,7 +134,7 @@ If native tool calls are unavailable in this runtime, fall back to one raw JSON 
   "task_updates": [],
   "verifier_plan": null
 }
-Accepted fallback tool names are the same as the native tool definitions: `run_command`, `read_file`, `list_directory`, `search_text`, `search_symbols`, `get_repo_capsule`, `explain_validation_failure`, `suggest_implementation_targets`, `suggest_edit_anchors`, `preview_edit`, `replace_range`, `modify_toml`, `apply_preview`, `write_file`, `apply_patch`, `replace_block`, `set_executable`, and `run_validation`.
+Accepted fallback tool names are the same as the native tool definitions: `run_command`, `read_file`, `list_directory`, `search_text`, `search_symbols`, `find_files`, `structural_search`, `structural_edit_preview`, `cargo_diagnostics`, `get_repo_capsule`, `explain_validation_failure`, `suggest_implementation_targets`, `suggest_edit_anchors`, `preview_edit`, `replace_range`, `modify_toml`, `apply_preview`, `write_file`, `apply_patch`, `replace_block`, `set_executable`, and `run_validation`.
 If you include `task_updates`, it must be an array of objects. If you include `verifier_plan`, it must be an object, not a free-form sentence.
 If the task is complete and validation is green, return a short assistant message with no tool calls.
 Do not switch to the raw JSON fallback unless the runtime explicitly says native tool calls are unavailable."#;
@@ -1152,6 +1155,61 @@ fn native_tool_definitions() -> Vec<serde_json::Value> {
             }),
         ),
         function_tool(
+            "find_files",
+            "Find repo files by name or path using the configured fd integration when available.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 64 }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+        ),
+        function_tool(
+            "structural_search",
+            "Run syntax-aware structural search with ast-grep. Prefer this for Rust constructs when regex would be brittle.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string" },
+                    "language": { "type": "string" },
+                    "path": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 32 }
+                },
+                "required": ["pattern"],
+                "additionalProperties": false
+            }),
+        ),
+        function_tool(
+            "structural_edit_preview",
+            "Dry-run an ast-grep structural rewrite. This never mutates files; apply the returned preview_id with apply_preview if the preview is correct.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "pattern": { "type": "string" },
+                    "rewrite": { "type": "string" },
+                    "language": { "type": "string" },
+                    "path": { "type": "string" }
+                },
+                "required": ["pattern", "rewrite"],
+                "additionalProperties": false
+            }),
+        ),
+        function_tool(
+            "cargo_diagnostics",
+            "Run configured Cargo JSON diagnostics and return compact compiler errors with file/line anchors.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "command": { "type": "string" },
+                    "include_clippy": { "type": "boolean" }
+                },
+                "additionalProperties": false
+            }),
+        ),
+        function_tool(
             "get_repo_capsule",
             "Fetch a compact repository capsule for orientation.",
             json!({
@@ -1444,19 +1502,77 @@ fn toml_operations_schema() -> serde_json::Value {
 }
 
 fn native_tool_definitions_for_request(request: &StreamRequest) -> Vec<serde_json::Value> {
+    let config =
+        crate::quorp::tui::agent_context::load_agent_config(request.project_root.as_path());
     let tools = native_tool_definitions();
     let Some(allowed_tools) = native_tool_allowlist_for_request(request) else {
-        return tools;
+        return filter_native_tools_for_config(tools, &config);
     };
-    tools
+    filter_native_tools_for_config(tools, &config)
         .into_iter()
         .filter(|tool| {
             tool.get("function")
                 .and_then(|function| function.get("name"))
                 .and_then(serde_json::Value::as_str)
-                .is_some_and(|name| allowed_tools.iter().any(|allowed| *allowed == name))
+                .is_some_and(|name| allowed_tools.contains(&name))
         })
         .collect()
+}
+
+fn filter_native_tools_for_config(
+    tools: Vec<serde_json::Value>,
+    config: &crate::quorp::tui::agent_context::AgentConfig,
+) -> Vec<serde_json::Value> {
+    tools
+        .into_iter()
+        .filter(|tool| {
+            let Some(name) = tool
+                .get("function")
+                .and_then(|function| function.get("name"))
+                .and_then(serde_json::Value::as_str)
+            else {
+                return false;
+            };
+            external_native_tool_enabled(name, config)
+        })
+        .collect()
+}
+
+fn external_native_tool_enabled(
+    name: &str,
+    config: &crate::quorp::tui::agent_context::AgentConfig,
+) -> bool {
+    let tools = &config.agent_tools;
+    match name {
+        "find_files" => tools.enabled && tools.fd.enabled,
+        "structural_search" => {
+            tools.enabled && tools.ast_grep.enabled && configured_ast_grep_command(tools).is_some()
+        }
+        "structural_edit_preview" => {
+            tools.enabled
+                && tools.ast_grep.enabled
+                && tools.ast_grep.allow_rewrite_preview
+                && configured_ast_grep_command(tools).is_some()
+        }
+        "cargo_diagnostics" => {
+            tools.enabled
+                && tools.cargo_diagnostics.enabled
+                && quorp_agent_core::command_is_available(&tools.cargo_diagnostics.check_command)
+        }
+        _ => true,
+    }
+}
+
+fn configured_ast_grep_command(
+    tools: &crate::quorp::tui::agent_context::AgentToolsSettings,
+) -> Option<String> {
+    if quorp_agent_core::command_is_available(&tools.ast_grep.command) {
+        return Some(tools.ast_grep.command.clone());
+    }
+    if tools.ast_grep.command == "ast-grep" && quorp_agent_core::command_is_available("sg") {
+        return Some("sg".to_string());
+    }
+    None
 }
 
 fn native_tool_allowlist_for_request(request: &StreamRequest) -> Option<Vec<&'static str>> {
@@ -2710,6 +2826,26 @@ fn parse_action_from_arguments(
             query: required_string_argument(arguments, tool_name, "query")?,
             limit: optional_usize_argument(arguments, "limit").unwrap_or(8),
         }),
+        "find_files" => Ok(AgentAction::FindFiles {
+            query: required_string_argument(arguments, tool_name, "query")?,
+            limit: optional_usize_argument(arguments, "limit").unwrap_or(12),
+        }),
+        "structural_search" => Ok(AgentAction::StructuralSearch {
+            pattern: required_string_argument(arguments, tool_name, "pattern")?,
+            language: optional_string_argument(arguments, "language"),
+            path: optional_string_argument(arguments, "path"),
+            limit: optional_usize_argument(arguments, "limit").unwrap_or(8),
+        }),
+        "structural_edit_preview" => Ok(AgentAction::StructuralEditPreview {
+            pattern: required_string_argument(arguments, tool_name, "pattern")?,
+            rewrite: required_string_argument(arguments, tool_name, "rewrite")?,
+            language: optional_string_argument(arguments, "language"),
+            path: optional_string_argument(arguments, "path"),
+        }),
+        "cargo_diagnostics" => Ok(AgentAction::CargoDiagnostics {
+            command: optional_string_argument(arguments, "command"),
+            include_clippy: optional_bool_argument(arguments, "include_clippy").unwrap_or(false),
+        }),
         "get_repo_capsule" => Ok(AgentAction::GetRepoCapsule {
             query: optional_string_argument(arguments, "query"),
             limit: optional_usize_argument(arguments, "limit").unwrap_or(8),
@@ -2887,6 +3023,10 @@ fn normalize_tool_name(raw: &str) -> &str {
         "ListDirectory" => "list_directory",
         "SearchText" => "search_text",
         "SearchSymbols" => "search_symbols",
+        "FindFiles" => "find_files",
+        "StructuralSearch" => "structural_search",
+        "StructuralEditPreview" => "structural_edit_preview",
+        "CargoDiagnostics" => "cargo_diagnostics",
         "GetRepoCapsule" => "get_repo_capsule",
         "ExplainValidationFailure" => "explain_validation_failure",
         "SuggestImplementationTargets" => "suggest_implementation_targets",
@@ -3662,6 +3802,11 @@ pub fn build_system_prompt(request: &StreamRequest) -> String {
         prompt.push_str("\n\n");
         prompt.push_str(&rendered_mcp_servers);
     }
+    let rendered_agent_tools = render_agent_tools_for_prompt(&instruction_context.config);
+    if !rendered_agent_tools.is_empty() {
+        prompt.push_str("\n\n");
+        prompt.push_str(&rendered_agent_tools);
+    }
 
     if request.include_repo_capsule {
         let capsule = crate::quorp::tui::path_index::build_repo_capsule(
@@ -3677,6 +3822,55 @@ pub fn build_system_prompt(request: &StreamRequest) -> String {
     }
 
     prompt
+}
+
+fn render_agent_tools_for_prompt(config: &crate::quorp::tui::agent_context::AgentConfig) -> String {
+    let tools = &config.agent_tools;
+    if !tools.enabled {
+        return String::new();
+    }
+    let mut lines = Vec::new();
+    if tools.fd.enabled {
+        lines.push(
+            "- FindFiles: locate candidate files before broad directory reads; falls back to the repo ignore-walk when fd is unavailable."
+                .to_string(),
+        );
+    }
+    if tools.ast_grep.enabled && configured_ast_grep_command(tools).is_some() {
+        lines.push(
+            "- StructuralSearch: syntax-aware Rust search for functions, impls, calls, and patterns."
+                .to_string(),
+        );
+        if tools.ast_grep.allow_rewrite_preview {
+            lines.push(
+                "- StructuralEditPreview: read-only ast-grep rewrite preview; apply real writes only with PreviewEdit/ApplyPreview."
+                    .to_string(),
+            );
+        }
+    }
+    if tools.cargo_diagnostics.enabled
+        && quorp_agent_core::command_is_available(&tools.cargo_diagnostics.check_command)
+    {
+        lines.push(
+            "- CargoDiagnostics: compact cargo check JSON diagnostics; use after edits or when compiler errors matter."
+                .to_string(),
+        );
+    }
+    if tools.nextest.enabled
+        && tools.nextest.prefer_for_workspace_tests
+        && quorp_agent_core::command_is_available(&tools.nextest.command)
+    {
+        lines.push(
+            "- RunValidation workspace_tests may use cargo-nextest for faster Rust test feedback."
+                .to_string(),
+        );
+    }
+    if lines.is_empty() {
+        return String::new();
+    }
+    let mut rendered = String::from("Configured coding tools:\n");
+    rendered.push_str(&lines.join("\n"));
+    rendered
 }
 
 fn render_mcp_servers_for_prompt(
@@ -5978,6 +6172,88 @@ command = "fs-mcp"
         assert!(prompt.contains("Configured MCP servers:"));
         assert!(prompt.contains("- docs (configured stdio server)"));
         assert!(prompt.contains("- filesystem (configured stdio server)"));
+    }
+
+    #[test]
+    fn agent_tools_prompt_and_schema_filtering_use_settings() {
+        let _env_lock = crate::quorp::tui::ssd_moe_tui::test_env_lock();
+        struct HomeGuard(Option<std::ffi::OsString>);
+        impl Drop for HomeGuard {
+            fn drop(&mut self) {
+                unsafe {
+                    match self.0.as_ref() {
+                        Some(value) => std::env::set_var("HOME", value),
+                        None => std::env::remove_var("HOME"),
+                    }
+                }
+            }
+        }
+        let temp_home = tempfile::tempdir().expect("home");
+        let project = tempfile::tempdir().expect("project");
+        std::fs::create_dir_all(temp_home.path().join(".quorp")).expect("home config");
+        std::fs::write(
+            temp_home.path().join(".quorp/settings.json"),
+            r#"{
+              "agent_tools": {
+                "enabled": true,
+                "tools": {
+                  "fd": {"enabled": true, "command": "fd"},
+                  "ast_grep": {"enabled": false, "command": "ast-grep"},
+                  "cargo_diagnostics": {
+                    "enabled": true,
+                    "check_command": "cargo check --message-format=json"
+                  }
+                }
+              }
+            }"#,
+        )
+        .expect("settings");
+        let _home_guard = HomeGuard(std::env::var_os("HOME"));
+        unsafe {
+            std::env::set_var("HOME", temp_home.path());
+        }
+        let request = StreamRequest {
+            request_id: 3,
+            session_id: 0,
+            model_id: "nvidia/qwen/qwen3-coder-480b-a35b-instruct".to_string(),
+            agent_mode: AgentMode::Act,
+            latest_input: "inspect".to_string(),
+            messages: vec![ChatServiceMessage {
+                role: ChatServiceRole::User,
+                content: "inspect".to_string(),
+            }],
+            project_root: project.path().to_path_buf(),
+            base_url_override: Some("https://integrate.api.nvidia.com/v1".to_string()),
+            max_completion_tokens: Some(512),
+            include_repo_capsule: false,
+            disable_reasoning: true,
+            native_tool_calls: true,
+            watchdog: None,
+            safety_mode_label: None,
+            prompt_compaction_policy: None,
+            capture_scope: None,
+            capture_call_class: None,
+        };
+
+        let prompt = build_system_prompt(&request);
+        assert!(prompt.contains("Configured coding tools:"));
+        assert!(prompt.contains("FindFiles:"));
+        assert!(prompt.contains("CargoDiagnostics:"));
+        assert!(!prompt.contains("StructuralSearch:"));
+
+        let names = native_tool_definitions_for_request(&request)
+            .into_iter()
+            .filter_map(|tool| {
+                tool.get("function")
+                    .and_then(|function| function.get("name"))
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_string)
+            })
+            .collect::<Vec<_>>();
+        assert!(names.contains(&"find_files".to_string()));
+        assert!(names.contains(&"cargo_diagnostics".to_string()));
+        assert!(!names.contains(&"structural_search".to_string()));
+        assert!(!names.contains(&"structural_edit_preview".to_string()));
     }
 
     #[test]

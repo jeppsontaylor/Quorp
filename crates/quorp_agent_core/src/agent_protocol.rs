@@ -49,6 +49,10 @@ impl AgentMode {
                     | AgentAction::ListDirectory { .. }
                     | AgentAction::SearchText { .. }
                     | AgentAction::SearchSymbols { .. }
+                    | AgentAction::FindFiles { .. }
+                    | AgentAction::StructuralSearch { .. }
+                    | AgentAction::StructuralEditPreview { .. }
+                    | AgentAction::CargoDiagnostics { .. }
                     | AgentAction::GetRepoCapsule { .. }
                     | AgentAction::ExplainValidationFailure { .. }
                     | AgentAction::SuggestImplementationTargets { .. }
@@ -61,6 +65,10 @@ impl AgentMode {
                     | AgentAction::ListDirectory { .. }
                     | AgentAction::SearchText { .. }
                     | AgentAction::SearchSymbols { .. }
+                    | AgentAction::FindFiles { .. }
+                    | AgentAction::StructuralSearch { .. }
+                    | AgentAction::StructuralEditPreview { .. }
+                    | AgentAction::CargoDiagnostics { .. }
                     | AgentAction::GetRepoCapsule { .. }
                     | AgentAction::ExplainValidationFailure { .. }
                     | AgentAction::SuggestImplementationTargets { .. }
@@ -139,6 +147,32 @@ pub enum AgentAction {
     SearchSymbols {
         query: String,
         limit: usize,
+    },
+    FindFiles {
+        query: String,
+        limit: usize,
+    },
+    StructuralSearch {
+        pattern: String,
+        #[serde(default)]
+        language: Option<String>,
+        #[serde(default)]
+        path: Option<String>,
+        limit: usize,
+    },
+    StructuralEditPreview {
+        pattern: String,
+        rewrite: String,
+        #[serde(default)]
+        language: Option<String>,
+        #[serde(default)]
+        path: Option<String>,
+    },
+    CargoDiagnostics {
+        #[serde(default)]
+        command: Option<String>,
+        #[serde(default)]
+        include_clippy: bool,
     },
     GetRepoCapsule {
         query: Option<String>,
@@ -303,6 +337,10 @@ impl AgentAction {
             Self::ListDirectory { .. } => "list_directory",
             Self::SearchText { .. } => "search_text",
             Self::SearchSymbols { .. } => "search_symbols",
+            Self::FindFiles { .. } => "find_files",
+            Self::StructuralSearch { .. } => "structural_search",
+            Self::StructuralEditPreview { .. } => "structural_edit_preview",
+            Self::CargoDiagnostics { .. } => "cargo_diagnostics",
             Self::GetRepoCapsule { .. } => "get_repo_capsule",
             Self::ExplainValidationFailure { .. } => "explain_validation_failure",
             Self::SuggestImplementationTargets { .. } => "suggest_implementation_targets",
@@ -330,6 +368,32 @@ impl AgentAction {
             Self::ListDirectory { path } => format!("list_directory {path}"),
             Self::SearchText { query, .. } => format!("search_text {query}"),
             Self::SearchSymbols { query, .. } => format!("search_symbols {query}"),
+            Self::FindFiles { query, .. } => format!("find_files {query}"),
+            Self::StructuralSearch { pattern, path, .. } => {
+                let scope = path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| format!(" in {value}"))
+                    .unwrap_or_default();
+                format!("structural_search {pattern}{scope}")
+            }
+            Self::StructuralEditPreview { path, .. } => {
+                let scope = path
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .unwrap_or(".");
+                format!("structural_edit_preview {scope}")
+            }
+            Self::CargoDiagnostics { command, .. } => {
+                format!(
+                    "cargo_diagnostics {}",
+                    command
+                        .as_deref()
+                        .unwrap_or("cargo check --message-format=json")
+                )
+            }
             Self::GetRepoCapsule { query, .. } => match query {
                 Some(query) if !query.trim().is_empty() => format!("get_repo_capsule {query}"),
                 _ => "get_repo_capsule".to_string(),
@@ -421,6 +485,10 @@ impl AgentAction {
             | Self::ListDirectory { .. }
             | Self::SearchText { .. }
             | Self::SearchSymbols { .. }
+            | Self::FindFiles { .. }
+            | Self::StructuralSearch { .. }
+            | Self::StructuralEditPreview { .. }
+            | Self::CargoDiagnostics { .. }
             | Self::GetRepoCapsule { .. }
             | Self::ExplainValidationFailure { .. }
             | Self::SuggestImplementationTargets { .. }
@@ -446,6 +514,10 @@ impl AgentAction {
                 | Self::ListDirectory { .. }
                 | Self::SearchText { .. }
                 | Self::SearchSymbols { .. }
+                | Self::FindFiles { .. }
+                | Self::StructuralSearch { .. }
+                | Self::StructuralEditPreview { .. }
+                | Self::CargoDiagnostics { .. }
                 | Self::GetRepoCapsule { .. }
                 | Self::ExplainValidationFailure { .. }
                 | Self::SuggestImplementationTargets { .. }
@@ -484,6 +556,19 @@ impl AgentAction {
             Self::ListDirectory { path } => format!("ls {}", path),
             Self::SearchText { query, .. } => format!("search '{}'", query),
             Self::SearchSymbols { query, .. } => format!("symbols '{}'", query),
+            Self::FindFiles { query, .. } => format!("find files '{}'", query),
+            Self::StructuralSearch { pattern, .. } => format!("structural search '{}'", pattern),
+            Self::StructuralEditPreview { path, .. } => {
+                format!("structural edit preview {}", path.as_deref().unwrap_or("."))
+            }
+            Self::CargoDiagnostics { command, .. } => {
+                format!(
+                    "cargo diagnostics '{}'",
+                    command
+                        .as_deref()
+                        .unwrap_or("cargo check --message-format=json")
+                )
+            }
             Self::GetRepoCapsule { query: Some(q), .. } => format!("capsule '{}'", q),
             Self::GetRepoCapsule { query: None, .. } => "capsule".to_string(),
             Self::ExplainValidationFailure { command, .. } => {

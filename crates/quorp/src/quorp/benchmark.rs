@@ -3206,6 +3206,7 @@ fn prepare_challenge_run(
         ),
     );
     copy_dir_all(&challenge.case_root, &sandbox_root)?;
+    maybe_materialize_rustbench_workspace(&sandbox_root, &challenge.condition)?;
     maybe_materialize_flat_challenge_reset_script(result_dir, &sandbox_root)?;
 
     let objective_path = sandbox_root.join(CHALLENGE_OBJECTIVE_FILE);
@@ -3341,6 +3342,105 @@ fn prepare_challenge_run(
         challenge_metadata,
         reset_outcome,
     })
+}
+
+#[derive(Debug, Deserialize)]
+struct RustbenchUpstreamMetadata {
+    repo: String,
+    base_commit: String,
+}
+
+fn maybe_materialize_rustbench_workspace(
+    sandbox_root: &Path,
+    condition: &str,
+) -> anyhow::Result<()> {
+    let workspace_dir = sandbox_root.join("workspace").join(condition);
+    if workspace_dir.exists() {
+        return Ok(());
+    }
+    let metadata_path = sandbox_root.join("upstream").join("metadata.json");
+    if !metadata_path.exists() {
+        return Ok(());
+    }
+    let metadata: RustbenchUpstreamMetadata = serde_json::from_str(
+        &fs::read_to_string(&metadata_path)
+            .with_context(|| format!("failed to read {}", metadata_path.display()))?,
+    )
+    .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
+    let parent = workspace_dir.parent().ok_or_else(|| {
+        anyhow::anyhow!("workspace path had no parent: {}", workspace_dir.display())
+    })?;
+    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
+    let repo_url = format!("https://github.com/{}.git", metadata.repo);
+    log_phase(
+        "sandbox",
+        ANSI_BLUE,
+        format!(
+            "materializing Rustbench workspace {} @ {} -> {}",
+            metadata.repo,
+            metadata.base_commit,
+            workspace_dir.display()
+        ),
+    );
+    run_git_command(
+        None,
+        &[
+            "clone",
+            "--quiet",
+            "--no-tags",
+            "--filter=blob:none",
+            repo_url.as_str(),
+            workspace_dir.to_str().ok_or_else(|| {
+                anyhow::anyhow!("non-utf8 workspace path {}", workspace_dir.display())
+            })?,
+        ],
+    )?;
+    run_git_command(
+        Some(&workspace_dir),
+        &["checkout", "--quiet", &metadata.base_commit],
+    )?;
+    let test_patch = sandbox_root.join("upstream").join("test.patch");
+    if test_patch.exists() {
+        run_git_command(
+            Some(&workspace_dir),
+            &[
+                "apply",
+                test_patch.to_str().ok_or_else(|| {
+                    anyhow::anyhow!("non-utf8 patch path {}", test_patch.display())
+                })?,
+            ],
+        )?;
+    }
+    run_git_command(Some(&workspace_dir), &["add", "."])?;
+    run_git_command(
+        Some(&workspace_dir),
+        &[
+            "-c",
+            "user.name=quorp",
+            "-c",
+            "user.email=quorp@example.com",
+            "commit",
+            "-qm",
+            "Challenge baseline",
+        ],
+    )?;
+    Ok(())
+}
+
+fn run_git_command(cwd: Option<&Path>, args: &[&str]) -> anyhow::Result<()> {
+    let mut command = Command::new("git");
+    command.args(args);
+    if let Some(cwd) = cwd {
+        command.current_dir(cwd);
+    }
+    let status = command
+        .status()
+        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
+    if status.success() {
+        Ok(())
+    } else {
+        anyhow::bail!("git {} failed with status {status}", args.join(" "))
+    }
 }
 
 fn reset_challenge_workspace_for_attempt(

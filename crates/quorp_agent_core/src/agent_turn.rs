@@ -375,6 +375,33 @@ fn parse_line_oriented_action(line: &str) -> Option<AgentAction> {
             query: first_non_assignment_token(&rest)?,
             limit: parse_usize_assignment(&rest, "limit").unwrap_or(20),
         }),
+        "findfiles" | "find_files" | "fd" => Some(AgentAction::FindFiles {
+            query: first_non_assignment_token(&rest)?,
+            limit: parse_usize_assignment(&rest, "limit").unwrap_or(20),
+        }),
+        "structuralsearch" | "structural_search" | "ast_grep" | "ast-grep" | "sg" => {
+            Some(AgentAction::StructuralSearch {
+                pattern: parse_string_assignment(&rest, "pattern")
+                    .or_else(|| first_non_assignment_token(&rest))?,
+                language: parse_string_assignment(&rest, "language")
+                    .or_else(|| parse_string_assignment(&rest, "lang")),
+                path: parse_string_assignment(&rest, "path"),
+                limit: parse_usize_assignment(&rest, "limit").unwrap_or(20),
+            })
+        }
+        "structuraleditpreview" | "structural_edit_preview" => {
+            Some(AgentAction::StructuralEditPreview {
+                pattern: parse_string_assignment(&rest, "pattern")?,
+                rewrite: parse_string_assignment(&rest, "rewrite")?,
+                language: parse_string_assignment(&rest, "language")
+                    .or_else(|| parse_string_assignment(&rest, "lang")),
+                path: parse_string_assignment(&rest, "path"),
+            })
+        }
+        "cargodiagnostics" | "cargo_diagnostics" => Some(AgentAction::CargoDiagnostics {
+            command: parse_string_assignment(&rest, "command"),
+            include_clippy: parse_bool_assignment(&rest, "include_clippy").unwrap_or(false),
+        }),
         "explainvalidationfailure" | "explain_validation_failure" => {
             if rest.trim().is_empty() {
                 return None;
@@ -625,6 +652,15 @@ fn parse_string_assignment(rest: &str, key: &str) -> Option<String> {
         .find_map(|token| token.strip_prefix(&prefix).map(str::to_string))
         .map(|value| value.trim().to_string())
         .filter(|value| !value.is_empty())
+}
+
+fn parse_bool_assignment(rest: &str, key: &str) -> Option<bool> {
+    let value = parse_string_assignment(rest, key)?;
+    match value.trim().to_ascii_lowercase().as_str() {
+        "1" | "true" | "yes" | "on" => Some(true),
+        "0" | "false" | "no" | "off" => Some(false),
+        _ => None,
+    }
 }
 
 fn parse_range_from_text(text: &str) -> Option<ReadFileRange> {
@@ -1258,6 +1294,12 @@ fn canonical_action_tag(name: &str) -> Option<&'static str> {
         "ListDirectory" | "list_directory" | "listdirectory" => Some("ListDirectory"),
         "SearchText" | "search_text" | "searchtext" => Some("SearchText"),
         "SearchSymbols" | "search_symbols" | "searchsymbols" => Some("SearchSymbols"),
+        "FindFiles" | "find_files" | "findfiles" => Some("FindFiles"),
+        "StructuralSearch" | "structural_search" | "structuralsearch" => Some("StructuralSearch"),
+        "StructuralEditPreview" | "structural_edit_preview" | "structuraleditpreview" => {
+            Some("StructuralEditPreview")
+        }
+        "CargoDiagnostics" | "cargo_diagnostics" | "cargodiagnostics" => Some("CargoDiagnostics"),
         "GetRepoCapsule" | "get_repo_capsule" | "getrepocapsule" => Some("GetRepoCapsule"),
         "ExplainValidationFailure" | "explain_validation_failure" | "explainvalidationfailure" => {
             Some("ExplainValidationFailure")
@@ -1311,6 +1353,30 @@ fn parse_flat_action(value: &serde_json::Value) -> Option<AgentAction> {
         "searchsymbols" | "search_symbols" => Some(AgentAction::SearchSymbols {
             query: string_field(object, &["query", "q"])?,
             limit: usize_field(object, &["limit"]).unwrap_or(20),
+        }),
+        "findfiles" | "find_files" | "fd" => Some(AgentAction::FindFiles {
+            query: string_field(object, &["query", "q", "pattern"])?,
+            limit: usize_field(object, &["limit"]).unwrap_or(20),
+        }),
+        "structuralsearch" | "structural_search" | "ast_grep" | "ast-grep" | "sg" => {
+            Some(AgentAction::StructuralSearch {
+                pattern: string_field(object, &["pattern", "query", "q"])?,
+                language: string_field(object, &["language", "lang"]),
+                path: string_field(object, &["path", "file", "directory"]),
+                limit: usize_field(object, &["limit"]).unwrap_or(20),
+            })
+        }
+        "structuraleditpreview" | "structural_edit_preview" => {
+            Some(AgentAction::StructuralEditPreview {
+                pattern: string_field(object, &["pattern"])?,
+                rewrite: string_field(object, &["rewrite"])?,
+                language: string_field(object, &["language", "lang"]),
+                path: string_field(object, &["path", "file", "directory"]),
+            })
+        }
+        "cargodiagnostics" | "cargo_diagnostics" => Some(AgentAction::CargoDiagnostics {
+            command: string_field(object, &["command", "cmd"]),
+            include_clippy: bool_field(object, &["include_clippy", "clippy"]).unwrap_or(false),
         }),
         "getrepocapsule" | "get_repo_capsule" => Some(AgentAction::GetRepoCapsule {
             query: string_field(object, &["query", "q"]),
@@ -1693,6 +1759,12 @@ fn usize_field(
     keys: &[&str],
 ) -> Option<usize> {
     u64_field(object, keys).and_then(|value| usize::try_from(value).ok())
+}
+
+fn bool_field(object: &serde_json::Map<String, serde_json::Value>, keys: &[&str]) -> Option<bool> {
+    keys.iter()
+        .filter_map(|key| object.get(*key))
+        .find_map(serde_json::Value::as_bool)
 }
 
 fn parse_optional_json_field<T>(

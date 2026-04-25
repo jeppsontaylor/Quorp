@@ -119,6 +119,7 @@ pub struct AgentConfig {
     pub autonomy: AutonomySettings,
     pub policy: PolicySettings,
     pub validation: ValidationCommands,
+    pub agent_tools: AgentToolsSettings,
     pub approval_rules: Vec<ApprovalRule>,
     pub extra_instruction_text: Vec<String>,
     pub extra_roots: Vec<String>,
@@ -130,6 +131,110 @@ pub struct McpServerConfig {
     pub name: String,
     pub command: String,
     pub args: Vec<String>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AgentToolsSettings {
+    pub enabled: bool,
+    pub fd: ExternalToolSettings,
+    pub ast_grep: AstGrepToolSettings,
+    pub cargo_diagnostics: CargoDiagnosticsToolSettings,
+    pub nextest: NextestToolSettings,
+    pub cargo_expand: ExternalToolSettings,
+    pub rust_analyzer: ExternalToolSettings,
+    pub serena: ExternalToolSettings,
+}
+
+impl Default for AgentToolsSettings {
+    fn default() -> Self {
+        Self {
+            enabled: false,
+            fd: ExternalToolSettings {
+                enabled: true,
+                command: "fd".to_string(),
+                max_runtime_seconds: Some(30),
+                max_output_bytes: Some(16 * 1024),
+            },
+            ast_grep: AstGrepToolSettings {
+                enabled: true,
+                command: "ast-grep".to_string(),
+                max_runtime_seconds: Some(30),
+                max_output_bytes: Some(32 * 1024),
+                allow_rewrite_preview: false,
+                allow_apply: false,
+            },
+            cargo_diagnostics: CargoDiagnosticsToolSettings {
+                enabled: true,
+                check_command: "cargo check --message-format=json".to_string(),
+                clippy_command: Some(
+                    "cargo clippy --message-format=json --all-targets --no-deps".to_string(),
+                ),
+                max_runtime_seconds: Some(120),
+                max_output_bytes: Some(128 * 1024),
+            },
+            nextest: NextestToolSettings {
+                enabled: true,
+                command: "cargo nextest run".to_string(),
+                max_runtime_seconds: Some(120),
+                max_output_bytes: Some(64 * 1024),
+                prefer_for_workspace_tests: true,
+            },
+            cargo_expand: ExternalToolSettings {
+                enabled: false,
+                command: "cargo expand".to_string(),
+                max_runtime_seconds: Some(60),
+                max_output_bytes: Some(64 * 1024),
+            },
+            rust_analyzer: ExternalToolSettings {
+                enabled: false,
+                command: "rust-analyzer".to_string(),
+                max_runtime_seconds: Some(30),
+                max_output_bytes: Some(32 * 1024),
+            },
+            serena: ExternalToolSettings {
+                enabled: false,
+                command: "serena".to_string(),
+                max_runtime_seconds: Some(30),
+                max_output_bytes: Some(32 * 1024),
+            },
+        }
+    }
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct ExternalToolSettings {
+    pub enabled: bool,
+    pub command: String,
+    pub max_runtime_seconds: Option<u64>,
+    pub max_output_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct AstGrepToolSettings {
+    pub enabled: bool,
+    pub command: String,
+    pub max_runtime_seconds: Option<u64>,
+    pub max_output_bytes: Option<usize>,
+    pub allow_rewrite_preview: bool,
+    pub allow_apply: bool,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct CargoDiagnosticsToolSettings {
+    pub enabled: bool,
+    pub check_command: String,
+    pub clippy_command: Option<String>,
+    pub max_runtime_seconds: Option<u64>,
+    pub max_output_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct NextestToolSettings {
+    pub enabled: bool,
+    pub command: String,
+    pub max_runtime_seconds: Option<u64>,
+    pub max_output_bytes: Option<usize>,
+    pub prefer_for_workspace_tests: bool,
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -202,6 +307,8 @@ struct AgentConfigFile {
     #[serde(default)]
     validation: ValidationSection,
     #[serde(default)]
+    agent_tools: AgentToolsSection,
+    #[serde(default)]
     approval_rules: Vec<ApprovalRuleFile>,
     #[serde(default)]
     prompt: PromptSection,
@@ -209,6 +316,12 @@ struct AgentConfigFile {
     extra_roots: Vec<String>,
     #[serde(default)]
     mcp_servers: Vec<McpServerFile>,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct GlobalSettingsFile {
+    #[serde(default)]
+    agent_tools: AgentToolsSection,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -285,6 +398,54 @@ struct ValidationSection {
     targeted_test_prefix: Option<String>,
 }
 
+#[derive(Debug, Default, Deserialize)]
+struct AgentToolsSection {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    tools: AgentToolsFile,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct AgentToolsFile {
+    #[serde(default)]
+    fd: ToolSection,
+    #[serde(default)]
+    ast_grep: ToolSection,
+    #[serde(default)]
+    cargo_diagnostics: ToolSection,
+    #[serde(default)]
+    nextest: ToolSection,
+    #[serde(default)]
+    cargo_expand: ToolSection,
+    #[serde(default)]
+    rust_analyzer: ToolSection,
+    #[serde(default)]
+    serena: ToolSection,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct ToolSection {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    check_command: Option<String>,
+    #[serde(default)]
+    clippy_command: Option<String>,
+    #[serde(default)]
+    max_runtime_seconds: Option<u64>,
+    #[serde(default)]
+    max_output_bytes: Option<usize>,
+    #[serde(default)]
+    allow_rewrite_preview: Option<bool>,
+    #[serde(default)]
+    allow_apply: Option<bool>,
+    #[serde(default)]
+    prefer_for_workspace_tests: Option<bool>,
+}
+
 #[derive(Debug, Deserialize)]
 struct ApprovalRuleFile {
     action: String,
@@ -328,9 +489,13 @@ struct McpServerFileStructured {
 }
 
 pub fn load_agent_config(project_root: &Path) -> AgentConfig {
+    let mut config = AgentConfig {
+        agent_tools: load_global_agent_tools_settings(),
+        ..AgentConfig::default()
+    };
     let config_path = project_root.join(".quorp/agent.toml");
     let Ok(raw) = std::fs::read_to_string(&config_path) else {
-        return AgentConfig::default();
+        return config;
     };
     let parsed: AgentConfigFile = match toml::from_str(&raw) {
         Ok(parsed) => parsed,
@@ -339,55 +504,200 @@ pub fn load_agent_config(project_root: &Path) -> AgentConfig {
                 "failed to parse agent config {}: {error}",
                 config_path.display()
             );
-            return AgentConfig::default();
+            return config;
         }
     };
-    AgentConfig {
-        defaults: AgentDefaults {
-            mode: parsed.defaults.mode.unwrap_or(AgentMode::Act),
-            default_model_id: parsed.defaults.default_model_id,
-        },
-        autonomy: AutonomySettings {
-            profile: parsed.autonomy.profile.unwrap_or_default(),
-        },
-        policy: PolicySettings {
-            mode: parsed.policy.mode.unwrap_or_default(),
-            allow: merge_policy_allow(parsed.policy.allow),
-            limits: merge_policy_limits(parsed.policy.limits),
-        },
-        validation: ValidationCommands {
-            fmt_command: parsed.validation.fmt_command,
-            clippy_command: parsed.validation.clippy_command,
-            workspace_test_command: parsed.validation.workspace_test_command,
-            targeted_test_prefix: parsed.validation.targeted_test_prefix,
-        },
-        approval_rules: parsed
-            .approval_rules
-            .into_iter()
-            .map(|rule| ApprovalRule {
-                action: rule.action,
-                path_prefix: rule.path_prefix,
-                command_prefix: rule.command_prefix,
-                mcp_server_name: rule.mcp_server_name,
-                mcp_tool_name: rule.mcp_tool_name,
-                policy: match rule.policy {
-                    ApprovalPolicyFile::AutoApproveReadOnly => {
-                        ActionApprovalPolicy::AutoApproveReadOnly
-                    }
-                    ApprovalPolicyFile::RequireExplicitConfirmation => {
-                        ActionApprovalPolicy::RequireExplicitConfirmation
-                    }
-                },
-            })
-            .collect(),
-        extra_instruction_text: parsed.prompt.extra_instructions,
-        extra_roots: parsed.extra_roots,
-        mcp_servers: parsed
-            .mcp_servers
-            .into_iter()
-            .filter_map(parse_mcp_server_entry)
-            .collect(),
+    config.defaults = AgentDefaults {
+        mode: parsed.defaults.mode.unwrap_or(AgentMode::Act),
+        default_model_id: parsed.defaults.default_model_id,
+    };
+    config.autonomy = AutonomySettings {
+        profile: parsed.autonomy.profile.unwrap_or_default(),
+    };
+    config.policy = PolicySettings {
+        mode: parsed.policy.mode.unwrap_or_default(),
+        allow: merge_policy_allow(parsed.policy.allow),
+        limits: merge_policy_limits(parsed.policy.limits),
+    };
+    config.validation = ValidationCommands {
+        fmt_command: parsed.validation.fmt_command,
+        clippy_command: parsed.validation.clippy_command,
+        workspace_test_command: parsed.validation.workspace_test_command,
+        targeted_test_prefix: parsed.validation.targeted_test_prefix,
+    };
+    apply_agent_tools_section(&mut config.agent_tools, parsed.agent_tools, true);
+    config.approval_rules = parsed
+        .approval_rules
+        .into_iter()
+        .map(|rule| ApprovalRule {
+            action: rule.action,
+            path_prefix: rule.path_prefix,
+            command_prefix: rule.command_prefix,
+            mcp_server_name: rule.mcp_server_name,
+            mcp_tool_name: rule.mcp_tool_name,
+            policy: match rule.policy {
+                ApprovalPolicyFile::AutoApproveReadOnly => {
+                    ActionApprovalPolicy::AutoApproveReadOnly
+                }
+                ApprovalPolicyFile::RequireExplicitConfirmation => {
+                    ActionApprovalPolicy::RequireExplicitConfirmation
+                }
+            },
+        })
+        .collect();
+    config.extra_instruction_text = parsed.prompt.extra_instructions;
+    config.extra_roots = parsed.extra_roots;
+    config.mcp_servers = parsed
+        .mcp_servers
+        .into_iter()
+        .filter_map(parse_mcp_server_entry)
+        .collect();
+    config
+}
+
+fn load_global_agent_tools_settings() -> AgentToolsSettings {
+    let mut settings = AgentToolsSettings::default();
+    let Some(path) = global_settings_path() else {
+        return settings;
+    };
+    let Ok(raw) = std::fs::read_to_string(&path) else {
+        return settings;
+    };
+    match serde_json::from_str::<GlobalSettingsFile>(&raw) {
+        Ok(parsed) => apply_agent_tools_section(&mut settings, parsed.agent_tools, false),
+        Err(error) => {
+            log::error!(
+                "failed to parse global settings {}: {error}",
+                path.display()
+            );
+        }
     }
+    settings
+}
+
+fn global_settings_path() -> Option<PathBuf> {
+    std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".quorp/settings.json"))
+}
+
+fn apply_agent_tools_section(
+    settings: &mut AgentToolsSettings,
+    section: AgentToolsSection,
+    project_override: bool,
+) {
+    if let Some(enabled) = section.enabled {
+        settings.enabled = if project_override {
+            settings.enabled && enabled
+        } else {
+            enabled
+        };
+    }
+    apply_external_tool_section(&mut settings.fd, section.tools.fd);
+    apply_ast_grep_tool_section(
+        &mut settings.ast_grep,
+        section.tools.ast_grep,
+        project_override,
+    );
+    apply_cargo_diagnostics_tool_section(
+        &mut settings.cargo_diagnostics,
+        section.tools.cargo_diagnostics,
+    );
+    apply_nextest_tool_section(&mut settings.nextest, section.tools.nextest);
+    apply_external_tool_section(&mut settings.cargo_expand, section.tools.cargo_expand);
+    apply_external_tool_section(&mut settings.rust_analyzer, section.tools.rust_analyzer);
+    apply_external_tool_section(&mut settings.serena, section.tools.serena);
+}
+
+fn apply_external_tool_section(settings: &mut ExternalToolSettings, section: ToolSection) {
+    if let Some(enabled) = section.enabled {
+        settings.enabled = enabled;
+    }
+    if let Some(command) = non_empty_string(section.command) {
+        settings.command = command;
+    }
+    if section.max_runtime_seconds.is_some() {
+        settings.max_runtime_seconds = section.max_runtime_seconds;
+    }
+    if section.max_output_bytes.is_some() {
+        settings.max_output_bytes = section.max_output_bytes;
+    }
+}
+
+fn apply_ast_grep_tool_section(
+    settings: &mut AstGrepToolSettings,
+    section: ToolSection,
+    project_override: bool,
+) {
+    if let Some(enabled) = section.enabled {
+        settings.enabled = enabled;
+    }
+    if let Some(command) = non_empty_string(section.command) {
+        settings.command = command;
+    }
+    if section.max_runtime_seconds.is_some() {
+        settings.max_runtime_seconds = section.max_runtime_seconds;
+    }
+    if section.max_output_bytes.is_some() {
+        settings.max_output_bytes = section.max_output_bytes;
+    }
+    if let Some(allow_rewrite_preview) = section.allow_rewrite_preview {
+        settings.allow_rewrite_preview = if project_override {
+            settings.allow_rewrite_preview && allow_rewrite_preview
+        } else {
+            allow_rewrite_preview
+        };
+    }
+    if let Some(allow_apply) = section.allow_apply {
+        settings.allow_apply = if project_override {
+            settings.allow_apply && allow_apply
+        } else {
+            allow_apply
+        };
+    }
+}
+
+fn apply_cargo_diagnostics_tool_section(
+    settings: &mut CargoDiagnosticsToolSettings,
+    section: ToolSection,
+) {
+    if let Some(enabled) = section.enabled {
+        settings.enabled = enabled;
+    }
+    if let Some(command) = non_empty_string(section.check_command.or(section.command)) {
+        settings.check_command = command;
+    }
+    if let Some(command) = section.clippy_command {
+        settings.clippy_command = non_empty_string(Some(command));
+    }
+    if section.max_runtime_seconds.is_some() {
+        settings.max_runtime_seconds = section.max_runtime_seconds;
+    }
+    if section.max_output_bytes.is_some() {
+        settings.max_output_bytes = section.max_output_bytes;
+    }
+}
+
+fn apply_nextest_tool_section(settings: &mut NextestToolSettings, section: ToolSection) {
+    if let Some(enabled) = section.enabled {
+        settings.enabled = enabled;
+    }
+    if let Some(command) = non_empty_string(section.command) {
+        settings.command = command;
+    }
+    if section.max_runtime_seconds.is_some() {
+        settings.max_runtime_seconds = section.max_runtime_seconds;
+    }
+    if section.max_output_bytes.is_some() {
+        settings.max_output_bytes = section.max_output_bytes;
+    }
+    if let Some(prefer_for_workspace_tests) = section.prefer_for_workspace_tests {
+        settings.prefer_for_workspace_tests = prefer_for_workspace_tests;
+    }
+}
+
+fn non_empty_string(value: Option<String>) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
 }
 
 fn parse_mcp_server_entry(entry: McpServerFile) -> Option<McpServerConfig> {
@@ -603,9 +913,9 @@ pub fn validation_commands_for_plan(config: &AgentConfig, plan: &ValidationPlan)
         commands.push(command.clone());
     }
     if plan.workspace_tests
-        && let Some(command) = config.validation.workspace_test_command.as_ref()
+        && let Some(command) = workspace_test_command_for_config(config)
     {
-        commands.push(command.clone());
+        commands.push(command);
     }
     if !plan.tests.is_empty() {
         if let Some(prefix) = config.validation.targeted_test_prefix.as_ref() {
@@ -626,6 +936,79 @@ pub fn validation_commands_for_plan(config: &AgentConfig, plan: &ValidationPlan)
     }
     commands.extend(plan.custom_commands.iter().cloned());
     commands
+}
+
+fn workspace_test_command_for_config(config: &AgentConfig) -> Option<String> {
+    if config.agent_tools.enabled
+        && config.agent_tools.nextest.enabled
+        && config.agent_tools.nextest.prefer_for_workspace_tests
+        && command_is_available(&config.agent_tools.nextest.command)
+    {
+        return Some(config.agent_tools.nextest.command.clone());
+    }
+    config.validation.workspace_test_command.clone()
+}
+
+pub fn command_is_available(command: &str) -> bool {
+    let Some(program) = command_program(command) else {
+        return false;
+    };
+    if program == "cargo"
+        && let Some(subcommand_binary) = cargo_subcommand_binary(command)
+    {
+        return path_contains_executable(&subcommand_binary);
+    }
+    path_contains_executable(&program)
+}
+
+fn path_contains_executable(program: &str) -> bool {
+    std::env::var_os("PATH").is_some_and(|path| {
+        std::env::split_paths(&path).any(|dir| {
+            let candidate = dir.join(program);
+            candidate.is_file() && is_executable(&candidate)
+        })
+    })
+}
+
+fn cargo_subcommand_binary(command: &str) -> Option<String> {
+    let parts = shlex::split(command)?;
+    if parts.first().is_some_and(|program| program == "cargo")
+        && let Some(subcommand) = parts.get(1)
+        && !matches!(
+            subcommand.as_str(),
+            "build" | "check" | "clippy" | "fmt" | "run" | "test" | "tree"
+        )
+    {
+        return Some(format!("cargo-{subcommand}"));
+    }
+    None
+}
+
+fn command_program(command: &str) -> Option<String> {
+    shlex::split(command)
+        .and_then(|parts| parts.into_iter().next())
+        .map(|program| {
+            Path::new(&program)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .unwrap_or(program.as_str())
+                .to_string()
+        })
+        .filter(|program| !program.is_empty())
+}
+
+fn is_executable(path: &Path) -> bool {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::metadata(path)
+            .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+            .unwrap_or(false)
+    }
+    #[cfg(not(unix))]
+    {
+        path.is_file()
+    }
 }
 
 fn looks_like_full_validation_command(command: &str) -> bool {
@@ -657,6 +1040,10 @@ fn rule_matches_action(rule: &ApprovalRule, action: &AgentAction, config: &Agent
         },
         AgentAction::SearchText { .. }
         | AgentAction::SearchSymbols { .. }
+        | AgentAction::FindFiles { .. }
+        | AgentAction::StructuralSearch { .. }
+        | AgentAction::StructuralEditPreview { .. }
+        | AgentAction::CargoDiagnostics { .. }
         | AgentAction::GetRepoCapsule { .. }
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
@@ -753,6 +1140,39 @@ fn nested_instruction_paths(project_root: &Path, touched_paths: &[PathBuf]) -> V
 mod tests {
     use super::*;
     use crate::agent_protocol::AgentAction;
+    use std::ffi::OsString;
+    use std::sync::{Mutex, OnceLock};
+
+    fn env_lock() -> std::sync::MutexGuard<'static, ()> {
+        static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+        LOCK.get_or_init(|| Mutex::new(())).lock().unwrap()
+    }
+
+    struct EnvVarGuard {
+        key: &'static str,
+        previous: Option<OsString>,
+    }
+
+    impl EnvVarGuard {
+        fn set(key: &'static str, value: impl AsRef<std::ffi::OsStr>) -> Self {
+            let previous = std::env::var_os(key);
+            unsafe {
+                std::env::set_var(key, value);
+            }
+            Self { key, previous }
+        }
+    }
+
+    impl Drop for EnvVarGuard {
+        fn drop(&mut self) {
+            unsafe {
+                match self.previous.as_ref() {
+                    Some(value) => std::env::set_var(self.key, value),
+                    None => std::env::remove_var(self.key),
+                }
+            }
+        }
+    }
 
     fn base_config() -> AgentConfig {
         AgentConfig {
@@ -868,5 +1288,130 @@ mod tests {
             commands,
             vec!["cargo test -p toy-domain --quiet".to_string()]
         );
+    }
+
+    #[test]
+    fn agent_tools_global_settings_parse_and_missing_file_defaults() {
+        let _env_lock = env_lock();
+        let temp_home = tempfile::tempdir().expect("home");
+        let _home_guard = EnvVarGuard::set("HOME", temp_home.path());
+
+        let missing = load_agent_config(temp_home.path());
+        assert!(!missing.agent_tools.enabled);
+
+        std::fs::create_dir_all(temp_home.path().join(".quorp")).expect("config dir");
+        std::fs::write(
+            temp_home.path().join(".quorp/settings.json"),
+            r#"{
+              "agent_tools": {
+                "enabled": true,
+                "tools": {
+                  "fd": {"enabled": true, "command": "fd"},
+                  "ast_grep": {
+                    "enabled": true,
+                    "command": "ast-grep",
+                    "allow_rewrite_preview": true,
+                    "allow_apply": false
+                  },
+                  "cargo_diagnostics": {
+                    "enabled": true,
+                    "check_command": "cargo check --message-format=json"
+                  }
+                }
+              }
+            }"#,
+        )
+        .expect("settings");
+
+        let parsed = load_agent_config(temp_home.path());
+        assert!(parsed.agent_tools.enabled);
+        assert_eq!(parsed.agent_tools.fd.command, "fd");
+        assert!(parsed.agent_tools.ast_grep.allow_rewrite_preview);
+        assert!(!parsed.agent_tools.ast_grep.allow_apply);
+        assert_eq!(
+            parsed.agent_tools.cargo_diagnostics.check_command,
+            "cargo check --message-format=json"
+        );
+    }
+
+    #[test]
+    fn agent_tools_project_settings_can_narrow_global_tools() {
+        let _env_lock = env_lock();
+        let temp_home = tempfile::tempdir().expect("home");
+        let project = tempfile::tempdir().expect("project");
+        let _home_guard = EnvVarGuard::set("HOME", temp_home.path());
+        std::fs::create_dir_all(temp_home.path().join(".quorp")).expect("home config");
+        std::fs::write(
+            temp_home.path().join(".quorp/settings.json"),
+            r#"{
+              "agent_tools": {
+                "enabled": true,
+                "tools": {
+                  "ast_grep": {
+                    "enabled": true,
+                    "command": "ast-grep",
+                    "allow_rewrite_preview": true,
+                    "allow_apply": true
+                  }
+                }
+              }
+            }"#,
+        )
+        .expect("settings");
+        std::fs::create_dir_all(project.path().join(".quorp")).expect("project config");
+        std::fs::write(
+            project.path().join(".quorp/agent.toml"),
+            r#"
+[agent_tools]
+enabled = true
+
+[agent_tools.tools.ast_grep]
+allow_rewrite_preview = false
+allow_apply = true
+"#,
+        )
+        .expect("agent toml");
+
+        let config = load_agent_config(project.path());
+        assert!(config.agent_tools.enabled);
+        assert!(!config.agent_tools.ast_grep.allow_rewrite_preview);
+        assert!(config.agent_tools.ast_grep.allow_apply);
+
+        std::fs::write(
+            project.path().join(".quorp/agent.toml"),
+            r#"
+[agent_tools]
+enabled = false
+"#,
+        )
+        .expect("agent toml");
+        let narrowed = load_agent_config(project.path());
+        assert!(!narrowed.agent_tools.enabled);
+    }
+
+    #[test]
+    fn agent_tools_nextest_command_requires_cargo_subcommand_binary() {
+        let _env_lock = env_lock();
+        let temp_path = tempfile::tempdir().expect("path");
+        let cargo = temp_path.path().join("cargo");
+        std::fs::write(&cargo, "#!/bin/sh\nexit 0\n").expect("cargo");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&cargo, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+        let _path_guard = EnvVarGuard::set("PATH", temp_path.path());
+        assert!(command_is_available("cargo check --message-format=json"));
+        assert!(!command_is_available("cargo nextest run"));
+        let cargo_nextest = temp_path.path().join("cargo-nextest");
+        std::fs::write(&cargo_nextest, "#!/bin/sh\nexit 0\n").expect("cargo-nextest");
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            std::fs::set_permissions(&cargo_nextest, std::fs::Permissions::from_mode(0o755))
+                .expect("chmod");
+        }
+        assert!(command_is_available("cargo nextest run"));
     }
 }

@@ -290,6 +290,71 @@ pub fn spawn_command_service_loop(
                                 responder,
                             );
                         }
+                        AgentAction::FindFiles { query, limit } => {
+                            spawn_find_files_task(
+                                event_tx.clone(),
+                                session_id,
+                                cwd,
+                                project_root,
+                                query,
+                                limit,
+                                responder,
+                            );
+                        }
+                        AgentAction::StructuralSearch {
+                            pattern,
+                            language,
+                            path,
+                            limit,
+                        } => {
+                            spawn_structural_search_task(
+                                event_tx.clone(),
+                                session_id,
+                                StructuralSearchTaskRequest {
+                                    cwd,
+                                    project_root,
+                                    pattern,
+                                    language,
+                                    path,
+                                    limit,
+                                    responder,
+                                },
+                            );
+                        }
+                        AgentAction::StructuralEditPreview {
+                            pattern,
+                            rewrite,
+                            language,
+                            path,
+                        } => {
+                            spawn_structural_edit_preview_task(
+                                event_tx.clone(),
+                                session_id,
+                                StructuralEditPreviewTaskRequest {
+                                    cwd,
+                                    project_root,
+                                    pattern,
+                                    rewrite,
+                                    language,
+                                    path,
+                                    responder,
+                                },
+                            );
+                        }
+                        AgentAction::CargoDiagnostics {
+                            command,
+                            include_clippy,
+                        } => {
+                            spawn_cargo_diagnostics_task(
+                                event_tx.clone(),
+                                session_id,
+                                cwd,
+                                project_root,
+                                command,
+                                include_clippy,
+                                responder,
+                            );
+                        }
                         AgentAction::GetRepoCapsule { query, limit } => {
                             spawn_repo_capsule_task(
                                 event_tx.clone(),
@@ -729,6 +794,493 @@ fn spawn_search_symbols_task(
             responder,
         );
     });
+}
+
+fn spawn_find_files_task(
+    event_tx: std::sync::mpsc::SyncSender<TuiEvent>,
+    session_id: usize,
+    cwd: PathBuf,
+    project_root: PathBuf,
+    query: String,
+    limit: usize,
+    responder: Option<futures::channel::oneshot::Sender<ActionOutcome>>,
+) {
+    std::thread::spawn(move || {
+        let action = AgentAction::FindFiles {
+            query: query.clone(),
+            limit,
+        };
+        let config = load_agent_config(project_root.as_path());
+        let root = effective_project_root(&project_root, &cwd);
+        let result = find_files_with_config(&root, &query, limit.max(1), &config);
+        emit_tool_result(
+            &event_tx,
+            session_id,
+            action,
+            result,
+            "find_files",
+            responder,
+        );
+    });
+}
+
+fn find_files_with_config(
+    root: &Path,
+    query: &str,
+    limit: usize,
+    config: &crate::quorp::tui::agent_context::AgentConfig,
+) -> anyhow::Result<String> {
+    if !config.agent_tools.enabled || !config.agent_tools.fd.enabled {
+        return Err(anyhow::anyhow!(
+            "FindFiles is disabled by agent tool settings"
+        ));
+    }
+    let output_limit = config.agent_tools.fd.max_output_bytes.unwrap_or(16 * 1024);
+    if quorp_agent_core::command_is_available(&config.agent_tools.fd.command) {
+        let command = format!(
+            "{} --color never --type f {} .",
+            config.agent_tools.fd.command,
+            shell_quote(query)
+        );
+        let captured = run_command_capture(&command, root, output_limit)?;
+        if captured.exit_code == 0 {
+            let matches = captured
+                .output
+                .lines()
+                .map(str::trim)
+                .filter(|line| !line.is_empty())
+                .take(limit)
+                .map(|line| line.trim_start_matches("./").to_string())
+                .collect::<Vec<_>>();
+            return Ok(render_find_files_result(query, "fd", &matches));
+        }
+    }
+    Ok(render_find_files_result(
+        query,
+        "ignore_walk",
+        &find_files_with_ignore_walk(root, query, limit),
+    ))
+}
+
+fn find_files_with_ignore_walk(root: &Path, query: &str, limit: usize) -> Vec<String> {
+    let normalized_query = query.trim().to_ascii_lowercase();
+    let mut scored = Vec::new();
+    for entry in ignore::WalkBuilder::new(root)
+        .hidden(false)
+        .git_ignore(true)
+        .git_exclude(true)
+        .git_global(true)
+        .build()
+        .flatten()
+    {
+        let path = entry.path();
+        if !path.is_file() {
+            continue;
+        }
+        let Ok(relative) = path.strip_prefix(root) else {
+            continue;
+        };
+        let rendered = relative.to_string_lossy().replace('\\', "/");
+        let haystack = rendered.to_ascii_lowercase();
+        if normalized_query.is_empty() || haystack.contains(&normalized_query) {
+            let score = if haystack == normalized_query {
+                0
+            } else if haystack.ends_with(&normalized_query) {
+                1
+            } else {
+                2
+            };
+            scored.push((score, rendered.len(), rendered));
+        }
+    }
+    scored.sort();
+    scored
+        .into_iter()
+        .take(limit)
+        .map(|(_, _, path)| path)
+        .collect()
+}
+
+fn render_find_files_result(query: &str, backend: &str, matches: &[String]) -> String {
+    let mut lines = vec![
+        "[find_files]".to_string(),
+        format!("query: {query}"),
+        format!("backend: {backend}"),
+        format!("matches: {}", matches.len()),
+    ];
+    if matches.is_empty() {
+        lines.push("[no matches]".to_string());
+    } else {
+        lines.extend(matches.iter().map(|path| format!("- {path}")));
+    }
+    lines.join("\n")
+}
+
+struct StructuralSearchTaskRequest {
+    cwd: PathBuf,
+    project_root: PathBuf,
+    pattern: String,
+    language: Option<String>,
+    path: Option<String>,
+    limit: usize,
+    responder: Option<futures::channel::oneshot::Sender<ActionOutcome>>,
+}
+
+fn spawn_structural_search_task(
+    event_tx: std::sync::mpsc::SyncSender<TuiEvent>,
+    session_id: usize,
+    request: StructuralSearchTaskRequest,
+) {
+    std::thread::spawn(move || {
+        let StructuralSearchTaskRequest {
+            cwd,
+            project_root,
+            pattern,
+            language,
+            path,
+            limit,
+            responder,
+        } = request;
+        let action = AgentAction::StructuralSearch {
+            pattern: pattern.clone(),
+            language: language.clone(),
+            path: path.clone(),
+            limit,
+        };
+        let result = run_structural_search(
+            &cwd,
+            &project_root,
+            &pattern,
+            language.as_deref(),
+            path.as_deref(),
+            limit.max(1),
+        );
+        emit_tool_result(
+            &event_tx,
+            session_id,
+            action,
+            result,
+            "structural_search",
+            responder,
+        );
+    });
+}
+
+fn run_structural_search(
+    cwd: &Path,
+    project_root: &Path,
+    pattern: &str,
+    language: Option<&str>,
+    path: Option<&str>,
+    limit: usize,
+) -> anyhow::Result<String> {
+    let config = load_agent_config(project_root);
+    let Some(command) = configured_ast_grep_command(&config) else {
+        return Err(anyhow::anyhow!(
+            "StructuralSearch is unavailable because ast-grep/sg is disabled or not installed"
+        ));
+    };
+    let root = effective_project_root(project_root, cwd);
+    let scope = path
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .unwrap_or(".");
+    let target = sanitize_project_path(&root, &root, scope)?;
+    let target_arg = target
+        .strip_prefix(&root)
+        .map(|relative| {
+            let rendered = relative.to_string_lossy();
+            if rendered.is_empty() {
+                ".".to_string()
+            } else {
+                rendered.replace('\\', "/")
+            }
+        })
+        .unwrap_or_else(|_| ".".to_string());
+    let language = language.unwrap_or("rust");
+    let shell_command = format!(
+        "{} --pattern {} --lang {} {}",
+        command,
+        shell_quote(pattern),
+        shell_quote(language),
+        shell_quote(&target_arg)
+    );
+    let output_limit = config
+        .agent_tools
+        .ast_grep
+        .max_output_bytes
+        .unwrap_or(32 * 1024);
+    let captured = run_command_capture(&shell_command, &root, output_limit)?;
+    let mut lines = vec![
+        "[structural_search]".to_string(),
+        format!("pattern: {pattern}"),
+        format!("language: {language}"),
+        format!("path: {target_arg}"),
+        format!("exit_code: {}", captured.exit_code),
+    ];
+    let rendered_matches = captured
+        .output
+        .lines()
+        .take(limit.saturating_mul(6))
+        .collect::<Vec<_>>()
+        .join("\n");
+    if rendered_matches.trim().is_empty() {
+        lines.push("[no matches]".to_string());
+    } else {
+        lines.push(rendered_matches);
+    }
+    Ok(lines.join("\n"))
+}
+
+fn configured_ast_grep_command(
+    config: &crate::quorp::tui::agent_context::AgentConfig,
+) -> Option<String> {
+    let tools = &config.agent_tools;
+    if !tools.enabled || !tools.ast_grep.enabled {
+        return None;
+    }
+    if quorp_agent_core::command_is_available(&tools.ast_grep.command) {
+        return Some(tools.ast_grep.command.clone());
+    }
+    if tools.ast_grep.command == "ast-grep" && quorp_agent_core::command_is_available("sg") {
+        return Some("sg".to_string());
+    }
+    None
+}
+
+struct StructuralEditPreviewTaskRequest {
+    cwd: PathBuf,
+    project_root: PathBuf,
+    pattern: String,
+    rewrite: String,
+    language: Option<String>,
+    path: Option<String>,
+    responder: Option<futures::channel::oneshot::Sender<ActionOutcome>>,
+}
+
+fn spawn_structural_edit_preview_task(
+    event_tx: std::sync::mpsc::SyncSender<TuiEvent>,
+    session_id: usize,
+    request: StructuralEditPreviewTaskRequest,
+) {
+    std::thread::spawn(move || {
+        let StructuralEditPreviewTaskRequest {
+            cwd,
+            project_root,
+            pattern,
+            rewrite,
+            language,
+            path,
+            responder,
+        } = request;
+        let action = AgentAction::StructuralEditPreview {
+            pattern: pattern.clone(),
+            rewrite: rewrite.clone(),
+            language: language.clone(),
+            path: path.clone(),
+        };
+        let result = render_structural_edit_preview(
+            &cwd,
+            &project_root,
+            &pattern,
+            &rewrite,
+            language.as_deref(),
+            path.as_deref(),
+        );
+        emit_tool_result(
+            &event_tx,
+            session_id,
+            action,
+            result,
+            "structural_edit_preview",
+            responder,
+        );
+    });
+}
+
+fn render_structural_edit_preview(
+    cwd: &Path,
+    project_root: &Path,
+    pattern: &str,
+    rewrite: &str,
+    language: Option<&str>,
+    path: Option<&str>,
+) -> anyhow::Result<String> {
+    let config = load_agent_config(project_root);
+    if !config.agent_tools.enabled
+        || !config.agent_tools.ast_grep.enabled
+        || !config.agent_tools.ast_grep.allow_rewrite_preview
+    {
+        return Err(anyhow::anyhow!(
+            "StructuralEditPreview is disabled by agent tool settings"
+        ));
+    }
+    let search = run_structural_search(cwd, project_root, pattern, language, path, 12)?;
+    Ok(format!(
+        "[structural_edit_preview]\nwould_apply: false\nmutation_performed: false\npattern: {pattern}\nrewrite: {rewrite}\nnext_step: Use PreviewEdit with exact file anchors, then ApplyPreview if accepted.\n\n{search}"
+    ))
+}
+
+fn spawn_cargo_diagnostics_task(
+    event_tx: std::sync::mpsc::SyncSender<TuiEvent>,
+    session_id: usize,
+    cwd: PathBuf,
+    project_root: PathBuf,
+    command: Option<String>,
+    include_clippy: bool,
+    responder: Option<futures::channel::oneshot::Sender<ActionOutcome>>,
+) {
+    std::thread::spawn(move || {
+        let action = AgentAction::CargoDiagnostics {
+            command: command.clone(),
+            include_clippy,
+        };
+        let result = run_cargo_diagnostics(&cwd, &project_root, command.as_deref(), include_clippy);
+        emit_tool_result(
+            &event_tx,
+            session_id,
+            action,
+            result,
+            "cargo_diagnostics",
+            responder,
+        );
+    });
+}
+
+fn run_cargo_diagnostics(
+    cwd: &Path,
+    project_root: &Path,
+    requested_command: Option<&str>,
+    include_clippy: bool,
+) -> anyhow::Result<String> {
+    let config = load_agent_config(project_root);
+    let settings = &config.agent_tools.cargo_diagnostics;
+    if !config.agent_tools.enabled || !settings.enabled {
+        return Err(anyhow::anyhow!(
+            "CargoDiagnostics is disabled by agent tool settings"
+        ));
+    }
+    let mut commands = Vec::new();
+    let requested = requested_command
+        .map(str::trim)
+        .filter(|value| !value.is_empty());
+    match requested {
+        Some(command)
+            if command == settings.check_command
+                || settings.clippy_command.as_deref() == Some(command) =>
+        {
+            commands.push(command.to_string());
+        }
+        Some(command) => {
+            return Err(anyhow::anyhow!(
+                "CargoDiagnostics command `{command}` is not configured. Allowed commands: `{}`{}",
+                settings.check_command,
+                settings
+                    .clippy_command
+                    .as_deref()
+                    .map(|command| format!(", `{command}`"))
+                    .unwrap_or_default()
+            ));
+        }
+        None => commands.push(settings.check_command.clone()),
+    }
+    if include_clippy
+        && let Some(clippy_command) = settings.clippy_command.as_ref()
+        && !commands.iter().any(|command| command == clippy_command)
+    {
+        commands.push(clippy_command.clone());
+    }
+
+    let output_limit = settings.max_output_bytes.unwrap_or(128 * 1024);
+    let mut rendered = vec!["[cargo_diagnostics]".to_string()];
+    for command in commands {
+        if !quorp_agent_core::command_is_available(&command) {
+            return Err(anyhow::anyhow!(
+                "configured command `{command}` is unavailable"
+            ));
+        }
+        let captured = run_command_capture(&command, cwd, output_limit)?;
+        let diagnostics = parse_cargo_json_diagnostics(&captured.output, 20);
+        rendered.push(format!("command: {command}"));
+        rendered.push(format!("exit_code: {}", captured.exit_code));
+        if diagnostics.is_empty() {
+            rendered.push("diagnostics: [none parsed]".to_string());
+            rendered.push(truncate_diagnostic_text(&captured.output, 1200));
+        } else {
+            rendered.push("diagnostics:".to_string());
+            rendered.extend(diagnostics.into_iter().map(|line| format!("- {line}")));
+        }
+    }
+    Ok(rendered.join("\n"))
+}
+
+fn parse_cargo_json_diagnostics(output: &str, limit: usize) -> Vec<String> {
+    let mut diagnostics = Vec::new();
+    for line in output.lines() {
+        let Ok(value) = serde_json::from_str::<serde_json::Value>(line) else {
+            continue;
+        };
+        if value.get("reason").and_then(serde_json::Value::as_str) != Some("compiler-message") {
+            continue;
+        }
+        let Some(message) = value.get("message") else {
+            continue;
+        };
+        let level = message
+            .get("level")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("diagnostic");
+        let code = message
+            .get("code")
+            .and_then(|code| code.get("code"))
+            .and_then(serde_json::Value::as_str)
+            .map(|code| format!("[{code}]"))
+            .unwrap_or_default();
+        let text = message
+            .get("message")
+            .and_then(serde_json::Value::as_str)
+            .unwrap_or("");
+        let primary_span = message
+            .get("spans")
+            .and_then(serde_json::Value::as_array)
+            .and_then(|spans| {
+                spans.iter().find(|span| {
+                    span.get("is_primary").and_then(serde_json::Value::as_bool) == Some(true)
+                })
+            });
+        let location = primary_span
+            .and_then(|span| {
+                let file = span.get("file_name")?.as_str()?;
+                let line = span.get("line_start")?.as_u64()?;
+                let column = span.get("column_start")?.as_u64()?;
+                Some(format!("{file}:{line}:{column}"))
+            })
+            .unwrap_or_else(|| "<workspace>".to_string());
+        diagnostics.push(format!(
+            "{}{} {} {}",
+            level,
+            code,
+            location,
+            truncate_diagnostic_text(text, 240)
+        ));
+        if diagnostics.len() >= limit {
+            break;
+        }
+    }
+    diagnostics
+}
+
+fn shell_quote(value: &str) -> String {
+    let mut quoted = String::from("'");
+    for character in value.chars() {
+        if character == '\'' {
+            quoted.push_str("'\\''");
+        } else {
+            quoted.push(character);
+        }
+    }
+    quoted.push('\'');
+    quoted
 }
 
 fn spawn_repo_capsule_task(
@@ -6007,5 +6559,30 @@ Done.";
 
         assert!(result.contains("\"scheduled_at_period_end\""));
         assert!(!result.contains("\\n"));
+    }
+
+    #[test]
+    fn agent_tools_find_files_fallback_uses_ignore_walk() {
+        let root = tempfile::tempdir().expect("root");
+        std::fs::create_dir_all(root.path().join("src/bin")).expect("dirs");
+        std::fs::write(root.path().join("src/lib.rs"), "").expect("lib");
+        std::fs::write(root.path().join("src/bin/tool.rs"), "").expect("tool");
+        let mut config = crate::quorp::tui::agent_context::AgentConfig::default();
+        config.agent_tools.enabled = true;
+        config.agent_tools.fd.command = "definitely-missing-fd".to_string();
+
+        let output = find_files_with_config(root.path(), "tool", 10, &config).expect("find");
+        assert!(output.contains("backend: ignore_walk"));
+        assert!(output.contains("src/bin/tool.rs"));
+    }
+
+    #[test]
+    fn agent_tools_cargo_diagnostics_parse_json_records() {
+        let output = r#"{"reason":"compiler-message","message":{"level":"error","message":"cannot find value `x` in this scope","code":{"code":"E0425"},"spans":[{"file_name":"src/lib.rs","line_start":7,"column_start":13,"is_primary":true}]}}"#;
+        let diagnostics = parse_cargo_json_diagnostics(output, 10);
+        assert_eq!(diagnostics.len(), 1);
+        assert!(diagnostics[0].contains("error[E0425]"));
+        assert!(diagnostics[0].contains("src/lib.rs:7:13"));
+        assert!(diagnostics[0].contains("cannot find value"));
     }
 }

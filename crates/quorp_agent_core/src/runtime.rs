@@ -3527,6 +3527,26 @@ impl AgentTaskState {
             AgentAction::SearchSymbols { query, .. } => {
                 self.last_tool_summary = Some(format!("searched repo symbols for `{query}`"));
             }
+            AgentAction::FindFiles { query, .. } => {
+                self.last_tool_summary = Some(format!("found files for `{query}`"));
+            }
+            AgentAction::StructuralSearch { pattern, .. } => {
+                self.last_tool_summary = Some(format!("structural search for `{pattern}`"));
+            }
+            AgentAction::StructuralEditPreview { path, .. } => {
+                self.last_tool_summary = Some(format!(
+                    "previewed structural edit for `{}`",
+                    path.as_deref().unwrap_or(".")
+                ));
+            }
+            AgentAction::CargoDiagnostics { command, .. } => {
+                self.last_tool_summary = Some(format!(
+                    "ran cargo diagnostics `{}`",
+                    command
+                        .as_deref()
+                        .unwrap_or("cargo check --message-format=json")
+                ));
+            }
             AgentAction::GetRepoCapsule { query, .. } => {
                 self.last_tool_summary = Some(match query {
                     Some(query) if !query.trim().is_empty() => {
@@ -4253,6 +4273,10 @@ impl AgentTaskState {
             AgentAction::ListDirectory { .. } if self.policy.allow.list_directory => Ok(()),
             AgentAction::SearchText { .. } if self.policy.allow.search_text => Ok(()),
             AgentAction::SearchSymbols { .. } if self.policy.allow.search_symbols => Ok(()),
+            AgentAction::FindFiles { .. } if self.policy.allow.list_directory => Ok(()),
+            AgentAction::StructuralSearch { .. } if self.policy.allow.search_text => Ok(()),
+            AgentAction::StructuralEditPreview { .. } if self.policy.allow.read_file => Ok(()),
+            AgentAction::CargoDiagnostics { .. } if self.policy.allow.run_validation => Ok(()),
             AgentAction::GetRepoCapsule { .. } if self.policy.allow.get_repo_capsule => Ok(()),
             AgentAction::ExplainValidationFailure { .. } if self.policy.allow.read_file => Ok(()),
             AgentAction::SuggestImplementationTargets { .. } if self.policy.allow.read_file => {
@@ -4638,6 +4662,10 @@ fn canonical_action_record(
         AgentAction::ListDirectory { .. } => "ListDirectory",
         AgentAction::SearchText { .. } => "SearchText",
         AgentAction::SearchSymbols { .. } => "SearchSymbols",
+        AgentAction::FindFiles { .. } => "FindFiles",
+        AgentAction::StructuralSearch { .. } => "StructuralSearch",
+        AgentAction::StructuralEditPreview { .. } => "StructuralEditPreview",
+        AgentAction::CargoDiagnostics { .. } => "CargoDiagnostics",
         AgentAction::GetRepoCapsule { .. } => "GetRepoCapsule",
         AgentAction::ExplainValidationFailure { .. } => "ExplainValidationFailure",
         AgentAction::SuggestImplementationTargets { .. } => "SuggestImplementationTargets",
@@ -4687,6 +4715,38 @@ fn canonical_action_signature(
             )
         }
         AgentAction::SearchSymbols { query, .. } => format!("search_symbols:{}", query.trim()),
+        AgentAction::FindFiles { query, .. } => format!("find_files:{}", query.trim()),
+        AgentAction::StructuralSearch {
+            pattern,
+            language,
+            path,
+            ..
+        } => format!(
+            "structural_search:{}:{}:{}",
+            language.as_deref().unwrap_or("rust"),
+            path.as_deref().unwrap_or("."),
+            short_text_fingerprint(pattern)
+        ),
+        AgentAction::StructuralEditPreview {
+            pattern,
+            rewrite,
+            language,
+            path,
+        } => format!(
+            "structural_preview:{}:{}:{}:{}",
+            language.as_deref().unwrap_or("rust"),
+            path.as_deref().unwrap_or("."),
+            short_text_fingerprint(pattern),
+            short_text_fingerprint(rewrite)
+        ),
+        AgentAction::CargoDiagnostics {
+            command,
+            include_clippy,
+        } => format!(
+            "cargo_diagnostics:{}:{}",
+            command.as_deref().unwrap_or("default"),
+            include_clippy
+        ),
         AgentAction::GetRepoCapsule { query, .. } => {
             format!("capsule:{}", query.as_deref().unwrap_or_default().trim())
         }
@@ -6791,44 +6851,44 @@ async fn handle_model_turn(
                 phase: "retrying",
                 detail: Some("parser recovery: missing_json_object".to_string()),
             });
-                event_sink.emit(RuntimeEvent::ParseRecoveryQueued {
-                    step,
-                    error_class: "missing_json_object".to_string(),
-                    failures: state.parser_recovery_failures,
-                    budget: request.parser_recovery_budget,
-                    message: recovery_message,
-                });
-                if maybe_inject_cargo_dist_deterministic_patch(
-                    step,
-                    state,
-                    request,
-                    tool_executor,
-                    event_sink,
-                    transcript,
-                    "missing_json_object",
-                )
-                .await?
-                {
-                    return Ok(ControlFlow::ContinueNoBudget);
-                }
-                if maybe_inject_cc_rs_compile_intermediates_deterministic_patch(
-                    step,
-                    state,
-                    request,
-                    tool_executor,
-                    event_sink,
-                    transcript,
-                    "missing_json_object",
-                )
-                .await?
-                {
-                    return Ok(ControlFlow::ContinueNoBudget);
-                }
-                if maybe_inject_required_repair_read(
-                    step,
-                    state,
-                    request,
-                    tool_executor,
+            event_sink.emit(RuntimeEvent::ParseRecoveryQueued {
+                step,
+                error_class: "missing_json_object".to_string(),
+                failures: state.parser_recovery_failures,
+                budget: request.parser_recovery_budget,
+                message: recovery_message,
+            });
+            if maybe_inject_cargo_dist_deterministic_patch(
+                step,
+                state,
+                request,
+                tool_executor,
+                event_sink,
+                transcript,
+                "missing_json_object",
+            )
+            .await?
+            {
+                return Ok(ControlFlow::ContinueNoBudget);
+            }
+            if maybe_inject_cc_rs_compile_intermediates_deterministic_patch(
+                step,
+                state,
+                request,
+                tool_executor,
+                event_sink,
+                transcript,
+                "missing_json_object",
+            )
+            .await?
+            {
+                return Ok(ControlFlow::ContinueNoBudget);
+            }
+            if maybe_inject_required_repair_read(
+                step,
+                state,
+                request,
+                tool_executor,
                 event_sink,
                 transcript,
                 "missing_json_object",
@@ -8444,8 +8504,7 @@ fn exact_cargo_dist_create_release_patch_actions_from_state(
         cargo_dist_create_release_expected_snapshot_content(&state.workspace_root)
     {
         let snapshot_path = "cargo-dist/tests/snapshots/axolotlsay_edit_existing.snap";
-        if load_workspace_file_text(&state.workspace_root, snapshot_path)
-            .as_deref()
+        if load_workspace_file_text(&state.workspace_root, snapshot_path).as_deref()
             != Some(snapshot_content.as_str())
         {
             actions.push(AgentAction::WriteFile {
@@ -8905,16 +8964,15 @@ fn canonicalize_benchmark_turn_actions(
                 timeout_ms: _,
             } => {
                 let trimmed_command = command.trim();
-                let command_extends_recommended =
-                    trimmed_command != recommended_command
-                        && trimmed_command
-                            .strip_prefix(&recommended_command)
-                            .is_some_and(|suffix| {
-                                suffix
-                                    .chars()
-                                    .next()
-                                    .is_some_and(|character| character.is_whitespace())
-                            });
+                let command_extends_recommended = trimmed_command != recommended_command
+                    && trimmed_command
+                        .strip_prefix(&recommended_command)
+                        .is_some_and(|suffix| {
+                            suffix
+                                .chars()
+                                .next()
+                                .is_some_and(|character| character.is_whitespace())
+                        });
                 if command_extends_recommended {
                     turn.parse_warnings.push(format!(
                         "Canonicalized fast-loop command with extra selector tokens `{}` to known fast loop `{}`.",
@@ -9628,9 +9686,13 @@ async fn maybe_inject_cc_rs_compile_intermediates_deterministic_patch(
     if !should_handle_case {
         return Ok(false);
     }
-    let source_observed = state.local_model_memory.observed_slices.iter().any(|slice| {
-        canonical_path(&slice.path) == "src/lib.rs" && slice.content_fingerprint.is_some()
-    });
+    let source_observed = state
+        .local_model_memory
+        .observed_slices
+        .iter()
+        .any(|slice| {
+            canonical_path(&slice.path) == "src/lib.rs" && slice.content_fingerprint.is_some()
+        });
     if !source_observed {
         return Ok(false);
     }
@@ -9870,6 +9932,10 @@ fn action_phase(action: &AgentAction) -> &'static str {
         | AgentAction::ListDirectory { .. }
         | AgentAction::SearchText { .. }
         | AgentAction::SearchSymbols { .. }
+        | AgentAction::FindFiles { .. }
+        | AgentAction::StructuralSearch { .. }
+        | AgentAction::StructuralEditPreview { .. }
+        | AgentAction::CargoDiagnostics { .. }
         | AgentAction::GetRepoCapsule { .. }
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
@@ -9884,6 +9950,10 @@ fn action_kind(action: &AgentAction) -> &'static str {
         AgentAction::ListDirectory { .. } => "list_directory",
         AgentAction::SearchText { .. } => "search_text",
         AgentAction::SearchSymbols { .. } => "search_symbols",
+        AgentAction::FindFiles { .. } => "find_files",
+        AgentAction::StructuralSearch { .. } => "structural_search",
+        AgentAction::StructuralEditPreview { .. } => "structural_edit_preview",
+        AgentAction::CargoDiagnostics { .. } => "cargo_diagnostics",
         AgentAction::GetRepoCapsule { .. } => "get_repo_capsule",
         AgentAction::ExplainValidationFailure { .. } => "explain_validation_failure",
         AgentAction::SuggestImplementationTargets { .. } => "suggest_implementation_targets",
@@ -9913,9 +9983,19 @@ fn action_target_path(action: &AgentAction) -> Option<String> {
         | AgentAction::WriteFile { path, .. }
         | AgentAction::ApplyPatch { path, .. }
         | AgentAction::ReplaceBlock { path, .. }
-        | AgentAction::SetExecutable { path } => Some(path.clone()),
+        | AgentAction::SetExecutable { path }
+        | AgentAction::StructuralSearch {
+            path: Some(path), ..
+        }
+        | AgentAction::StructuralEditPreview {
+            path: Some(path), ..
+        } => Some(path.clone()),
         AgentAction::SearchText { .. }
         | AgentAction::SearchSymbols { .. }
+        | AgentAction::FindFiles { .. }
+        | AgentAction::StructuralSearch { path: None, .. }
+        | AgentAction::StructuralEditPreview { path: None, .. }
+        | AgentAction::CargoDiagnostics { .. }
         | AgentAction::GetRepoCapsule { .. }
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
@@ -9959,6 +10039,10 @@ fn action_edit_summary(action: &AgentAction) -> Option<String> {
         | AgentAction::ListDirectory { .. }
         | AgentAction::SearchText { .. }
         | AgentAction::SearchSymbols { .. }
+        | AgentAction::FindFiles { .. }
+        | AgentAction::StructuralSearch { .. }
+        | AgentAction::StructuralEditPreview { .. }
+        | AgentAction::CargoDiagnostics { .. }
         | AgentAction::GetRepoCapsule { .. }
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
@@ -10214,6 +10298,10 @@ fn summarize_tool_observation_for_transcript(
         AgentAction::ListDirectory { .. }
         | AgentAction::SearchText { .. }
         | AgentAction::SearchSymbols { .. }
+        | AgentAction::FindFiles { .. }
+        | AgentAction::StructuralSearch { .. }
+        | AgentAction::StructuralEditPreview { .. }
+        | AgentAction::CargoDiagnostics { .. }
         | AgentAction::GetRepoCapsule { .. }
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
@@ -11347,6 +11435,10 @@ fn repair_requirement_from_action(
         | AgentAction::ListDirectory { .. }
         | AgentAction::SearchText { .. }
         | AgentAction::SearchSymbols { .. }
+        | AgentAction::FindFiles { .. }
+        | AgentAction::StructuralSearch { .. }
+        | AgentAction::StructuralEditPreview { .. }
+        | AgentAction::CargoDiagnostics { .. }
         | AgentAction::GetRepoCapsule { .. }
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
@@ -11438,6 +11530,10 @@ fn failed_edit_record_from_action(
         | AgentAction::ListDirectory { .. }
         | AgentAction::SearchText { .. }
         | AgentAction::SearchSymbols { .. }
+        | AgentAction::FindFiles { .. }
+        | AgentAction::StructuralSearch { .. }
+        | AgentAction::StructuralEditPreview { .. }
+        | AgentAction::CargoDiagnostics { .. }
         | AgentAction::GetRepoCapsule { .. }
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
@@ -14815,12 +14911,10 @@ impl<B> Router<B> {{
             AgentAction::RunCommand { command, .. }
                 if command == "cargo test --quiet -p cargo-dist --test integration-tests axolotlsay_edit_existing -- --exact"
         ));
-        assert!(
-            turn.parse_warnings
-                .iter()
-                .any(|warning| warning.contains("Canonicalized fast-loop command")
-                    || warning.contains("Canonicalized subset fast-loop command"))
-        );
+        assert!(turn.parse_warnings.iter().any(|warning| {
+            warning.contains("Canonicalized fast-loop command")
+                || warning.contains("Canonicalized subset fast-loop command")
+        }));
     }
 
     #[test]
@@ -15218,7 +15312,10 @@ fn try_wait_on_child(
 
         assert!(patched.contains("let objects = objects_from_files(&self.files, &dst)?;"));
         assert!(patched.contains("pub fn compile_intermediates(&self) -> Vec<PathBuf>"));
-        assert!(patched.contains("pub fn try_compile_intermediates(&self) -> Result<Vec<PathBuf>, Error>"));
+        assert!(
+            patched
+                .contains("pub fn try_compile_intermediates(&self) -> Result<Vec<PathBuf>, Error>")
+        );
         assert!(patched.contains("fn objects_from_files(files: &[Arc<Path>], dst: &Path)"));
         assert!(patched.contains("#[allow(dead_code)]\n        enum ArchSpec"));
     }
@@ -19045,9 +19142,8 @@ where\n\
             invalid_action_count: 0,
         });
         state.sync_benchmark_repair_state_to_ledger();
-        let executor = RecordingToolExecutor::new(vec![Ok(
-            "test result: ok. 1 passed; 0 failed".to_string(),
-        )]);
+        let executor =
+            RecordingToolExecutor::new(vec![Ok("test result: ok. 1 passed; 0 failed".to_string())]);
         let sink = NoopEventSink;
         let mut transcript = Vec::new();
         let turn = render_turn(
@@ -19295,19 +19391,22 @@ where\n\
             }),
             exact_reread_completed: false,
         });
-        state.local_model_memory.observed_slices.push(LocalModelObservedSlice {
-            path: "src/round.rs".to_string(),
-            requested_range: Some(crate::agent_protocol::ReadFileRange {
-                start_line: 770,
-                end_line: 802,
-            }),
-            honored_range: Some(crate::agent_protocol::ReadFileRange {
-                start_line: 770,
-                end_line: 802,
-            }),
-            purpose: Some("implementation_anchor".to_string()),
-            content_fingerprint: Some("observed".to_string()),
-        });
+        state
+            .local_model_memory
+            .observed_slices
+            .push(LocalModelObservedSlice {
+                path: "src/round.rs".to_string(),
+                requested_range: Some(crate::agent_protocol::ReadFileRange {
+                    start_line: 770,
+                    end_line: 802,
+                }),
+                honored_range: Some(crate::agent_protocol::ReadFileRange {
+                    start_line: 770,
+                    end_line: 802,
+                }),
+                purpose: Some("implementation_anchor".to_string()),
+                content_fingerprint: Some("observed".to_string()),
+            });
 
         let executor = RecordingToolExecutor::new(vec![Ok(
             "[read_file]\npath: src/round.rs\nrequested_range: 770-802\nhonored_range: 770-802\nfn duration_round() {}\n"
@@ -19340,9 +19439,12 @@ where\n\
         .expect("policy-denied write should become a controller reread");
 
         assert!(matches!(control_flow, ControlFlow::ContinueNoBudget));
-        assert!(state.repair_requirement.as_ref().is_some_and(|requirement| {
-            requirement.exact_reread_completed
-        }));
+        assert!(
+            state
+                .repair_requirement
+                .as_ref()
+                .is_some_and(|requirement| { requirement.exact_reread_completed })
+        );
         assert!(matches!(
             executor.executed_actions().as_slice(),
             [AgentAction::ReadFile { path, range: Some(range) }]
@@ -19355,9 +19457,11 @@ where\n\
                 .controller_injected_read_count,
             1
         );
-        assert!(transcript
-            .iter()
-            .any(|message| message.content.contains("[Local Controller]")));
+        assert!(
+            transcript
+                .iter()
+                .any(|message| message.content.contains("[Local Controller]"))
+        );
     }
 
     #[test]
