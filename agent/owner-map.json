@@ -1,18 +1,38 @@
 {
-  "version": 1,
+  "version": 2,
   "owners": [
     {
-      "id": "agent-core",
+      "id": "domain",
       "paths": [
         "crates/quorp_core/**",
-        "crates/quorp_benchmark/**",
+        "crates/quorp_ids/**",
+        "crates/quorp_agent_protocol/**",
+        "crates/quorp_repo_graph/**",
+        "crates/quorp_context_model/**",
+        "crates/quorp_memory_model/**",
+        "crates/quorp_rule_model/**",
+        "crates/quorp_patch_model/**",
+        "crates/quorp_verify_model/**"
+      ],
+      "responsibility": "Pure domain types: shared values, newtype IDs, wire protocol, repo-graph data model, and context/memory/rule/patch/verify model crates. No I/O. Invariants enforced at the type system."
+    },
+    {
+      "id": "adapters",
+      "paths": [
         "crates/quorp_config/**",
         "crates/quorp_provider/**",
         "crates/quorp_sandbox/**",
         "crates/quorp_term/**",
         "crates/quorp_tools/**"
       ],
-      "responsibility": "Agent-first shared types, settings, provider profiles, tmp-copy sandboxing, and terminal command surfaces."
+      "responsibility": "I/O adapters: settings loading, provider HTTP clients, tmp-copy sandboxing, terminal command surfaces, and tool executors built on top."
+    },
+    {
+      "id": "agent-runtime",
+      "paths": [
+        "crates/quorp_agent_core/**"
+      ],
+      "responsibility": "Agent runtime: turn loop, completion policy, repair sub-loop, and trait surface for completion/tool/repair-advisor implementations."
     },
     {
       "id": "cli-binary",
@@ -20,22 +40,34 @@
         "crates/quorp/src/main.rs",
         "crates/quorp/src/quorp/run_support.rs"
       ],
-      "responsibility": "Command-line routing, doctor, exec/run launch, diagnostics, and run receipts."
+      "responsibility": "Command-line routing, doctor, exec/run launch, diagnostics, and run receipts. Migrates to crates/quorp_cli during Phase 4."
+    },
+    {
+      "id": "session",
+      "paths": [
+        "crates/quorp/src/quorp/agent_runner.rs",
+        "crates/quorp/src/quorp/tui/chat_service/**",
+        "crates/quorp/src/quorp/tui/native_backend.rs"
+      ],
+      "responsibility": "Session lifecycle: streaming chat, tool dispatch, headless agent runner. Migrates to crates/quorp_session and crates/quorp_tools during Phase 4 and 5."
     },
     {
       "id": "benchmark",
       "paths": [
+        "crates/quorp_benchmark/**",
         "crates/quorp/src/quorp/benchmark.rs",
         "benchmark/**"
       ],
-      "responsibility": "Benchmark manifests, attempts, evaluators, reports, proof receipts, and batch orchestration."
+      "responsibility": "Benchmark manifests, attempts, evaluators, reports, proof receipts, and batch orchestration. Absorbs crates/quorp/src/quorp/benchmark.rs during Phase 2."
     },
     {
-      "id": "legacy-tui",
+      "id": "tooling",
       "paths": [
-        "crates/quorp/src/quorp/tui/**"
+        "agent/**",
+        "justfile",
+        "script/check-loc-cap"
       ],
-      "responsibility": "Existing Ratatui/chat interface retained during migration; avoid expanding this surface unless needed for compatibility."
+      "responsibility": "Workspace-wide tooling: agent contract files, proof lanes, LOC enforcement."
     }
   ]
 }

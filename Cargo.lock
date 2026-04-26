@@ -2499,6 +2499,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quorp_agent_protocol"
+version = "0.1.0"
+dependencies = [
+ "quorp_ids",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quorp_benchmark"
 version = "0.1.0"
 dependencies = [
@@ -2525,12 +2534,30 @@ dependencies = [
 ]
 
 [[package]]
+name = "quorp_context_model"
+version = "0.1.0"
+dependencies = [
+ "quorp_ids",
+ "quorp_repo_graph",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quorp_core"
 version = "0.1.0"
 dependencies = [
  "schemars",
  "serde",
  "serde_json",
+]
+
+[[package]]
+name = "quorp_ids"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "thiserror 2.0.18",
 ]
 
 [[package]]
@@ -2545,6 +2572,25 @@ dependencies = [
 ]
 
 [[package]]
+name = "quorp_memory_model"
+version = "0.1.0"
+dependencies = [
+ "quorp_ids",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "quorp_patch_model"
+version = "0.1.0"
+dependencies = [
+ "quorp_ids",
+ "quorp_repo_graph",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quorp_provider"
 version = "0.1.0"
 dependencies = [
@@ -2554,6 +2600,25 @@ dependencies = [
  "serde",
  "serde_json",
  "url",
+]
+
+[[package]]
+name = "quorp_repo_graph"
+version = "0.1.0"
+dependencies = [
+ "quorp_ids",
+ "rustc-hash",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "quorp_rule_model"
+version = "0.1.0"
+dependencies = [
+ "quorp_ids",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2605,6 +2670,16 @@ dependencies = [
  "tracing-tracy",
  "tracy-client",
  "ztracing_macro",
+]
+
+[[package]]
+name = "quorp_verify_model"
+version = "0.1.0"
+dependencies = [
+ "quorp_ids",
+ "quorp_repo_graph",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

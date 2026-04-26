@@ -5,14 +5,22 @@ members = [
     "crates/paths",
     "crates/perf",
     "crates/quorp",
+    "crates/quorp_agent_core",
+    "crates/quorp_agent_protocol",
     "crates/quorp_benchmark",
     "crates/quorp_config",
+    "crates/quorp_context_model",
     "crates/quorp_core",
+    "crates/quorp_ids",
+    "crates/quorp_memory_model",
+    "crates/quorp_patch_model",
     "crates/quorp_provider",
+    "crates/quorp_repo_graph",
+    "crates/quorp_rule_model",
     "crates/quorp_sandbox",
     "crates/quorp_term",
     "crates/quorp_tools",
-    "crates/quorp_agent_core",
+    "crates/quorp_verify_model",
     "crates/zlog-compat",
     "crates/util",
     "crates/util_macros",
@@ -63,13 +71,23 @@ percent-encoding = "=2.3.2"
 perf = { path = "crates/perf" }
 portable-pty = "=0.9.0"
 pretty_assertions = "=1.4.1"
+quorp_agent_core = { path = "crates/quorp_agent_core" }
+quorp_agent_protocol = { path = "crates/quorp_agent_protocol" }
 quorp_benchmark = { path = "crates/quorp_benchmark" }
 quorp_config = { path = "crates/quorp_config" }
+quorp_context_model = { path = "crates/quorp_context_model" }
 quorp_core = { path = "crates/quorp_core" }
+quorp_ids = { path = "crates/quorp_ids" }
+quorp_memory_model = { path = "crates/quorp_memory_model" }
+quorp_patch_model = { path = "crates/quorp_patch_model" }
 quorp_provider = { path = "crates/quorp_provider" }
+quorp_repo_graph = { path = "crates/quorp_repo_graph" }
+quorp_rule_model = { path = "crates/quorp_rule_model" }
 quorp_sandbox = { path = "crates/quorp_sandbox" }
 quorp_term = { path = "crates/quorp_term" }
 quorp_tools = { path = "crates/quorp_tools" }
+quorp_verify_model = { path = "crates/quorp_verify_model" }
+thiserror = "=2.0.18"
 quote = "=1.0.41"
 rand = "=0.9.2"
 regex = "=1.12.2"

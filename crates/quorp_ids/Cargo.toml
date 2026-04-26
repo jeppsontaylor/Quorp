@@ -1,0 +1,17 @@
+[package]
+name = "quorp_ids"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+authors = ["Quorp Team <hi@quorp.dev>"]
+
+[lib]
+path = "src/quorp_ids.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+thiserror = "=2.0.18"

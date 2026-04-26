@@ -1,0 +1,21 @@
+[package]
+name = "quorp_verify_model"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+authors = ["Quorp Team <hi@quorp.dev>"]
+
+[lib]
+path = "src/quorp_verify_model.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+quorp_ids = { workspace = true }
+quorp_repo_graph = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+serde_json.workspace = true
