@@ -1639,8 +1639,18 @@ fn finalize_challenge_attempt(
 
 
 mod engine;
+mod probe;
+mod reporting;
+mod state;
+
 #[allow(unused_imports)]
 pub(crate) use engine::*;
+#[allow(unused_imports)]
+pub(crate) use probe::*;
+#[allow(unused_imports)]
+pub(crate) use reporting::*;
+#[allow(unused_imports)]
+pub(crate) use state::*;
 
 #[cfg(test)]
 mod tests;
