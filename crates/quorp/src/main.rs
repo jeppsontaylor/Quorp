@@ -53,6 +53,7 @@ fn run(args: CliArgs) -> anyhow::Result<()> {
         Some(Command::Benchmark { command }) => run_benchmark_command(command),
         Some(Command::RenderDemo) => run_render_demo(),
         Some(Command::Commands { prefix }) => run_commands_command(prefix),
+        Some(Command::Scan { workspace, symbols }) => run_scan_command(workspace, symbols),
         None => run_inline_cli(SessionLaunchConfig::from_paths_or_urls(
             args.paths_or_urls,
             parse_prompt_compaction_policy_arg(args.prompt_compaction_policy.as_deref())?,
@@ -193,6 +194,87 @@ fn run_doctor_command() -> anyhow::Result<()> {
         "{}",
         render_splash("quorp · doctor", &steps, color)
     );
+    Ok(())
+}
+
+fn run_scan_command(
+    workspace: Option<PathBuf>,
+    harvest_symbols: bool,
+) -> anyhow::Result<()> {
+    use quorp_render::caps::RenderProfile;
+    use quorp_render::splash::{SplashStatus, SplashStep, render_splash};
+    use quorp_repo_scan::{Language, ScannedFile, harvest_rust_symbols, scan};
+
+    let workspace = workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| default_workspace_root()));
+    let workspace = std::fs::canonicalize(&workspace).unwrap_or(workspace);
+    let color = RenderProfile::detect_from_env().color;
+
+    let scan_started = std::time::Instant::now();
+    let files: Vec<ScannedFile> = scan(&workspace);
+    let scan_ms = scan_started.elapsed().as_millis();
+
+    let mut counts: std::collections::BTreeMap<&str, (u64, u64)> = std::collections::BTreeMap::new();
+    let mut total_bytes: u64 = 0;
+    for file in &files {
+        let label = match file.language {
+            Language::Rust => "rust",
+            Language::TypeScript => "typescript",
+            Language::Python => "python",
+            Language::Go => "go",
+            Language::Toml => "toml",
+            Language::Json => "json",
+            Language::Markdown => "markdown",
+            Language::Other => "other",
+        };
+        let entry = counts.entry(label).or_insert((0, 0));
+        entry.0 += 1;
+        entry.1 += file.bytes;
+        total_bytes += file.bytes;
+    }
+
+    let mut steps: Vec<SplashStep> = Vec::new();
+    steps.push(SplashStep {
+        name: "workspace".into(),
+        detail: workspace.display().to_string(),
+        status: SplashStatus::Done,
+    });
+    steps.push(SplashStep {
+        name: "scanned".into(),
+        detail: format!(
+            "{} files · {} kB · {scan_ms} ms",
+            files.len(),
+            (total_bytes + 512) / 1024
+        ),
+        status: SplashStatus::Done,
+    });
+    for (label, (count, bytes)) in &counts {
+        steps.push(SplashStep {
+            name: (*label).to_string(),
+            detail: format!("{count} files · {} kB", (bytes + 512) / 1024),
+            status: SplashStatus::Done,
+        });
+    }
+
+    if harvest_symbols {
+        let symbols_started = std::time::Instant::now();
+        let mut symbol_total = 0usize;
+        for file in &files {
+            if file.language != Language::Rust {
+                continue;
+            }
+            if let Ok(contents) = std::fs::read_to_string(&file.path) {
+                symbol_total += harvest_rust_symbols(file, &contents).len();
+            }
+        }
+        let symbols_ms = symbols_started.elapsed().as_millis();
+        steps.push(SplashStep {
+            name: "symbols".into(),
+            detail: format!("{symbol_total} top-level Rust symbols · {symbols_ms} ms"),
+            status: SplashStatus::Done,
+        });
+    }
+
+    print!("{}", render_splash("quorp · scan", &steps, color));
     Ok(())
 }
 
@@ -1593,6 +1675,16 @@ enum Command {
         /// score and only prints matches.
         #[arg(value_name = "PREFIX")]
         prefix: Option<String>,
+    },
+    /// Walk the workspace via `quorp_repo_scan`, group files by
+    /// language, and print a splash-style summary.
+    Scan {
+        /// Workspace root. Defaults to the current directory.
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<PathBuf>,
+        /// Also harvest top-level Rust symbols and report the count.
+        #[arg(long)]
+        symbols: bool,
     },
 }
 

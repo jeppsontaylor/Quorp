@@ -39,6 +39,7 @@ quorp_config.workspace = true
 quorp_core.workspace = true
 quorp_provider.workspace = true
 quorp_render.workspace = true
+quorp_repo_scan.workspace = true
 quorp_sandbox.workspace = true
 quorp_slash.workspace = true
 quorp_term.workspace = true
