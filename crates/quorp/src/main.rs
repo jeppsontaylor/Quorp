@@ -42,7 +42,7 @@ fn benchmark_log_file_override(args: &CliArgs) -> Option<PathBuf> {
 
 fn run(args: CliArgs) -> anyhow::Result<()> {
     match args.command {
-        Some(Command::Doctor) => run_doctor_command(),
+        Some(Command::Doctor) => crate::quorp::cli_demos::run_doctor_command(),
         Some(Command::Exec(args)) => run_exec_command(args),
         Some(Command::MemAnalyze) => run_mem_analyze(),
         Some(Command::MemLogPath) => run_mem_log_path(),
@@ -51,363 +51,29 @@ fn run(args: CliArgs) -> anyhow::Result<()> {
         Some(Command::Diagnostics { command }) => run_diagnostics_command(command),
         Some(Command::Agent { command }) => run_agent_command(command),
         Some(Command::Benchmark { command }) => run_benchmark_command(command),
-        Some(Command::RenderDemo) => run_render_demo(),
-        Some(Command::Commands { prefix }) => run_commands_command(prefix),
-        Some(Command::Scan { workspace, symbols }) => run_scan_command(workspace, symbols),
+        Some(Command::RenderDemo) => crate::quorp::cli_demos::run_render_demo(),
+        Some(Command::Commands { prefix }) => crate::quorp::cli_demos::run_commands_command(prefix),
+        Some(Command::Scan { workspace, symbols }) => {
+            crate::quorp::cli_demos::run_scan_command(workspace, symbols)
+        }
+        Some(Command::Permissions {
+            mode,
+            tool,
+            capability,
+            command,
+            allow_command,
+        }) => crate::quorp::cli_demos::run_permissions_command(
+            mode.into(),
+            tool,
+            capability.map(Into::into),
+            command,
+            allow_command,
+        ),
         None => run_inline_cli(SessionLaunchConfig::from_paths_or_urls(
             args.paths_or_urls,
             parse_prompt_compaction_policy_arg(args.prompt_compaction_policy.as_deref())?,
         )),
     }
-}
-
-fn run_doctor_command() -> anyhow::Result<()> {
-    use quorp_render::caps::RenderProfile;
-    use quorp_render::splash::{SplashStatus, SplashStep, render_splash};
-
-    let workspace = std::env::current_dir().unwrap_or_else(|_| default_workspace_root());
-    let loaded = quorp_config::load_settings(&workspace)?;
-    let provider = quorp_provider::OpenAiCompatibleProvider::new(loaded.settings.provider.clone());
-    let provider_url = provider.chat_completions_url()?;
-    let api_key_present =
-        crate::quorp::provider_config::env_value(&loaded.settings.provider.api_key_env)
-            .is_some_and(|value| !value.trim().is_empty());
-    let project_agent_toml = workspace.join(".quorp").join("agent.toml");
-    let color = RenderProfile::detect_from_env().color;
-
-    let mut steps: Vec<SplashStep> = Vec::new();
-    steps.push(SplashStep {
-        name: "workspace".into(),
-        detail: workspace.display().to_string(),
-        status: SplashStatus::Done,
-    });
-
-    let any_settings_loaded = loaded.sources.loaded_user || loaded.sources.loaded_project;
-    let settings_detail = format!(
-        "user={} project={}",
-        loaded
-            .sources
-            .user_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| loaded.sources.user_path.display().to_string()),
-        loaded
-            .sources
-            .project_path
-            .file_name()
-            .map(|n| n.to_string_lossy().into_owned())
-            .unwrap_or_else(|| loaded.sources.project_path.display().to_string()),
-    );
-    steps.push(SplashStep {
-        name: "settings".into(),
-        detail: if any_settings_loaded {
-            settings_detail
-        } else {
-            format!("{settings_detail} (defaults — no settings file loaded)")
-        },
-        status: if any_settings_loaded {
-            SplashStatus::Done
-        } else {
-            SplashStatus::Warn
-        },
-    });
-
-    steps.push(SplashStep {
-        name: "provider".into(),
-        detail: format!(
-            "{} model={}",
-            loaded.settings.provider.name, loaded.settings.provider.model
-        ),
-        status: SplashStatus::Done,
-    });
-
-    steps.push(SplashStep {
-        name: "endpoint".into(),
-        detail: provider_url.to_string(),
-        status: SplashStatus::Done,
-    });
-
-    steps.push(SplashStep {
-        name: "api key".into(),
-        detail: if api_key_present {
-            format!("{} (present)", loaded.settings.provider.api_key_env)
-        } else {
-            format!("{} (missing)", loaded.settings.provider.api_key_env)
-        },
-        status: if api_key_present {
-            SplashStatus::Done
-        } else {
-            SplashStatus::Warn
-        },
-    });
-
-    steps.push(SplashStep {
-        name: "sandbox".into(),
-        detail: format!("{:?}", loaded.settings.sandbox.mode),
-        status: SplashStatus::Done,
-    });
-
-    steps.push(SplashStep {
-        name: "permissions".into(),
-        detail: format!("{:?}", loaded.settings.permissions.mode),
-        status: SplashStatus::Done,
-    });
-
-    let hooks = &loaded.settings.hooks;
-    let hooks_total = hooks.before_tool.len() + hooks.after_tool.len() + hooks.stop.len();
-    steps.push(SplashStep {
-        name: "hooks".into(),
-        detail: format!(
-            "before={} after={} stop={}",
-            hooks.before_tool.len(),
-            hooks.after_tool.len(),
-            hooks.stop.len()
-        ),
-        status: if hooks_total > 0 {
-            SplashStatus::Done
-        } else {
-            SplashStatus::Warn
-        },
-    });
-
-    steps.push(SplashStep {
-        name: "legacy toml".into(),
-        detail: if project_agent_toml.exists() {
-            format!("found at {}", project_agent_toml.display())
-        } else {
-            "(none)".to_string()
-        },
-        status: if project_agent_toml.exists() {
-            SplashStatus::Warn
-        } else {
-            SplashStatus::Done
-        },
-    });
-
-    steps.push(SplashStep {
-        name: "tmp-copy".into(),
-        detail: "/tmp/quorp".into(),
-        status: SplashStatus::Done,
-    });
-
-    print!(
-        "{}",
-        render_splash("quorp · doctor", &steps, color)
-    );
-    Ok(())
-}
-
-fn run_scan_command(
-    workspace: Option<PathBuf>,
-    harvest_symbols: bool,
-) -> anyhow::Result<()> {
-    use quorp_render::caps::RenderProfile;
-    use quorp_render::splash::{SplashStatus, SplashStep, render_splash};
-    use quorp_repo_scan::{Language, ScannedFile, harvest_rust_symbols, scan};
-
-    let workspace = workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| default_workspace_root()));
-    let workspace = std::fs::canonicalize(&workspace).unwrap_or(workspace);
-    let color = RenderProfile::detect_from_env().color;
-
-    let scan_started = std::time::Instant::now();
-    let files: Vec<ScannedFile> = scan(&workspace);
-    let scan_ms = scan_started.elapsed().as_millis();
-
-    let mut counts: std::collections::BTreeMap<&str, (u64, u64)> = std::collections::BTreeMap::new();
-    let mut total_bytes: u64 = 0;
-    for file in &files {
-        let label = match file.language {
-            Language::Rust => "rust",
-            Language::TypeScript => "typescript",
-            Language::Python => "python",
-            Language::Go => "go",
-            Language::Toml => "toml",
-            Language::Json => "json",
-            Language::Markdown => "markdown",
-            Language::Other => "other",
-        };
-        let entry = counts.entry(label).or_insert((0, 0));
-        entry.0 += 1;
-        entry.1 += file.bytes;
-        total_bytes += file.bytes;
-    }
-
-    let mut steps: Vec<SplashStep> = Vec::new();
-    steps.push(SplashStep {
-        name: "workspace".into(),
-        detail: workspace.display().to_string(),
-        status: SplashStatus::Done,
-    });
-    steps.push(SplashStep {
-        name: "scanned".into(),
-        detail: format!(
-            "{} files · {} kB · {scan_ms} ms",
-            files.len(),
-            (total_bytes + 512) / 1024
-        ),
-        status: SplashStatus::Done,
-    });
-    for (label, (count, bytes)) in &counts {
-        steps.push(SplashStep {
-            name: (*label).to_string(),
-            detail: format!("{count} files · {} kB", (bytes + 512) / 1024),
-            status: SplashStatus::Done,
-        });
-    }
-
-    if harvest_symbols {
-        let symbols_started = std::time::Instant::now();
-        let mut symbol_total = 0usize;
-        for file in &files {
-            if file.language != Language::Rust {
-                continue;
-            }
-            if let Ok(contents) = std::fs::read_to_string(&file.path) {
-                symbol_total += harvest_rust_symbols(file, &contents).len();
-            }
-        }
-        let symbols_ms = symbols_started.elapsed().as_millis();
-        steps.push(SplashStep {
-            name: "symbols".into(),
-            detail: format!("{symbol_total} top-level Rust symbols · {symbols_ms} ms"),
-            status: SplashStatus::Done,
-        });
-    }
-
-    print!("{}", render_splash("quorp · scan", &steps, color));
-    Ok(())
-}
-
-fn run_commands_command(prefix: Option<String>) -> anyhow::Result<()> {
-    use quorp_render::caps::RenderProfile;
-    use quorp_render::palette::{ACCENT_CYAN, DIM, FG_TEXT, RESET};
-    use quorp_slash::{Registry, SlashCommandSpec};
-
-    let color = RenderProfile::detect_from_env().color;
-    let plain = matches!(color, quorp_render::caps::ColorCapability::NoColor);
-    let registry = Registry::new();
-
-    let entries: Vec<&SlashCommandSpec> = if let Some(prefix) = prefix.as_deref() {
-        registry
-            .suggest(prefix)
-            .into_iter()
-            .map(|(spec, _)| spec)
-            .collect()
-    } else {
-        registry.all().iter().collect()
-    };
-
-    if plain {
-        for spec in entries {
-            let aliases = if spec.aliases.is_empty() {
-                String::new()
-            } else {
-                format!(" ({})", spec.aliases.join(", "))
-            };
-            println!("/{:<13} {} — {}", spec.name, aliases, spec.description);
-        }
-        return Ok(());
-    }
-
-    for spec in entries {
-        let aliases = if spec.aliases.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", spec.aliases.join(", "))
-        };
-        println!(
-            "{cyan}/{:<13}{reset}{dim}{aliases}{reset} {fg}— {}{reset}",
-            spec.name,
-            spec.description,
-            cyan = ACCENT_CYAN.fg(),
-            dim = DIM,
-            fg = FG_TEXT.fg(),
-            reset = RESET,
-            aliases = aliases,
-        );
-    }
-    Ok(())
-}
-
-fn run_render_demo() -> anyhow::Result<()> {
-    use quorp_render::caps::{ColorCapability, RenderProfile};
-    use quorp_render::permission_modal::{PermissionPrompt, render_permission_modal};
-    use quorp_render::shimmer::{ShimmerStyle, render_shimmer};
-    use quorp_render::splash::{SplashStatus, SplashStep, render_splash};
-    use quorp_render::status_footer::{StatusFooter, render_status_footer};
-    use quorp_render::transcript::{TranscriptLine, render_transcript_line};
-
-    let profile = RenderProfile::detect_from_env();
-    let color = profile.color;
-
-    let splash_steps = [
-        SplashStep { name: "workspace".into(), detail: "~/Code/quorp".into(), status: SplashStatus::Done },
-        SplashStep { name: "settings".into(), detail: "user + project".into(), status: SplashStatus::Done },
-        SplashStep { name: "env".into(), detail: ".quorp/.env (4 vars)".into(), status: SplashStatus::Done },
-        SplashStep { name: "provider".into(), detail: "nvidia/qwen3-coder · 47ms".into(), status: SplashStatus::Done },
-        SplashStep { name: "repo capsule".into(), detail: "412 files, 64kb cached".into(), status: SplashStatus::Done },
-        SplashStep { name: "memory + rules".into(), detail: "3 active rules · 42 facts".into(), status: SplashStatus::Running },
-    ];
-    print!("{}", render_splash("quorp · brilliant terminal coding", &splash_steps, color));
-    println!();
-
-    let frames = 18;
-    let style = ShimmerStyle::default();
-    print!("\x1b[?25l");
-    for i in 0..frames {
-        let t = i as f32 * 0.06;
-        print!("\r  {} · ctx 12.4k/64k", render_shimmer("Cogitating", t, style, color));
-        let _ = std::io::Write::flush(&mut std::io::stdout());
-        std::thread::sleep(std::time::Duration::from_millis(55));
-    }
-    print!("\x1b[?25h\r\x1b[2K");
-
-    let transcript = [
-        TranscriptLine::UserPrompt("refactor agent_runner.rs into smaller modules".into()),
-        TranscriptLine::AssistantProse("I'll inspect the file and propose a 4-step plan.".into()),
-        TranscriptLine::ToolCallSummary {
-            tool: "read_file".into(),
-            target: "crates/quorp/src/quorp/agent_runner.rs".into(),
-            sample_chars: 31_842,
-        },
-        TranscriptLine::RepairAttempt {
-            attempt: 1,
-            cap: 3,
-            hypothesis: "missing pub(super) on HeadlessEventRecorder".into(),
-        },
-    ];
-    for line in &transcript {
-        println!("{}", render_transcript_line(line, color));
-    }
-    println!();
-
-    let footer = StatusFooter {
-        model_provider: "qwen3-coder@nvidia".into(),
-        mode_label: "Act".into(),
-        phase_pill: "thinking".into(),
-        usage_summary: "ctx 12.4k/64k · $0.024 · tasks 3/8 · 4.2s".into(),
-    };
-    println!("{}", render_status_footer(&footer, color));
-    println!();
-
-    let prompt = PermissionPrompt {
-        tool: "run_command".into(),
-        command_repr: "cargo test -p quorp_term".into(),
-        cwd: "crates/quorp_term".into(),
-        sandbox: "tmp-copy".into(),
-        rationale: "validate the SlashCommand parser changes".into(),
-    };
-    print!("{}", render_permission_modal(&prompt, color));
-    println!();
-
-    let color_label = match color {
-        ColorCapability::TrueColor => "truecolor",
-        ColorCapability::Ansi256 => "ansi-256",
-        ColorCapability::Ansi16 => "ansi-16",
-        ColorCapability::NoColor => "no-color",
-    };
-    println!("(detected color profile: {color_label})");
-    Ok(())
 }
 
 fn load_workspace_settings(workspace: &Path) -> anyhow::Result<quorp_config::LoadedSettings> {
@@ -1359,7 +1025,7 @@ fn run_inline_cli(launch: SessionLaunchConfig) -> anyhow::Result<()> {
         }
         if let Some(command) = quorp_term::parse_slash_command(input) {
             match command {
-                quorp_term::SlashCommand::Doctor => run_doctor_command()?,
+                quorp_term::SlashCommand::Doctor => crate::quorp::cli_demos::run_doctor_command()?,
                 quorp_term::SlashCommand::Help => print_inline_help(),
                 quorp_term::SlashCommand::Unknown(name) => {
                     println!(
@@ -1686,12 +1352,78 @@ enum Command {
         #[arg(long)]
         symbols: bool,
     },
+    /// Exercise `quorp_permissions::Permissions::check` against a
+    /// proposed tool action. Useful for previewing the approval modal
+    /// or testing allowlist patterns before committing to a policy.
+    Permissions {
+        /// Permission mode to evaluate against.
+        #[arg(long, value_enum, default_value_t = CliPermissionMode::Ask)]
+        mode: CliPermissionMode,
+        /// Tool name (e.g. `read_file`, `run_command`, `write_file`).
+        #[arg(long)]
+        tool: String,
+        /// Capability the tool wants. Defaults inferred from the tool
+        /// name when possible.
+        #[arg(long, value_enum)]
+        capability: Option<CliCapability>,
+        /// Rendered command string used for command-allowlist matching.
+        #[arg(long)]
+        command: Option<String>,
+        /// Glob pattern to add to the command allowlist before checking.
+        /// Useful for "preview what happens once I add this allow".
+        #[arg(long, value_name = "GLOB")]
+        allow_command: Vec<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
 pub enum CliSandboxMode {
     Host,
     TmpCopy,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CliPermissionMode {
+    ReadOnly,
+    Ask,
+    AcceptEdits,
+    AutoSafe,
+    YoloSandbox,
+}
+
+impl From<CliPermissionMode> for quorp_permissions::Mode {
+    fn from(value: CliPermissionMode) -> Self {
+        match value {
+            CliPermissionMode::ReadOnly => quorp_permissions::Mode::ReadOnly,
+            CliPermissionMode::Ask => quorp_permissions::Mode::Ask,
+            CliPermissionMode::AcceptEdits => quorp_permissions::Mode::AcceptEdits,
+            CliPermissionMode::AutoSafe => quorp_permissions::Mode::AutoSafe,
+            CliPermissionMode::YoloSandbox => quorp_permissions::Mode::YoloSandbox,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CliCapability {
+    Read,
+    WriteFile,
+    DeleteFile,
+    RunCommand,
+    Network,
+    Mcp,
+}
+
+impl From<CliCapability> for quorp_permissions::Capability {
+    fn from(value: CliCapability) -> Self {
+        match value {
+            CliCapability::Read => quorp_permissions::Capability::Read,
+            CliCapability::WriteFile => quorp_permissions::Capability::WriteFile,
+            CliCapability::DeleteFile => quorp_permissions::Capability::DeleteFile,
+            CliCapability::RunCommand => quorp_permissions::Capability::RunCommand,
+            CliCapability::Network => quorp_permissions::Capability::Network,
+            CliCapability::Mcp => quorp_permissions::Capability::Mcp,
+        }
+    }
 }
 
 impl From<CliSandboxMode> for quorp_core::SandboxMode {

@@ -1,5 +1,6 @@
 pub mod agent_runner;
 pub mod benchmark;
+pub mod cli_demos;
 pub mod executor;
 pub mod memory_fingerprint;
 pub mod prompt_compaction;

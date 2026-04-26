@@ -2460,6 +2460,7 @@ dependencies = [
  "quorp_config",
  "quorp_core",
  "quorp_log",
+ "quorp_permissions",
  "quorp_provider",
  "quorp_render",
  "quorp_repo_scan",
