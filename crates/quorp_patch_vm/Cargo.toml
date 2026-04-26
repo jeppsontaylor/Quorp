@@ -1,0 +1,23 @@
+[package]
+name = "quorp_patch_vm"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+authors = ["Quorp Team <hi@quorp.dev>"]
+
+[lib]
+path = "src/quorp_patch_vm.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+quorp_ids = { workspace = true }
+quorp_patch_model = { workspace = true }
+quorp_repo_graph = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+sha2.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

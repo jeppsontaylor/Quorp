@@ -1,0 +1,25 @@
+[package]
+name = "quorp_context"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+authors = ["Quorp Team <hi@quorp.dev>"]
+
+[lib]
+path = "src/quorp_context.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+quorp_context_model = { workspace = true }
+quorp_ids = { workspace = true }
+quorp_memory = { workspace = true }
+quorp_memory_model = { workspace = true }
+quorp_repo_graph = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+
+[dev-dependencies]
+serde_json.workspace = true

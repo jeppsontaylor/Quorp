@@ -1,0 +1,20 @@
+[package]
+name = "quorp_render"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+authors = ["Quorp Team <hi@quorp.dev>"]
+
+[lib]
+path = "src/quorp_render.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde = { workspace = true, features = ["derive"] }
+unicode-width.workspace = true
+
+[dev-dependencies]
+serde_json.workspace = true

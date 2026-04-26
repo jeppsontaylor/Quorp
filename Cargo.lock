@@ -2534,6 +2534,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "quorp_context"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "quorp_context_model",
+ "quorp_ids",
+ "quorp_memory",
+ "quorp_memory_model",
+ "quorp_repo_graph",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quorp_context_model"
 version = "0.1.0"
 dependencies = [
@@ -2572,6 +2586,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "quorp_memory"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "quorp_ids",
+ "quorp_memory_model",
+ "quorp_storage",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quorp_memory_model"
 version = "0.1.0"
 dependencies = [
@@ -2591,6 +2617,39 @@ dependencies = [
 ]
 
 [[package]]
+name = "quorp_patch_vm"
+version = "0.1.0"
+dependencies = [
+ "quorp_ids",
+ "quorp_patch_model",
+ "quorp_repo_graph",
+ "serde",
+ "serde_json",
+ "sha2",
+]
+
+[[package]]
+name = "quorp_permissions"
+version = "0.1.0"
+dependencies = [
+ "globset",
+ "quorp_core",
+ "quorp_ids",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "quorp_plan_mode"
+version = "0.1.0"
+dependencies = [
+ "quorp_core",
+ "quorp_ids",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quorp_provider"
 version = "0.1.0"
 dependencies = [
@@ -2603,11 +2662,44 @@ dependencies = [
 ]
 
 [[package]]
+name = "quorp_render"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "unicode-width 0.2.0",
+]
+
+[[package]]
 name = "quorp_repo_graph"
 version = "0.1.0"
 dependencies = [
  "quorp_ids",
  "rustc-hash",
+ "serde",
+ "serde_json",
+]
+
+[[package]]
+name = "quorp_repo_scan"
+version = "0.1.0"
+dependencies = [
+ "quorp_repo_graph",
+ "serde",
+ "tempfile",
+ "walkdir",
+]
+
+[[package]]
+name = "quorp_rule_forge"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "quorp_ids",
+ "quorp_memory",
+ "quorp_memory_model",
+ "quorp_rule_model",
+ "quorp_verify_model",
  "serde",
  "serde_json",
 ]
@@ -2622,6 +2714,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "quorp_rust_intel"
+version = "0.1.0"
+dependencies = [
+ "quorp_repo_graph",
+ "quorp_verify_model",
+ "serde",
+]
+
+[[package]]
 name = "quorp_sandbox"
 version = "0.1.0"
 dependencies = [
@@ -2630,6 +2731,20 @@ dependencies = [
  "serde",
  "tempfile",
  "walkdir",
+]
+
+[[package]]
+name = "quorp_slash"
+version = "0.1.0"
+
+[[package]]
+name = "quorp_storage"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "quorp_ids",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -2670,6 +2785,16 @@ dependencies = [
  "tracing-tracy",
  "tracy-client",
  "ztracing_macro",
+]
+
+[[package]]
+name = "quorp_verify"
+version = "0.1.0"
+dependencies = [
+ "quorp_ids",
+ "quorp_verify_model",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]

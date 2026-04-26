@@ -9,17 +9,29 @@ members = [
     "crates/quorp_agent_protocol",
     "crates/quorp_benchmark",
     "crates/quorp_config",
+    "crates/quorp_context",
     "crates/quorp_context_model",
     "crates/quorp_core",
     "crates/quorp_ids",
+    "crates/quorp_memory",
     "crates/quorp_memory_model",
     "crates/quorp_patch_model",
+    "crates/quorp_patch_vm",
+    "crates/quorp_permissions",
+    "crates/quorp_plan_mode",
     "crates/quorp_provider",
+    "crates/quorp_render",
     "crates/quorp_repo_graph",
+    "crates/quorp_repo_scan",
+    "crates/quorp_rule_forge",
     "crates/quorp_rule_model",
+    "crates/quorp_rust_intel",
     "crates/quorp_sandbox",
+    "crates/quorp_slash",
+    "crates/quorp_storage",
     "crates/quorp_term",
     "crates/quorp_tools",
+    "crates/quorp_verify",
     "crates/quorp_verify_model",
     "crates/zlog-compat",
     "crates/util",
@@ -75,17 +87,29 @@ quorp_agent_core = { path = "crates/quorp_agent_core" }
 quorp_agent_protocol = { path = "crates/quorp_agent_protocol" }
 quorp_benchmark = { path = "crates/quorp_benchmark" }
 quorp_config = { path = "crates/quorp_config" }
+quorp_context = { path = "crates/quorp_context" }
 quorp_context_model = { path = "crates/quorp_context_model" }
 quorp_core = { path = "crates/quorp_core" }
 quorp_ids = { path = "crates/quorp_ids" }
+quorp_memory = { path = "crates/quorp_memory" }
 quorp_memory_model = { path = "crates/quorp_memory_model" }
 quorp_patch_model = { path = "crates/quorp_patch_model" }
+quorp_patch_vm = { path = "crates/quorp_patch_vm" }
+quorp_permissions = { path = "crates/quorp_permissions" }
+quorp_plan_mode = { path = "crates/quorp_plan_mode" }
 quorp_provider = { path = "crates/quorp_provider" }
+quorp_render = { path = "crates/quorp_render" }
 quorp_repo_graph = { path = "crates/quorp_repo_graph" }
+quorp_repo_scan = { path = "crates/quorp_repo_scan" }
+quorp_rule_forge = { path = "crates/quorp_rule_forge" }
 quorp_rule_model = { path = "crates/quorp_rule_model" }
+quorp_rust_intel = { path = "crates/quorp_rust_intel" }
 quorp_sandbox = { path = "crates/quorp_sandbox" }
+quorp_slash = { path = "crates/quorp_slash" }
+quorp_storage = { path = "crates/quorp_storage" }
 quorp_term = { path = "crates/quorp_term" }
 quorp_tools = { path = "crates/quorp_tools" }
+quorp_verify = { path = "crates/quorp_verify" }
 quorp_verify_model = { path = "crates/quorp_verify_model" }
 thiserror = "=2.0.18"
 quote = "=1.0.41"

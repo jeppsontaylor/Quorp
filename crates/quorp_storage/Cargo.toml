@@ -1,0 +1,19 @@
+[package]
+name = "quorp_storage"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+authors = ["Quorp Team <hi@quorp.dev>"]
+
+[lib]
+path = "src/quorp_storage.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+quorp_ids = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true

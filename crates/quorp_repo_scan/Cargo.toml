@@ -1,0 +1,21 @@
+[package]
+name = "quorp_repo_scan"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+authors = ["Quorp Team <hi@quorp.dev>"]
+
+[lib]
+path = "src/quorp_repo_scan.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+quorp_repo_graph = { workspace = true }
+serde = { workspace = true, features = ["derive"] }
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
