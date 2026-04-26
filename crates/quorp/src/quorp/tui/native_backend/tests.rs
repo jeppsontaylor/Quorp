@@ -1,6 +1,7 @@
     use super::*;
     use crate::quorp::tui::ChatUiEvent;
     use crate::quorp::tui::TuiEvent;
+    use quorp_tools::edit::{set_executable_bit, write_full_file};
     use serde_json::json;
     use tempfile::tempdir;
 
