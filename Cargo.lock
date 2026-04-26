@@ -2463,6 +2463,7 @@ dependencies = [
  "quorp_provider",
  "quorp_render",
  "quorp_sandbox",
+ "quorp_slash",
  "quorp_term",
  "quorp_tools",
  "quorp_tracing",

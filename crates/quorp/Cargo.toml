@@ -40,6 +40,7 @@ quorp_core.workspace = true
 quorp_provider.workspace = true
 quorp_render.workspace = true
 quorp_sandbox.workspace = true
+quorp_slash.workspace = true
 quorp_term.workspace = true
 quorp_tools.workspace = true
 reqwest = { workspace = true, features = ["json", "stream"] }

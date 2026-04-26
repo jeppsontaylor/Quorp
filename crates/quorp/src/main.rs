@@ -52,6 +52,7 @@ fn run(args: CliArgs) -> anyhow::Result<()> {
         Some(Command::Agent { command }) => run_agent_command(command),
         Some(Command::Benchmark { command }) => run_benchmark_command(command),
         Some(Command::RenderDemo) => run_render_demo(),
+        Some(Command::Commands { prefix }) => run_commands_command(prefix),
         None => run_inline_cli(SessionLaunchConfig::from_paths_or_urls(
             args.paths_or_urls,
             parse_prompt_compaction_policy_arg(args.prompt_compaction_policy.as_deref())?,
@@ -60,6 +61,9 @@ fn run(args: CliArgs) -> anyhow::Result<()> {
 }
 
 fn run_doctor_command() -> anyhow::Result<()> {
+    use quorp_render::caps::RenderProfile;
+    use quorp_render::splash::{SplashStatus, SplashStep, render_splash};
+
     let workspace = std::env::current_dir().unwrap_or_else(|_| default_workspace_root());
     let loaded = quorp_config::load_settings(&workspace)?;
     let provider = quorp_provider::OpenAiCompatibleProvider::new(loaded.settings.provider.clone());
@@ -68,36 +72,178 @@ fn run_doctor_command() -> anyhow::Result<()> {
         crate::quorp::provider_config::env_value(&loaded.settings.provider.api_key_env)
             .is_some_and(|value| !value.trim().is_empty());
     let project_agent_toml = workspace.join(".quorp").join("agent.toml");
+    let color = RenderProfile::detect_from_env().color;
 
-    println!("QUORP doctor");
-    println!("workspace: {}", workspace.display());
-    println!(
-        "settings: user={} loaded={} project={} loaded={}",
-        loaded.sources.user_path.display(),
-        loaded.sources.loaded_user,
-        loaded.sources.project_path.display(),
-        loaded.sources.loaded_project
+    let mut steps: Vec<SplashStep> = Vec::new();
+    steps.push(SplashStep {
+        name: "workspace".into(),
+        detail: workspace.display().to_string(),
+        status: SplashStatus::Done,
+    });
+
+    let any_settings_loaded = loaded.sources.loaded_user || loaded.sources.loaded_project;
+    let settings_detail = format!(
+        "user={} project={}",
+        loaded
+            .sources
+            .user_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| loaded.sources.user_path.display().to_string()),
+        loaded
+            .sources
+            .project_path
+            .file_name()
+            .map(|n| n.to_string_lossy().into_owned())
+            .unwrap_or_else(|| loaded.sources.project_path.display().to_string()),
     );
-    println!("provider: {}", loaded.settings.provider.name);
-    println!("model: {}", loaded.settings.provider.model);
-    println!("chat endpoint: {provider_url}");
-    println!(
-        "api key env: {} present={}",
-        loaded.settings.provider.api_key_env, api_key_present
+    steps.push(SplashStep {
+        name: "settings".into(),
+        detail: if any_settings_loaded {
+            settings_detail
+        } else {
+            format!("{settings_detail} (defaults — no settings file loaded)")
+        },
+        status: if any_settings_loaded {
+            SplashStatus::Done
+        } else {
+            SplashStatus::Warn
+        },
+    });
+
+    steps.push(SplashStep {
+        name: "provider".into(),
+        detail: format!(
+            "{} model={}",
+            loaded.settings.provider.name, loaded.settings.provider.model
+        ),
+        status: SplashStatus::Done,
+    });
+
+    steps.push(SplashStep {
+        name: "endpoint".into(),
+        detail: provider_url.to_string(),
+        status: SplashStatus::Done,
+    });
+
+    steps.push(SplashStep {
+        name: "api key".into(),
+        detail: if api_key_present {
+            format!("{} (present)", loaded.settings.provider.api_key_env)
+        } else {
+            format!("{} (missing)", loaded.settings.provider.api_key_env)
+        },
+        status: if api_key_present {
+            SplashStatus::Done
+        } else {
+            SplashStatus::Warn
+        },
+    });
+
+    steps.push(SplashStep {
+        name: "sandbox".into(),
+        detail: format!("{:?}", loaded.settings.sandbox.mode),
+        status: SplashStatus::Done,
+    });
+
+    steps.push(SplashStep {
+        name: "permissions".into(),
+        detail: format!("{:?}", loaded.settings.permissions.mode),
+        status: SplashStatus::Done,
+    });
+
+    let hooks = &loaded.settings.hooks;
+    let hooks_total = hooks.before_tool.len() + hooks.after_tool.len() + hooks.stop.len();
+    steps.push(SplashStep {
+        name: "hooks".into(),
+        detail: format!(
+            "before={} after={} stop={}",
+            hooks.before_tool.len(),
+            hooks.after_tool.len(),
+            hooks.stop.len()
+        ),
+        status: if hooks_total > 0 {
+            SplashStatus::Done
+        } else {
+            SplashStatus::Warn
+        },
+    });
+
+    steps.push(SplashStep {
+        name: "legacy toml".into(),
+        detail: if project_agent_toml.exists() {
+            format!("found at {}", project_agent_toml.display())
+        } else {
+            "(none)".to_string()
+        },
+        status: if project_agent_toml.exists() {
+            SplashStatus::Warn
+        } else {
+            SplashStatus::Done
+        },
+    });
+
+    steps.push(SplashStep {
+        name: "tmp-copy".into(),
+        detail: "/tmp/quorp".into(),
+        status: SplashStatus::Done,
+    });
+
+    print!(
+        "{}",
+        render_splash("quorp · doctor", &steps, color)
     );
-    println!("sandbox default: {:?}", loaded.settings.sandbox.mode);
-    println!("permission mode: {:?}", loaded.settings.permissions.mode);
-    println!(
-        "hooks: before_tool={} after_tool={} stop={}",
-        loaded.settings.hooks.before_tool.len(),
-        loaded.settings.hooks.after_tool.len(),
-        loaded.settings.hooks.stop.len()
-    );
-    println!(
-        "legacy .quorp/agent.toml compatibility: {}",
-        project_agent_toml.exists()
-    );
-    println!("tmp-copy root: /tmp/quorp");
+    Ok(())
+}
+
+fn run_commands_command(prefix: Option<String>) -> anyhow::Result<()> {
+    use quorp_render::caps::RenderProfile;
+    use quorp_render::palette::{ACCENT_CYAN, DIM, FG_TEXT, RESET};
+    use quorp_slash::{Registry, SlashCommandSpec};
+
+    let color = RenderProfile::detect_from_env().color;
+    let plain = matches!(color, quorp_render::caps::ColorCapability::NoColor);
+    let registry = Registry::new();
+
+    let entries: Vec<&SlashCommandSpec> = if let Some(prefix) = prefix.as_deref() {
+        registry
+            .suggest(prefix)
+            .into_iter()
+            .map(|(spec, _)| spec)
+            .collect()
+    } else {
+        registry.all().iter().collect()
+    };
+
+    if plain {
+        for spec in entries {
+            let aliases = if spec.aliases.is_empty() {
+                String::new()
+            } else {
+                format!(" ({})", spec.aliases.join(", "))
+            };
+            println!("/{:<13} {} — {}", spec.name, aliases, spec.description);
+        }
+        return Ok(());
+    }
+
+    for spec in entries {
+        let aliases = if spec.aliases.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", spec.aliases.join(", "))
+        };
+        println!(
+            "{cyan}/{:<13}{reset}{dim}{aliases}{reset} {fg}— {}{reset}",
+            spec.name,
+            spec.description,
+            cyan = ACCENT_CYAN.fg(),
+            dim = DIM,
+            fg = FG_TEXT.fg(),
+            reset = RESET,
+            aliases = aliases,
+        );
+    }
     Ok(())
 }
 
@@ -1440,6 +1586,14 @@ enum Command {
     /// transcript lines, permission modal). Useful while wiring
     /// `quorp_render` into the inline CLI.
     RenderDemo,
+    /// Print every slash command Quorp knows about. Drawn from the
+    /// `quorp_slash::Registry` so the source of truth is one place.
+    Commands {
+        /// Optional fuzzy-match prefix; ranks commands by subsequence
+        /// score and only prints matches.
+        #[arg(value_name = "PREFIX")]
+        prefix: Option<String>,
+    },
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
