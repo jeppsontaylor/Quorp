@@ -183,8 +183,7 @@ fn render_benchmark_state_packet(messages: &[PromptMessage], repair_index: usize
         .unwrap_or_default();
     let mut lines = vec![
         "[Benchmark State Packet]".to_string(),
-        "Use this typed local-model state instead of replaying the full objective/capsule."
-            .to_string(),
+        "Use this typed agent state instead of replaying the full objective/capsule.".to_string(),
     ];
     push_first_labeled_value(&mut lines, messages, "Goal:");
     push_first_labeled_value(&mut lines, messages, "Owner path:");
@@ -196,8 +195,8 @@ fn render_benchmark_state_packet(messages: &[PromptMessage], repair_index: usize
     push_last_labeled_value(&mut lines, messages, "Assertion excerpt:");
     push_last_labeled_value(&mut lines, messages, "Honored implementation range:");
     push_last_labeled_value(&mut lines, messages, "Failed edit memory:");
-    push_last_labeled_value(&mut lines, messages, "Local scorecard:");
-    push_last_labeled_value(&mut lines, messages, "Local model memory:");
+    push_last_labeled_value(&mut lines, messages, "Agent scorecard:");
+    push_last_labeled_value(&mut lines, messages, "Agent memory:");
     push_last_labeled_value(&mut lines, messages, "Allowed actions:");
     push_last_labeled_value(&mut lines, messages, "Recommended rerun command:");
     lines.push("Current repair packet:".to_string());
@@ -424,7 +423,7 @@ mod tests {
             PromptMessage {
                 role: PromptMessageRole::User,
                 content: format!(
-                    "[Patch Packet]\nOwner path: src/round.rs\nRequired next action: write_patch src/round.rs\nLast validation failure: failed\nLocal scorecard: parser_recovery=1 line_tools=1 injected_reads=1 redundant_reads=0 first_write=none repeated_edits=0\nAllowed actions: `ApplyPatch`, `WriteFile`, or ranged `ReplaceBlock`\nRecommended rerun command: cargo test --quiet\nImplementation slice:\n{}",
+                    "[Patch Packet]\nOwner path: src/round.rs\nRequired next action: write_patch src/round.rs\nLast validation failure: failed\nAgent scorecard: parser_recovery=1 line_tools=1 injected_reads=1 redundant_reads=0 first_write=none repeated_edits=0\nAllowed actions: `ApplyPatch`, `WriteFile`, or ranged `ReplaceBlock`\nRecommended rerun command: cargo test --quiet\nImplementation slice:\n{}",
                     (0..160)
                         .map(|index| format!("line {index}"))
                         .collect::<Vec<_>>()
@@ -445,7 +444,7 @@ mod tests {
                 .content
                 .contains("Required next action: write_patch src/round.rs")
         );
-        assert!(compacted[0].content.contains("Local scorecard:"));
+        assert!(compacted[0].content.contains("Agent scorecard:"));
         assert!(
             !compacted[0]
                 .content

@@ -1,15 +1,15 @@
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 
 use crate::quorp::executor::InteractiveProviderKind;
 
 pub(crate) const NVIDIA_NIM_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
+pub(crate) const NVIDIA_QWEN_MODEL: &str = quorp_core::DEFAULT_NVIDIA_MODEL;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-pub struct OpenAiCompatibleRuntimeConfig {
+pub struct NvidiaRuntimeConfig {
     pub base_url: String,
     pub api_key: String,
     pub auth_mode: String,
@@ -19,13 +19,13 @@ pub struct OpenAiCompatibleRuntimeConfig {
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum RoutingMode {
-    Local,
+    RemoteApi,
 }
 
 impl RoutingMode {
     pub fn label(self) -> &'static str {
         match self {
-            Self::Local => "local",
+            Self::RemoteApi => "remote_api",
         }
     }
 }
@@ -106,17 +106,17 @@ pub(crate) fn env_value(name: &str) -> Option<String> {
         .and_then(|value| normalized_env_value(Some(value)))
 }
 
-pub(crate) fn resolved_local_base_url_env() -> Option<String> {
-    env_value("QUORP_LOCAL_BASE_URL")
+fn qwen_model_env_value(name: &str) -> Option<String> {
+    env_value(name).filter(|value| value.trim() == NVIDIA_QWEN_MODEL)
 }
 
 pub(crate) fn resolved_model_env() -> Option<String> {
-    env_value("QUORP_MODEL")
+    qwen_model_env_value("QUORP_MODEL")
 }
 
 #[allow(dead_code)]
 pub(crate) fn resolved_preflight_model_env() -> Option<String> {
-    env_value("QUORP_PREFLIGHT_MODEL").or_else(resolved_model_env)
+    qwen_model_env_value("QUORP_PREFLIGHT_MODEL").or_else(resolved_model_env)
 }
 
 pub(crate) fn resolved_provider_env() -> Option<InteractiveProviderKind> {
@@ -125,7 +125,7 @@ pub(crate) fn resolved_provider_env() -> Option<InteractiveProviderKind> {
 
 fn parse_routing_mode(raw: &str) -> Option<RoutingMode> {
     match raw.trim().to_ascii_lowercase().as_str() {
-        "local" => Some(RoutingMode::Local),
+        "remote_api" | "remote-api" | "remote" => Some(RoutingMode::RemoteApi),
         _ => None,
     }
 }
@@ -134,12 +134,12 @@ pub(crate) fn resolved_routing_mode() -> RoutingMode {
     if let Some(mode) = env_value("QUORP_ROUTING_MODE").and_then(|raw| parse_routing_mode(&raw)) {
         return mode;
     }
-    RoutingMode::Local
+    RoutingMode::RemoteApi
 }
 
 pub(crate) fn scenario_label_for_routing_mode(mode: RoutingMode) -> &'static str {
     match mode {
-        RoutingMode::Local => "QuorpLocal",
+        RoutingMode::RemoteApi => "QuorpRemoteApi",
     }
 }
 
@@ -201,13 +201,6 @@ use a remote https:// endpoint or set WARPOS_QUORP_ALLOW_LOOPBACK=1 for test-onl
     Ok(())
 }
 
-fn resolved_openai_api_key() -> Option<(String, String)> {
-    if let Some(value) = env_value("QUORP_API_KEY") {
-        return Some(("quorp_api_key".to_string(), value));
-    }
-    env_value("OPENAI_API_KEY").map(|value| ("openai_api_key".to_string(), value))
-}
-
 fn resolved_nvidia_api_key() -> Option<(String, String)> {
     if let Some(value) = env_value("NVIDIA_API_KEY") {
         return Some(("nvidia_api_key".to_string(), value));
@@ -218,33 +211,9 @@ fn resolved_nvidia_api_key() -> Option<(String, String)> {
     env_value("QUORP_API_KEY").map(|value| ("quorp_api_key".to_string(), value))
 }
 
-pub(crate) fn resolve_openai_compatible_runtime(
-    base_url_override: Option<&str>,
-) -> anyhow::Result<OpenAiCompatibleRuntimeConfig> {
-    let raw_base_url = base_url_override
-        .map(str::trim)
-        .filter(|value| !value.is_empty())
-        .map(str::to_string)
-        .or_else(|| env_value("QUORP_BASE_URL"))
-        .or_else(|| env_value("QUORP_CHAT_BASE_URL"))
-        .context(
-            "missing OpenAI-compatible base URL; pass --base-url or set QUORP_BASE_URL in the environment or ~/.quorp/.env",
-        )?;
-    let base_url = normalize_remote_base_url(&raw_base_url, true)?;
-    enforce_managed_remote_guardrail(&base_url)?;
-    let (auth_mode, api_key) = resolved_openai_api_key()
-        .context("OpenAI-compatible provider requires QUORP_API_KEY or OPENAI_API_KEY")?;
-    Ok(OpenAiCompatibleRuntimeConfig {
-        proxy_visible_remote_egress_expected: !is_loopback_base_url(&base_url),
-        base_url,
-        api_key,
-        auth_mode,
-    })
-}
-
 pub(crate) fn resolve_nvidia_runtime(
     base_url_override: Option<&str>,
-) -> anyhow::Result<OpenAiCompatibleRuntimeConfig> {
+) -> anyhow::Result<NvidiaRuntimeConfig> {
     let raw_base_url = base_url_override
         .map(str::trim)
         .filter(|value| !value.is_empty())
@@ -253,10 +222,18 @@ pub(crate) fn resolve_nvidia_runtime(
         .unwrap_or_else(|| NVIDIA_NIM_BASE_URL.to_string());
     let base_url = normalize_remote_base_url(&raw_base_url, true)?;
     enforce_managed_remote_guardrail(&base_url)?;
-    let (auth_mode, api_key) = resolved_nvidia_api_key().context(
-        "NVIDIA NIM provider requires NVIDIA_API_KEY, QUORP_NVIDIA_API_KEY, or QUORP_API_KEY",
-    )?;
-    Ok(OpenAiCompatibleRuntimeConfig {
+    let (auth_mode, api_key) = match resolved_nvidia_api_key() {
+        Some(value) => value,
+        #[cfg(test)]
+        None if is_loopback_base_url(&base_url) => (
+            "test_loopback_api_key".to_string(),
+            "test-api-key".to_string(),
+        ),
+        None => anyhow::bail!(
+            "NVIDIA NIM provider requires NVIDIA_API_KEY, QUORP_NVIDIA_API_KEY, or QUORP_API_KEY"
+        ),
+    };
+    Ok(NvidiaRuntimeConfig {
         proxy_visible_remote_egress_expected: !is_loopback_base_url(&base_url),
         base_url,
         api_key,
@@ -291,7 +268,7 @@ mod tests {
         std::fs::create_dir_all(temp_home.path().join(".quorp")).expect("create .quorp");
         std::fs::write(
             temp_home.path().join(".quorp/.env"),
-            "QUORP_MODEL=from-home-env\n",
+            format!("QUORP_MODEL={NVIDIA_QWEN_MODEL}\n"),
         )
         .expect("write env");
         unsafe {
@@ -299,7 +276,7 @@ mod tests {
             std::env::remove_var("QUORP_MODEL");
         }
 
-        assert_eq!(resolved_model_env().as_deref(), Some("from-home-env"));
+        assert_eq!(resolved_model_env().as_deref(), Some(NVIDIA_QWEN_MODEL));
 
         restore_env("QUORP_MODEL", original_model);
         restore_env("HOME", original_home);
@@ -317,12 +294,12 @@ mod tests {
         std::fs::create_dir_all(temp_home.path().join(".quorp")).expect("create .quorp");
         std::fs::write(
             temp_home.path().join(".quorp/.env"),
-            "QUORP_MODEL=from-home-env\n",
+            format!("QUORP_MODEL={NVIDIA_QWEN_MODEL}\n"),
         )
         .expect("write home env");
         std::fs::write(
             temp_project.path().join(".env"),
-            "QUORP_MODEL=from-project-env\n",
+            "QUORP_MODEL=ignored-non-qwen\n",
         )
         .expect("write project env");
         unsafe {
@@ -332,7 +309,7 @@ mod tests {
             std::env::set_current_dir(temp_project.path()).expect("change cwd");
         }
 
-        assert_eq!(resolved_model_env().as_deref(), Some("from-home-env"));
+        assert_eq!(resolved_model_env().as_deref(), Some(NVIDIA_QWEN_MODEL));
 
         restore_env("QUORP_ENABLE_PROJECT_ENV_FOR_TESTS", original_project_env);
         restore_env("QUORP_MODEL", original_model);
@@ -356,82 +333,31 @@ mod tests {
         .expect("write env");
         unsafe {
             std::env::set_var("HOME", temp_home.path());
-            std::env::set_var("QUORP_MODEL", "from-process-env");
+            std::env::set_var("QUORP_MODEL", NVIDIA_QWEN_MODEL);
         }
 
-        assert_eq!(resolved_model_env().as_deref(), Some("from-process-env"));
+        assert_eq!(resolved_model_env().as_deref(), Some(NVIDIA_QWEN_MODEL));
 
         restore_env("QUORP_MODEL", original_model);
         restore_env("HOME", original_home);
     }
 
     #[test]
-    fn resolved_local_base_url_accepts_managed_https_wrapper() {
+    fn resolved_model_env_accepts_only_qwen_model() {
         let _guard = TEST_ENV_LOCK.lock().expect("env lock");
-        let original_base_url = std::env::var("QUORP_BASE_URL").ok();
-        let original_local_base_url = std::env::var("QUORP_LOCAL_BASE_URL").ok();
+        let original_model = std::env::var("QUORP_MODEL").ok();
         unsafe {
-            std::env::set_var(
-                "QUORP_LOCAL_BASE_URL",
-                "https://warpos-capture-probe:8443/quorp/v1",
-            );
-            std::env::remove_var("QUORP_BASE_URL");
+            std::env::set_var("QUORP_MODEL", "not-the-supported-model");
         }
 
-        assert_eq!(
-            resolved_local_base_url_env().as_deref(),
-            Some("https://warpos-capture-probe:8443/quorp/v1")
-        );
+        assert_eq!(resolved_model_env(), None);
 
-        restore_env("QUORP_LOCAL_BASE_URL", original_local_base_url);
-        restore_env("QUORP_BASE_URL", original_base_url);
-    }
-
-    #[test]
-    fn resolved_local_base_url_ignores_legacy_remote_base_url() {
-        let _guard = TEST_ENV_LOCK.lock().expect("env lock");
-        let temp_home = tempfile::tempdir().expect("temp home");
-        let original_base_url = std::env::var("QUORP_BASE_URL").ok();
-        let original_local_base_url = std::env::var("QUORP_LOCAL_BASE_URL").ok();
-        let original_home = std::env::var("HOME").ok();
-        unsafe {
-            std::env::set_var("HOME", temp_home.path());
-            std::env::remove_var("QUORP_LOCAL_BASE_URL");
-            std::env::set_var("QUORP_BASE_URL", "https://models.example.test/v1");
-        }
-
-        assert_eq!(resolved_local_base_url_env(), None);
-
-        restore_env("QUORP_LOCAL_BASE_URL", original_local_base_url);
-        restore_env("QUORP_BASE_URL", original_base_url);
-        restore_env("HOME", original_home);
-    }
-
-    #[test]
-    fn managed_openai_runtime_rejects_loopback_without_override() {
-        let _guard = TEST_ENV_LOCK.lock().expect("env lock");
-        let original_network_mode = std::env::var("WARPOS_NETWORK_MODE").ok();
-        let original_allow_loopback = std::env::var("WARPOS_QUORP_ALLOW_LOOPBACK").ok();
-        let original_api_key = std::env::var("QUORP_API_KEY").ok();
-        unsafe {
-            std::env::set_var("WARPOS_NETWORK_MODE", "inspect");
-            std::env::remove_var("WARPOS_QUORP_ALLOW_LOOPBACK");
-            std::env::set_var("QUORP_API_KEY", "test-key");
-        }
-
-        let error = resolve_openai_compatible_runtime(Some("http://127.0.0.1:11434/v1"))
-            .expect_err("loopback base URL should be rejected");
-        assert!(error.to_string().contains("loopback"));
-
-        restore_env("QUORP_API_KEY", original_api_key);
-        restore_env("WARPOS_QUORP_ALLOW_LOOPBACK", original_allow_loopback);
-        restore_env("WARPOS_NETWORK_MODE", original_network_mode);
+        restore_env("QUORP_MODEL", original_model);
     }
 
     #[test]
     fn nvidia_runtime_uses_default_endpoint_and_nvidia_api_key_first() {
         let _guard = TEST_ENV_LOCK.lock().expect("env lock");
-        let _shared_env_guard = crate::quorp::tui::ssd_moe_tui::test_env_lock();
         let original_nvidia_api_key = std::env::var("NVIDIA_API_KEY").ok();
         let original_quorp_nvidia_api_key = std::env::var("QUORP_NVIDIA_API_KEY").ok();
         let original_quorp_api_key = std::env::var("QUORP_API_KEY").ok();
@@ -461,7 +387,6 @@ mod tests {
     #[test]
     fn nvidia_runtime_falls_back_to_generic_quorp_key() {
         let _guard = TEST_ENV_LOCK.lock().expect("env lock");
-        let _shared_env_guard = crate::quorp::tui::ssd_moe_tui::test_env_lock();
         let temp_home = tempfile::tempdir().expect("temp home");
         let original_home = std::env::var("HOME").ok();
         let original_nvidia_api_key = std::env::var("NVIDIA_API_KEY").ok();
@@ -491,7 +416,7 @@ mod tests {
     }
 
     #[test]
-    fn routing_mode_stays_local_even_with_legacy_remote_env() {
+    fn routing_mode_defaults_to_remote_api() {
         let _guard = TEST_ENV_LOCK.lock().expect("env lock");
         let original_provider = std::env::var("QUORP_PROVIDER").ok();
         let original_base_url = std::env::var("QUORP_BASE_URL").ok();
@@ -501,7 +426,7 @@ mod tests {
             std::env::set_var("QUORP_BASE_URL", "https://models.example.test/v1");
             std::env::remove_var("QUORP_ROUTING_MODE");
         }
-        assert_eq!(resolved_routing_mode(), RoutingMode::Local);
+        assert_eq!(resolved_routing_mode(), RoutingMode::RemoteApi);
         restore_env("QUORP_ROUTING_MODE", original_mode);
         restore_env("QUORP_BASE_URL", original_base_url);
         restore_env("QUORP_PROVIDER", original_provider);

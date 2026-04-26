@@ -1,0 +1,1167 @@
+## Executive direction
+
+Build **QUORP** as a **terminal-native agent IDE**, not a traditional full-screen boxy TUI. The winning feel is:
+
+```text
+Rust agent core
+  + append-only streaming terminal UI
+  + ANSI truecolor rendering
+  + beautiful diff blocks
+  + fast tool-call cards
+  + optional full-screen review overlays
+  + optional native GPU shell later
+```
+
+OpenAI currently describes Codex CLI as a local terminal coding agent that can read, change, and run code, and says it is open source and built in Rust. Anthropic describes Claude Code as an agentic coding tool that reads a codebase, edits files, runs commands, and integrates with dev tools across terminal, IDE, desktop, and browser. So the “sharpness” and “fast colorful behavior” you like is not anti-Rust; it is mostly **streaming terminal design + truecolor + good terminal emulator + careful rendering restraint**. ([OpenAI Developers][1])
+
+---
+
+# 1. Mascot study: QUORP visual DNA
+
+Your mascot reads as:
+
+```text
+black-gloss terminal familiar
+cat / demon / axolotl energy
+round, soft, mischievous, slightly dangerous
+ember-orange eyes
+orange rim lighting
+glowing terminal prompt companion
+tail with three ember bulbs
+dark body, hot code-fire aura
+```
+
+The brand language should be:
+
+```text
+cute but lethal
+dark but luminous
+terminal-native but premium
+agentic but controlled
+fast, sharp, glossy, high contrast
+```
+
+The mascot’s strongest colors from the uploaded image are approximately:
+
+| Token             |       Hex | Use                        |
+| ----------------- | --------: | -------------------------- |
+| Quorp Void        | `#050506` | Terminal background        |
+| Quorp Obsidian    | `#121018` | Mascot body / panel base   |
+| Quorp Graphite    | `#1D171E` | Raised surfaces            |
+| Quorp Smoke       | `#2F2B36` | Body highlight             |
+| Quorp Violet Gray | `#3A3641` | Soft lighting              |
+| Ember Core        | `#FA5C0E` | Main orange glow           |
+| Ember Hot         | `#FF7A12` | Prompt glyph, eyes         |
+| Ember Gold        | `#FEBF36` | Eye core / tail bulbs      |
+| Burnt Rim         | `#8A371E` | Shadowed glow edge         |
+| Lava Red          | `#C04C1B` | Danger / destructive tools |
+| Ash Text          | `#A7B0C5` | Secondary text             |
+| Ice Text          | `#F4F7FF` | Primary text               |
+
+The mascot gives you a perfect product metaphor:
+
+```text
+QUORP is the terminal familiar that guards the repo,
+summons tools,
+shows glowing diffs,
+and only bites when a command is unsafe.
+```
+
+---
+
+# 2. The key rendering decision: not “Rust TUI,” but “terminal stream UI”
+
+A Rust TUI library usually does not render glyph pixels itself. Ratatui, for example, interfaces with the terminal emulator through a backend that draws styled text, manipulates cursor state, and handles terminal properties. The text sharpness ultimately comes from the terminal emulator, font stack, antialiasing, and glyph fallback, not from “Rust vs not Rust.” ([Ratatui][2])
+
+So I would split QUORP into three render modes:
+
+```text
+Mode A — default
+Streaming ANSI terminal UI.
+Normal scrollback. Gorgeous blocks. Fast. Claude/Codex-like.
+
+Mode B — review overlay
+Temporary alternate-screen panels for /diff, /review, /agents, /settings.
+
+Mode C — premium native app later
+GPUI or Tauri shell using the same Rust agent core.
+```
+
+Do **not** start with a permanent full-screen Ratatui dashboard. Start with a high-polish, append-only terminal transcript that feels alive.
+
+---
+
+# 3. Recommended terminal targets
+
+Optimize for:
+
+```text
+WezTerm
+Ghostty
+Kitty
+iTerm2
+Alacritty
+Windows Terminal
+```
+
+WezTerm is especially aligned with the QUORP aesthetic because it documents truecolor, dynamic color schemes, ligatures, color emoji, font fallback, hyperlinks, panes, tabs, and scrollback features. ([WezTerm][3])
+
+Core terminal capabilities to detect:
+
+```rust
+struct TerminalProfile {
+    truecolor: bool,
+    ansi_256: bool,
+    osc8_hyperlinks: bool,
+    unicode_width_reliable: bool,
+    emoji_width_mode: EmojiWidthMode,
+    kitty_graphics: bool,
+    iterm2_images: bool,
+    sixel: bool,
+    bracketed_paste: bool,
+    mouse_reporting: bool,
+    alternate_screen: bool,
+}
+```
+
+Use OSC 8 hyperlinks for clickable file paths, PR links, docs, and test reports. iTerm2 documents OSC 8 as terminal hyperlink anchors. ([iTerm2][4])
+
+---
+
+# 4. QUORP architecture
+
+```text
+quorp/
+  crates/
+    quorp-core/
+      agent loop, model adapter, session state, event bus
+
+    quorp-render/
+      ANSI renderer, colors, cards, markdown, diff paint, mascot splash
+
+    quorp-terminal/
+      CLI shell, composer, keyboard input, terminal detection
+
+    quorp-tools/
+      fs, shell, git, test, search, LSP, MCP, web, index tools
+
+    quorp-diff/
+      patch model, semantic diff, inline spans, apply/revert pipeline
+
+    quorp-editor/
+      rope, tree-sitter, LSP references, diagnostics, symbol graph
+
+    quorp-store/
+      SQLite event ledger, project facts, session summaries, embeddings
+
+    quorp-sandbox/
+      permissions, approvals, allowlists, command risk classifier
+
+    quorp-native/
+      optional GPUI/Tauri shell later
+```
+
+The most important abstraction is the **event ledger**:
+
+```rust
+enum QuorpEvent {
+    UserPromptSubmitted { text: String },
+
+    ReasoningTraceStarted,
+    PublicTraceDelta { text: String },
+
+    PlanCreated { markdown: String },
+    PlanUpdated { markdown: String },
+
+    ToolCallRequested { call_id: String, tool: String, args: serde_json::Value },
+    ToolCallRiskScored { call_id: String, risk: ToolRisk, reason: String },
+    ToolCallApproved { call_id: String },
+    ToolCallDenied { call_id: String },
+    ToolCallStarted { call_id: String },
+    ToolCallOutput { call_id: String, stream: StreamKind, chunk: String },
+    ToolCallFinished { call_id: String, status: ToolStatus },
+
+    PatchProposed { patch_id: String },
+    DiffRendered { patch_id: String },
+    PatchApplied { patch_id: String },
+    PatchRejected { patch_id: String },
+
+    VerificationStarted { command: String },
+    VerificationFinished { passed: bool, summary: String },
+
+    AssistantMessageDelta { text: String },
+    AssistantMessageFinished,
+}
+```
+
+Everything the UI shows should come from this event stream.
+
+---
+
+# 5. Core Rust stack
+
+## Runtime and infrastructure
+
+```toml
+tokio = { version = "1", features = ["full"] }
+futures = "0.3"
+async-trait = "0.1"
+parking_lot = "0.12"
+dashmap = "6"
+arc-swap = "1"
+bytes = "1"
+smallvec = "1"
+anyhow = "1"
+thiserror = "2"
+tracing = "0.1"
+tracing-subscriber = "0.3"
+```
+
+## Terminal and rendering
+
+```toml
+crossterm = "0.28"
+termwiz = "0.23"
+ratatui = "0.29"
+unicode-width = "0.2"
+unicode-segmentation = "1"
+textwrap = "0.16"
+anstyle = "1"
+owo-colors = "4"
+strip-ansi-escapes = "0.2"
+```
+
+Use Ratatui only for:
+
+```text
+/diff
+/review
+/agents
+/settings
+/logs
+/mcp
+```
+
+Use your own ANSI block renderer for the main experience.
+
+## Input composer
+
+```toml
+reedline = "0.38"
+nucleo-matcher = "0.3"
+arboard = "3"
+```
+
+Composer features:
+
+```text
+multiline input
+slash commands
+@file mentions
+#symbol mentions
+!shell passthrough
+history search
+bracketed paste
+mode selector
+inline approvals
+```
+
+## Code intelligence
+
+```toml
+ropey = "1"
+tree-sitter = "0.24"
+tree-sitter-highlight = "0.24"
+lsp-types = "0.97"
+lsp-server = "0.7"
+tower-lsp = "0.20"
+notify = "7"
+ignore = "0.4"
+globset = "0.4"
+walkdir = "2"
+tantivy = "0.22"
+```
+
+## Diff and patching
+
+```toml
+similar = "2"
+imara-diff = "0.1"
+gix = "0.68"
+```
+
+Patch pipeline:
+
+```text
+model proposes edit
+  -> normalize patch
+  -> verify file hashes
+  -> render diff
+  -> classify risk
+  -> ask approval if needed
+  -> apply patch
+  -> run verification
+  -> repair or summarize
+```
+
+## Tool calling
+
+```toml
+serde = "1"
+serde_json = "1"
+schemars = "0.8"
+jsonschema = "0.18"
+rmcp = "0.6"
+```
+
+The official Rust MCP SDK, `rmcp`, is described as an official Rust Model Context Protocol SDK using Tokio, supporting MCP servers and clients. ([GitHub][5])
+
+Tool registry shape:
+
+```rust
+struct ToolSpec {
+    name: String,
+    description: String,
+    input_schema: schemars::schema::RootSchema,
+    risk: ToolRisk,
+    approval_policy: ApprovalPolicy,
+    handler: Arc<dyn ToolHandler>,
+}
+```
+
+---
+
+# 6. QUORP design system
+
+## Base palette
+
+| Role           |       Hex |
+| -------------- | --------: |
+| Background     | `#050506` |
+| Panel          | `#0B0D14` |
+| Elevated panel | `#121018` |
+| Border dim     | `#293040` |
+| Border hot     | `#FA5C0E` |
+| Primary text   | `#F4F7FF` |
+| Secondary text | `#A7B0C5` |
+| Muted text     | `#687086` |
+| Prompt orange  | `#FF7A12` |
+| Eye gold       | `#FEBF36` |
+| Agent violet   | `#B36BFF` |
+| Tool cyan      | `#00E5FF` |
+| Success green  | `#16F195` |
+| Warning amber  | `#FFD166` |
+| Danger red     | `#FF3B5C` |
+
+## Diff palette
+
+| Role           | Background | Foreground |    Accent |
+| -------------- | ---------: | ---------: | --------: |
+| Added line     |  `#062B1F` |  `#C9FFE4` | `#16F195` |
+| Added inline   |  `#0B6B49` |  `#F1FFF9` | `#16F195` |
+| Removed line   |  `#351018` |  `#FFD5DE` | `#FF4D6D` |
+| Removed inline |  `#8A1F37` |  `#FFF0F3` | `#FF4D6D` |
+| Changed line   |  `#302706` |  `#FFEAA3` | `#FFD166` |
+| Hunk header    |  `#1B2240` |  `#BFCBFF` | `#B36BFF` |
+| File header    |  `#121B31` |  `#DCE8FF` | `#2F7BFF` |
+
+Example target look:
+
+```text
+╭─ 🪶 edit  src/agent/tools.rs
+│  Δ 42 lines   +31  -11   risk: medium   approval: required
+├────────────────────────────────────────────────────────────
+│ @@ tool_router(...)
+│ -     let mode = ToolMode::Auto;
+│ +     let mode = permissions.resolve_tool_mode(tool_id)?;
+│
+│ -     run_tool(call).await
+│ +     audit.log_pre_tool(&call).await?;
+│ +     let result = run_tool(call).await;
+│ +     audit.log_post_tool(&result).await?;
+│ +     result
+╰────────────────────────────────────────────────────────────
+```
+
+## Rare emoji / symbol vocabulary
+
+Use these sparingly:
+
+```text
+🪬  guard / approval
+🧿  watch / monitor
+🧭  plan
+🪶  light edit
+🧵  subagent
+🧪  test
+🪛  repair
+🧬  semantic analysis
+🛰️  remote tool
+🗝️  secret boundary
+🧱  build
+🪵  logs
+🦑  multi-agent swarm
+🪩  completion
+🜁  context
+🜂  execution
+🜃  filesystem
+🜄  verification
+🝗  synthesis
+⟁  risk
+⟡  agent trace
+```
+
+Avoid overusing:
+
+```text
+🚀 ✅ ❌ ⚠️ 🔥 💡
+```
+
+They are familiar but generic.
+
+---
+
+# 7. Tool calling and reasoning UX
+
+Claude Code’s docs emphasize that tools make the system agentic: tools let the agent read code, edit files, run commands, search the web, and interact with external services, with each tool result feeding the next decision. ([Claude][6])
+
+QUORP should show a **public reasoning trace**, not hidden chain-of-thought:
+
+```text
+⟡ Planning repair path
+🜁 Reading parser and failing test
+🧬 Found likely newline-preservation mismatch
+🪶 Proposing focused patch
+🧪 Running focused tests
+✦ Verified
+```
+
+Tool card:
+
+```text
+╭─ 🜂 shell.run
+│  cargo test -p quorp-tools patch_roundtrip
+│
+│  cwd: /repo
+│  risk: safe
+│  elapsed: 1.8s
+╰─ passed 14/14
+```
+
+Approval card:
+
+```text
+╭─ 🪬 approval required
+│  tool: shell.run
+│  risk: high
+│  reason: command can delete files
+│
+│  rm -rf target/generated
+│
+│  [a] approve once   [s] always in this repo   [d] deny
+╰────────────────────────────────────────────────────
+```
+
+Approval modes:
+
+```text
+observe      read-only
+ask          ask before edits or shell commands
+edit         edits allowed, shell requires approval
+safe-auto    known-safe commands allowed
+full-auto    broad actions only inside sandbox
+```
+
+---
+
+# 8. Hooks and deterministic controls
+
+Claude Code docs describe hooks as user-defined shell commands, HTTP endpoints, or LLM prompts that execute at lifecycle points; Anthropic also documents hooks for formatting after edits, blocking commands before execution, notifications, and context injection. ([Claude][7])
+
+QUORP should implement the same idea, but as a Rust-first policy layer:
+
+```toml
+[hooks.pre_tool_use]
+matcher = "shell.run"
+command = "quorp-policy check-command"
+
+[hooks.post_file_edit]
+command = "cargo fmt --check"
+
+[hooks.stop]
+prompt = "Summarize changed files, tests run, and remaining risks."
+```
+
+Hook events:
+
+```text
+SessionStart
+UserPromptSubmit
+PlanCreated
+PreToolUse
+PostToolUse
+FileChanged
+PatchProposed
+PatchApplied
+TestFailed
+Stop
+StopFailure
+SubagentStop
+PreCompact
+```
+
+---
+
+# 9. QUORP load screen design
+
+The load screen should not be a Ratatui dashboard. It should be a **truecolor ANSI splash**.
+
+The trick: render the mascot image as **text** using Unicode half-blocks:
+
+```text
+▀
+```
+
+Each terminal cell becomes two pixels:
+
+```text
+foreground color = upper pixel
+background color = lower pixel
+character = ▀
+```
+
+This produces a surprisingly sharp, colorful, terminal-native mascot without using a GUI, canvas, or image protocol.
+
+Visual structure:
+
+```text
+top:
+  glowing QUORP wordmark
+
+middle:
+  actual mascot converted to ANSI truecolor half-block art
+
+bottom:
+  boot card
+    version
+    worktree guard
+    tool forge
+    context lattice
+    verifier
+    approval mode
+```
+
+Target boot copy:
+
+```text
+QUORP v0.1.0
+terminal familiar online
+mode: prism-stream
+renderer: ansi truecolor
+tools: fs / git / shell / lsp / mcp
+guard: safe-auto
+```
+
+---
+
+# 10. Full Rust code: QUORP splash screen
+
+This is a complete standalone crate. It renders the uploaded mascot image as terminal text.
+
+## `Cargo.toml`
+
+```toml
+[package]
+name = "quorp-splash"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+anyhow = "1"
+image = { version = "0.25", default-features = false, features = ["png", "jpeg"] }
+terminal_size = "0.4"
+```
+
+## `src/main.rs`
+
+```rust
+use anyhow::{Context, Result};
+use image::imageops::FilterType;
+use image::RgbaImage;
+use std::env;
+use std::io::{self, Write};
+use std::path::Path;
+use std::thread;
+use std::time::Duration;
+use terminal_size::{terminal_size, Height, Width};
+
+const RESET: &str = "\x1b[0m";
+const BOLD: &str = "\x1b[1m";
+const DIM: &str = "\x1b[2m";
+const HIDE_CURSOR: &str = "\x1b[?25l";
+const SHOW_CURSOR: &str = "\x1b[?25h";
+const CLEAR: &str = "\x1b[2J";
+const HOME: &str = "\x1b[H";
+
+#[derive(Clone, Copy)]
+struct Rgb {
+    r: u8,
+    g: u8,
+    b: u8,
+}
+
+impl Rgb {
+    const fn new(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b }
+    }
+
+    fn fg(self) -> String {
+        format!("\x1b[38;2;{};{};{}m", self.r, self.g, self.b)
+    }
+
+    fn bg(self) -> String {
+        format!("\x1b[48;2;{};{};{}m", self.r, self.g, self.b)
+    }
+}
+
+#[derive(Clone)]
+struct AnsiLine {
+    text: String,
+    width: usize,
+}
+
+impl AnsiLine {
+    fn new(text: String, width: usize) -> Self {
+        Self { text, width }
+    }
+}
+
+mod color {
+    use super::Rgb;
+
+    pub const VOID: Rgb = Rgb::new(5, 5, 6);
+    pub const PANEL: Rgb = Rgb::new(11, 13, 20);
+    pub const OBSIDIAN: Rgb = Rgb::new(18, 16, 24);
+    pub const SMOKE: Rgb = Rgb::new(47, 43, 54);
+    pub const TEXT: Rgb = Rgb::new(244, 247, 255);
+    pub const MUTED: Rgb = Rgb::new(104, 112, 134);
+    pub const ASH: Rgb = Rgb::new(167, 176, 197);
+    pub const EMBER: Rgb = Rgb::new(250, 92, 14);
+    pub const EMBER_HOT: Rgb = Rgb::new(255, 122, 18);
+    pub const GOLD: Rgb = Rgb::new(254, 191, 54);
+    pub const VIOLET: Rgb = Rgb::new(179, 107, 255);
+    pub const CYAN: Rgb = Rgb::new(0, 229, 255);
+    pub const GREEN: Rgb = Rgb::new(22, 241, 149);
+    pub const RED: Rgb = Rgb::new(255, 59, 92);
+}
+
+fn main() -> Result<()> {
+    let args: Vec<String> = env::args().collect();
+
+    let mascot_path = args
+        .get(1)
+        .cloned()
+        .unwrap_or_else(|| "assets/quorp.png".to_string());
+
+    let version = args
+        .get(2)
+        .cloned()
+        .unwrap_or_else(|| env!("CARGO_PKG_VERSION").to_string());
+
+    let animate = !args.iter().any(|a| a == "--no-animate");
+
+    let (term_w, term_h) = current_terminal_size();
+
+    let mascot = match render_image_as_halfblocks(&mascot_path, term_w, term_h, color::VOID) {
+        Ok(lines) => lines,
+        Err(_) => fallback_mascot_art(),
+    };
+
+    run_splash(&mascot, &version, term_w, term_h, animate)?;
+
+    Ok(())
+}
+
+fn current_terminal_size() -> (usize, usize) {
+    if let Some((Width(w), Height(h))) = terminal_size() {
+        (w as usize, h as usize)
+    } else {
+        (100, 36)
+    }
+}
+
+fn run_splash(
+    mascot: &[AnsiLine],
+    version: &str,
+    term_w: usize,
+    term_h: usize,
+    animate: bool,
+) -> Result<()> {
+    let frames = if animate { 34 } else { 1 };
+    let mut stdout = io::stdout();
+
+    write!(stdout, "{HIDE_CURSOR}")?;
+    stdout.flush()?;
+
+    for frame in 0..frames {
+        let progress = if animate {
+            frame as f32 / (frames - 1) as f32
+        } else {
+            1.0
+        };
+
+        let screen = build_screen(mascot, version, term_w, term_h, frame, progress);
+        write!(stdout, "{screen}")?;
+        stdout.flush()?;
+
+        if animate {
+            thread::sleep(Duration::from_millis(48));
+        }
+    }
+
+    write!(stdout, "{SHOW_CURSOR}")?;
+    stdout.flush()?;
+
+    Ok(())
+}
+
+fn build_screen(
+    mascot: &[AnsiLine],
+    version: &str,
+    term_w: usize,
+    term_h: usize,
+    frame: usize,
+    progress: f32,
+) -> String {
+    let mut lines: Vec<AnsiLine> = Vec::new();
+
+    lines.extend(quorp_logo());
+    lines.push(center_text_line(
+        "terminal familiar for luminous agentic coding",
+        color::ASH,
+    ));
+    lines.push(AnsiLine::new(String::new(), 0));
+
+    lines.extend_from_slice(mascot);
+
+    lines.push(AnsiLine::new(String::new(), 0));
+    lines.extend(boot_panel(version, frame, progress, term_w));
+
+    let content_h = lines.len();
+    let top_pad = term_h.saturating_sub(content_h) / 2;
+
+    let mut out = String::new();
+    out.push_str(CLEAR);
+    out.push_str(HOME);
+    out.push_str(&color::VOID.bg());
+
+    for _ in 0..top_pad {
+        out.push('\n');
+    }
+
+    for line in lines {
+        out.push_str(&centered(&line, term_w));
+        out.push('\n');
+    }
+
+    out.push_str(RESET);
+    out
+}
+
+fn quorp_logo() -> Vec<AnsiLine> {
+    let raw = [
+        " ██████╗ ██╗   ██╗ ██████╗ ██████╗ ██████╗ ",
+        "██╔═══██╗██║   ██║██╔═══██╗██╔══██╗██╔══██╗",
+        "██║   ██║██║   ██║██║   ██║██████╔╝██████╔╝",
+        "██║▄▄ ██║██║   ██║██║   ██║██╔══██╗██╔═══╝ ",
+        "╚██████╔╝╚██████╔╝╚██████╔╝██║  ██║██║     ",
+        " ╚══▀▀═╝  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝     ",
+    ];
+
+    raw.iter()
+        .map(|line| gradient_line(line, color::EMBER_HOT, color::GOLD))
+        .collect()
+}
+
+fn boot_panel(version: &str, frame: usize, progress: f32, term_w: usize) -> Vec<AnsiLine> {
+    let panel_w = term_w.saturating_sub(8).clamp(56, 86);
+    let spinner = ["◐", "◓", "◑", "◒"][frame % 4];
+
+    let bar_w = panel_w.saturating_sub(26);
+    let filled = ((bar_w as f32) * progress).round() as usize;
+    let empty = bar_w.saturating_sub(filled);
+
+    let mut bar = String::new();
+    bar.push_str(&color::EMBER_HOT.fg());
+    bar.push_str(&"█".repeat(filled));
+    bar.push_str(&color::SMOKE.fg());
+    bar.push_str(&"░".repeat(empty));
+    bar.push_str(RESET);
+
+    let title = format!(
+        "{}{}{} QUORP v{} {}terminal familiar online{}",
+        color::GOLD.fg(),
+        spinner,
+        RESET,
+        version,
+        color::ASH.fg(),
+        RESET
+    );
+
+    let mode = format!(
+        "{}mode{} prism-stream   {}renderer{} ansi truecolor   {}guard{} safe-auto",
+        color::MUTED.fg(),
+        RESET,
+        color::MUTED.fg(),
+        RESET,
+        color::MUTED.fg(),
+        RESET
+    );
+
+    let tools = format!(
+        "{}tools{} fs / git / shell / lsp / mcp   {}trace{} public, compact, auditable",
+        color::MUTED.fg(),
+        RESET,
+        color::MUTED.fg(),
+        RESET
+    );
+
+    let mut result = Vec::new();
+    result.push(panel_line("╭", "╮", panel_w, color::EMBER));
+    result.push(panel_content(&title, panel_w));
+    result.push(panel_content(&mode, panel_w));
+    result.push(panel_content(&tools, panel_w));
+
+    let progress_text = format!(
+        "{}boot{} [{}] {:>3}%",
+        color::MUTED.fg(),
+        RESET,
+        bar,
+        (progress * 100.0).round() as usize
+    );
+    result.push(panel_content(&progress_text, panel_w));
+    result.push(panel_line("╰", "╯", panel_w, color::EMBER));
+
+    result
+}
+
+fn panel_line(left: &str, right: &str, width: usize, color: Rgb) -> AnsiLine {
+    let inner = width.saturating_sub(2);
+    let raw = format!("{left}{}{right}", "─".repeat(inner));
+    let text = format!("{}{}{}", color.fg(), raw, RESET);
+    AnsiLine::new(text, width)
+}
+
+fn panel_content(content: &str, width: usize) -> AnsiLine {
+    let raw_prefix = "│ ";
+    let raw_suffix = " │";
+    let visible_hint = strip_ansi_width_cheap(content);
+    let inner_width = width.saturating_sub(4);
+    let pad = inner_width.saturating_sub(visible_hint);
+
+    let text = format!(
+        "{}{}{}{}{}{}",
+        color::EMBER.fg(),
+        raw_prefix,
+        RESET,
+        content,
+        " ".repeat(pad),
+        format!("{}{}{}", color::EMBER.fg(), raw_suffix, RESET)
+    );
+
+    AnsiLine::new(text, width)
+}
+
+fn render_image_as_halfblocks<P: AsRef<Path>>(
+    path: P,
+    term_w: usize,
+    term_h: usize,
+    bg: Rgb,
+) -> Result<Vec<AnsiLine>> {
+    let img = image::open(&path)
+        .with_context(|| format!("failed to open mascot image: {}", path.as_ref().display()))?
+        .to_rgba8();
+
+    let (x, y, w, h) = trim_bounds(&img);
+    let cropped = image::imageops::crop_imm(&img, x, y, w, h).to_image();
+
+    let max_width_cells = if term_w >= 120 {
+        70
+    } else if term_w >= 96 {
+        58
+    } else if term_w >= 76 {
+        46
+    } else {
+        term_w.saturating_sub(8).max(30)
+    };
+
+    let reserved_rows = 16usize;
+    let max_rows = term_h.saturating_sub(reserved_rows).clamp(12, 34);
+
+    let scale_by_width = max_width_cells as f32 / w as f32;
+    let scale_by_height = (max_rows as f32 * 2.0) / h as f32;
+    let scale = scale_by_width.min(scale_by_height).max(0.02);
+
+    let target_w = ((w as f32 * scale).round() as u32).max(24);
+    let target_h = ((h as f32 * scale).round() as u32).max(12);
+
+    let resized: RgbaImage =
+        image::imageops::resize(&cropped, target_w, target_h, FilterType::Lanczos3);
+
+    let mut lines = Vec::new();
+
+    let mut y = 0;
+    while y < resized.height() {
+        let mut line = String::new();
+
+        for x in 0..resized.width() {
+            let upper = blend_rgba(resized.get_pixel(x, y), bg);
+            let lower = if y + 1 < resized.height() {
+                blend_rgba(resized.get_pixel(x, y + 1), bg)
+            } else {
+                bg
+            };
+
+            line.push_str(&upper.fg());
+            line.push_str(&lower.bg());
+            line.push('▀');
+        }
+
+        line.push_str(RESET);
+
+        lines.push(AnsiLine::new(line, resized.width() as usize));
+        y += 2;
+    }
+
+    Ok(lines)
+}
+
+fn trim_bounds(img: &RgbaImage) -> (u32, u32, u32, u32) {
+    let width = img.width();
+    let height = img.height();
+
+    let mut min_x = width;
+    let mut min_y = height;
+    let mut max_x = 0;
+    let mut max_y = 0;
+    let mut found = false;
+
+    for y in 0..height {
+        for x in 0..width {
+            let p = img.get_pixel(x, y);
+            let a = p[3];
+            let max_rgb = p[0].max(p[1]).max(p[2]);
+
+            // Keeps the black body, orange glow, and tail bulbs while dropping transparent margins.
+            if a > 80 && max_rgb > 8 {
+                found = true;
+                min_x = min_x.min(x);
+                min_y = min_y.min(y);
+                max_x = max_x.max(x);
+                max_y = max_y.max(y);
+            }
+        }
+    }
+
+    if !found {
+        return (0, 0, width, height);
+    }
+
+    let pad = 32u32;
+    let x = min_x.saturating_sub(pad);
+    let y = min_y.saturating_sub(pad);
+    let right = (max_x + pad).min(width.saturating_sub(1));
+    let bottom = (max_y + pad).min(height.saturating_sub(1));
+
+    (x, y, right.saturating_sub(x) + 1, bottom.saturating_sub(y) + 1)
+}
+
+fn blend_rgba(px: &image::Rgba<u8>, bg: Rgb) -> Rgb {
+    let a = px[3] as f32 / 255.0;
+    let inv = 1.0 - a;
+
+    Rgb {
+        r: ((px[0] as f32 * a) + (bg.r as f32 * inv)).round() as u8,
+        g: ((px[1] as f32 * a) + (bg.g as f32 * inv)).round() as u8,
+        b: ((px[2] as f32 * a) + (bg.b as f32 * inv)).round() as u8,
+    }
+}
+
+fn fallback_mascot_art() -> Vec<AnsiLine> {
+    let raw = [
+        "          ▟████▙        ▟████▙          ",
+        "        ▟████████▙    ▟████████▙        ",
+        "       ████▓▓▓▓████████▓▓▓▓████        ",
+        "      ███▓▓  ◖●◗  ▓▓▓▓  ◖●◗  ▓██       ",
+        "      ██▓▓        ▄▄▄▄        ▓▓██      ",
+        "      ██▓▓      ╰─▔▔▔─╯      ▓▓██      ",
+        "       ███▓▓              ▓▓███         ",
+        "         ████▓▓▓▓▓▓▓▓▓▓████            ",
+        "            ██▓▓    ▓▓██               ",
+        "           ▟██▓▓    ▓▓██▙              ",
+        "        ▟███▀          ▀███▙            ",
+        "     ▟███▀       ╲        ▀███▙         ",
+        "   ▟██▀           ╲          ▀██▙       ",
+        "  ▟█▀              ╲           ▀█▙      ",
+        "                   ◖●◗  ◖●◗  ◖●◗       ",
+    ];
+
+    raw.iter()
+        .map(|line| gradient_line(line, color::SMOKE, color::EMBER_HOT))
+        .collect()
+}
+
+fn gradient_line(raw: &str, left: Rgb, right: Rgb) -> AnsiLine {
+    let chars: Vec<char> = raw.chars().collect();
+    let n = chars.len().max(1);
+
+    let mut out = String::new();
+
+    for (i, ch) in chars.iter().enumerate() {
+        let t = if n <= 1 {
+            0.0
+        } else {
+            i as f32 / (n - 1) as f32
+        };
+
+        let c = mix(left, right, t);
+        out.push_str(&c.fg());
+        out.push(*ch);
+    }
+
+    out.push_str(RESET);
+
+    AnsiLine::new(out, chars.len())
+}
+
+fn center_text_line(raw: &str, color: Rgb) -> AnsiLine {
+    let text = format!("{}{}{}{}", DIM, color.fg(), raw, RESET);
+    AnsiLine::new(text, raw.chars().count())
+}
+
+fn centered(line: &AnsiLine, term_w: usize) -> String {
+    let pad = term_w.saturating_sub(line.width) / 2;
+    format!("{}{}", " ".repeat(pad), line.text)
+}
+
+fn mix(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    Rgb {
+        r: lerp(a.r, b.r, t),
+        g: lerp(a.g, b.g, t),
+        b: lerp(a.b, b.b, t),
+    }
+}
+
+fn lerp(a: u8, b: u8, t: f32) -> u8 {
+    let a = a as f32;
+    let b = b as f32;
+    (a + (b - a) * t).round().clamp(0.0, 255.0) as u8
+}
+
+// Cheap width estimate that ignores ANSI escape sequences.
+// Good enough for the splash card; use unicode-width in production.
+fn strip_ansi_width_cheap(s: &str) -> usize {
+    let mut width = 0usize;
+    let mut chars = s.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '\x1b' {
+            for c in chars.by_ref() {
+                if c == 'm' {
+                    break;
+                }
+            }
+        } else {
+            width += 1;
+        }
+    }
+
+    width
+}
+```
+
+## Run it
+
+```bash
+mkdir -p assets
+cp /path/to/quorp.png assets/quorp.png
+cargo run --release -- assets/quorp.png 0.1.0
+```
+
+Static non-animated mode:
+
+```bash
+cargo run --release -- assets/quorp.png 0.1.0 --no-animate
+```
+
+This is still “text.” It is just **truecolor text**.
+
+---
+
+# 11. Product roadmap
+
+## Phase 1: QUORP terminal shell
+
+Build:
+
+```text
+quorp chat
+quorp run "fix this test"
+quorp review
+quorp diff
+quorp agents
+quorp mcp
+```
+
+Core features:
+
+```text
+streaming transcript
+tool-call cards
+approval prompts
+patch preview
+green/red background diffs
+test runner
+session ledger
+repo memory
+```
+
+## Phase 2: QUORP coding IDE behavior
+
+Add:
+
+```text
+@file mentions
+#symbol lookup
+semantic search
+LSP references
+tree-sitter outline
+subagents
+git worktree isolation
+auto verification
+project skills
+```
+
+## Phase 3: QUORP premium shell
+
+Add optional:
+
+```text
+GPUI native desktop app
+or Tauri + Monaco + xterm.js
+same Rust agent core
+same event protocol
+same tool registry
+same QUORP design system
+```
+
+My strongest recommendation: **Rust core + ANSI stream UI first**, with the mascot rendered through truecolor half-block text. It gives you the Claude/Codex speed, the brilliant orange/black QUORP identity, the crispness of the user’s terminal, and a path to a full IDE later without throwing away the engine.
+
+[1]: https://developers.openai.com/codex/cli?utm_source=chatgpt.com "Codex CLI"
+[2]: https://ratatui.rs/concepts/backends/?utm_source=chatgpt.com "Backends"
+[3]: https://wezterm.org/index.html?utm_source=chatgpt.com "WezTerm - Wez's Terminal Emulator"
+[4]: https://iterm2.com/3.2/documentation-escape-codes.html?utm_source=chatgpt.com "Proprietary Escape Codes - Documentation"
+[5]: https://github.com/modelcontextprotocol/rust-sdk?utm_source=chatgpt.com "modelcontextprotocol/rust-sdk: The official ..."
+[6]: https://code.claude.com/docs/en/how-claude-code-works?utm_source=chatgpt.com "How Claude Code works - Claude Code Docs"
+[7]: https://code.claude.com/docs/en/hooks?utm_source=chatgpt.com "Hooks reference - Claude Code Docs"
+

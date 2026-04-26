@@ -94,7 +94,7 @@ pub fn parse_agent_turn_response(text: &str) -> Result<Option<AgentTurnResponse>
                 (
                     value,
                     vec![
-                        "Repaired JSON-like local-model object syntax; raw JSON is preferred."
+                        "Repaired JSON-like model object syntax; raw JSON is preferred."
                             .to_string(),
                     ],
                 )
@@ -292,7 +292,7 @@ fn line_oriented_turn(actions: Vec<AgentAction>) -> AgentTurnResponse {
         requested_mode_change: None,
         verifier_plan: None,
         parse_warnings: vec![
-            "Parsed line-oriented local tool syntax; raw JSON is preferred.".to_string(),
+            "Parsed line-oriented tool syntax; raw JSON is preferred.".to_string(),
         ],
     }
 }
@@ -2090,7 +2090,7 @@ mod tests {
     }
 
     #[test]
-    fn repairs_json_like_unquoted_keys_for_local_models() {
+    fn repairs_json_like_unquoted_keys_for_remote_models() {
         let parsed = parse_agent_turn_response(
             r#"{
                 actions: [
@@ -2116,9 +2116,10 @@ mod tests {
         .expect("turn");
 
         assert!(
-            parsed.parse_warnings.iter().any(|warning| {
-                warning.contains("Repaired JSON-like local-model object syntax")
-            })
+            parsed
+                .parse_warnings
+                .iter()
+                .any(|warning| { warning.contains("Repaired JSON-like model object syntax") })
         );
         assert_eq!(parsed.assistant_message, "patching");
         assert!(matches!(
@@ -2629,7 +2630,7 @@ mod tests {
     }
 
     #[test]
-    fn parses_line_oriented_local_tool_actions() {
+    fn parses_line_oriented_tool_actions() {
         let parsed = parse_agent_turn_response(
             "read_file src/round.rs range=[781, 813]\nrun_validation: tests(round::tests::test_duration_round_close_to_epoch)",
         )

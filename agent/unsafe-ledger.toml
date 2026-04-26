@@ -1,0 +1,7 @@
+version = 1
+
+[[unsafe_blocks]]
+path = "crates/quorp/src/main.rs"
+owner = "cli-binary"
+reason = "Rust 2024 marks process environment mutation unsafe; the current legacy TUI launch still uses env overrides."
+review = "Replace with explicit provider/model config plumbing during the CLI core split."

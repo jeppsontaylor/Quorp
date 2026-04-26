@@ -26,7 +26,6 @@ anyhow.workspace = true
 async_zip.workspace = true
 clap = { workspace = true, features = ["derive"] }
 crossterm = "0.28"
-flash_moe_defaults.workspace = true
 futures.workspace = true
 ignore.workspace = true
 image.workspace = true
@@ -36,15 +35,18 @@ notify = "=8.2.0"
 paths.workspace = true
 portable-pty.workspace = true
 rand.workspace = true
-ratatui = "0.29"
+quorp_config.workspace = true
+quorp_core.workspace = true
+quorp_provider.workspace = true
+quorp_sandbox.workspace = true
+quorp_term.workspace = true
+quorp_tools.workspace = true
 reqwest = { workspace = true, features = ["json", "stream"] }
 regex.workspace = true
 rusqlite = "0.37.0"
 serde.workspace = true
 serde_json.workspace = true
-ssd-moe-client = { path = "../../../ssd-moe-shared/crates/ssd-moe-client" }
-ssd-moe-contract = { path = "../../../ssd-moe-shared/crates/ssd-moe-contract" }
-ssd-moe-launch = { path = "../../../ssd-moe-shared/crates/ssd-moe-launch" }
+sha2.workspace = true
 syntect = "5"
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
 toml.workspace = true
@@ -56,6 +58,7 @@ vt100 = { package = "fnug-vt100", version = "0.15.2" }
 walkdir.workspace = true
 quorp_log.workspace = true
 quorp_agent_core = { path = "../quorp_agent_core" }
+quorp_benchmark.workspace = true
 quorp_tracing.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]

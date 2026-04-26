@@ -4,22 +4,13 @@ mod quorp;
 
 use ::paths;
 use anyhow::Context as _;
-use clap::{Args as ClapArgs, Parser, Subcommand};
+use clap::{Args as ClapArgs, Parser, Subcommand, ValueEnum};
+use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 use util::paths::PathWithPosition;
 
 fn main() {
     let args = CliArgs::parse();
-    crate::quorp::docker::bootstrap_custom_data_dir_from_env();
-
-    match crate::quorp::docker::maybe_reexec_in_docker(&args) {
-        Ok(Some(exit_code)) => std::process::exit(exit_code),
-        Ok(None) => {}
-        Err(error) => {
-            eprintln!("quorp: {error:#}");
-            std::process::exit(1);
-        }
-    }
 
     init_logging(&args);
 
@@ -51,7 +42,8 @@ fn benchmark_log_file_override(args: &CliArgs) -> Option<PathBuf> {
 
 fn run(args: CliArgs) -> anyhow::Result<()> {
     match args.command {
-        Some(Command::SsdDoctor) => run_ssd_doctor(),
+        Some(Command::Doctor) => run_doctor_command(),
+        Some(Command::Exec(args)) => run_exec_command(args),
         Some(Command::MemAnalyze) => run_mem_analyze(),
         Some(Command::MemLogPath) => run_mem_log_path(),
         Some(Command::Session(args)) => run_session(args),
@@ -59,10 +51,299 @@ fn run(args: CliArgs) -> anyhow::Result<()> {
         Some(Command::Diagnostics { command }) => run_diagnostics_command(command),
         Some(Command::Agent { command }) => run_agent_command(command),
         Some(Command::Benchmark { command }) => run_benchmark_command(command),
-        None => run_native_tui(SessionLaunchConfig::from_paths_or_urls(
+        None => run_inline_cli(SessionLaunchConfig::from_paths_or_urls(
             args.paths_or_urls,
             parse_prompt_compaction_policy_arg(args.prompt_compaction_policy.as_deref())?,
         )),
+    }
+}
+
+fn run_doctor_command() -> anyhow::Result<()> {
+    let workspace = std::env::current_dir().unwrap_or_else(|_| default_workspace_root());
+    let loaded = quorp_config::load_settings(&workspace)?;
+    let provider = quorp_provider::OpenAiCompatibleProvider::new(loaded.settings.provider.clone());
+    let provider_url = provider.chat_completions_url()?;
+    let api_key_present =
+        crate::quorp::provider_config::env_value(&loaded.settings.provider.api_key_env)
+            .is_some_and(|value| !value.trim().is_empty());
+    let project_agent_toml = workspace.join(".quorp").join("agent.toml");
+
+    println!("QUORP doctor");
+    println!("workspace: {}", workspace.display());
+    println!(
+        "settings: user={} loaded={} project={} loaded={}",
+        loaded.sources.user_path.display(),
+        loaded.sources.loaded_user,
+        loaded.sources.project_path.display(),
+        loaded.sources.loaded_project
+    );
+    println!("provider: {}", loaded.settings.provider.name);
+    println!("model: {}", loaded.settings.provider.model);
+    println!("chat endpoint: {provider_url}");
+    println!(
+        "api key env: {} present={}",
+        loaded.settings.provider.api_key_env, api_key_present
+    );
+    println!("sandbox default: {:?}", loaded.settings.sandbox.mode);
+    println!("permission mode: {:?}", loaded.settings.permissions.mode);
+    println!(
+        "hooks: before_tool={} after_tool={} stop={}",
+        loaded.settings.hooks.before_tool.len(),
+        loaded.settings.hooks.after_tool.len(),
+        loaded.settings.hooks.stop.len()
+    );
+    println!(
+        "legacy .quorp/agent.toml compatibility: {}",
+        project_agent_toml.exists()
+    );
+    println!("tmp-copy root: /tmp/quorp");
+    Ok(())
+}
+
+fn load_workspace_settings(workspace: &Path) -> anyhow::Result<quorp_config::LoadedSettings> {
+    quorp_config::load_settings(workspace).with_context(|| {
+        format!(
+            "failed to load QUORP settings for workspace {}",
+            workspace.display()
+        )
+    })
+}
+
+fn default_provider_for_workspace(
+    workspace: &Path,
+) -> anyhow::Result<crate::quorp::executor::InteractiveProviderKind> {
+    Ok(crate::quorp::executor::interactive_provider_for_workspace(
+        &std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf()),
+    ))
+}
+
+fn default_model_for_workspace(
+    _workspace: &Path,
+    _provider: crate::quorp::executor::InteractiveProviderKind,
+) -> anyhow::Result<String> {
+    Ok(crate::quorp::provider_config::NVIDIA_QWEN_MODEL.to_string())
+}
+
+fn default_base_url_for_workspace(
+    workspace: &Path,
+    provider: crate::quorp::executor::InteractiveProviderKind,
+) -> anyhow::Result<Option<String>> {
+    let loaded = load_workspace_settings(workspace)?;
+    let base_url = loaded.settings.provider.base_url.trim();
+    if base_url.is_empty() {
+        return Ok(None);
+    }
+    let _ = provider;
+    Ok(Some(base_url.to_string()))
+}
+
+fn default_sandbox_for_workspace(workspace: &Path) -> anyhow::Result<CliSandboxMode> {
+    let loaded = load_workspace_settings(workspace)?;
+    Ok(match loaded.settings.sandbox.mode {
+        quorp_core::SandboxMode::Host => CliSandboxMode::Host,
+        quorp_core::SandboxMode::TmpCopy => CliSandboxMode::TmpCopy,
+    })
+}
+
+fn run_exec_command(args: ExecArgs) -> anyhow::Result<()> {
+    let workspace = args.workspace.unwrap_or_else(default_workspace_root);
+    let workspace = std::fs::canonicalize(&workspace).unwrap_or(workspace);
+    let result_dir = args
+        .result_dir
+        .unwrap_or_else(|| crate::quorp::run_support::default_run_result_dir(&workspace, "exec"));
+    std::fs::create_dir_all(&result_dir)?;
+    let objective_file = result_dir.join("objective.md");
+    std::fs::write(&objective_file, args.task)?;
+    run_autonomous_command(RunCliArgs {
+        command: None,
+        start: RunArgs {
+            workspace: Some(workspace),
+            condition: None,
+            objective_file: Some(objective_file),
+            base_url: args.base_url,
+            max_steps: args.max_steps,
+            max_seconds: args.max_seconds,
+            max_retries: 0,
+            max_total_tokens: args.max_total_tokens,
+            result_dir: Some(result_dir),
+            sandbox: args.sandbox,
+            keep_sandbox: args.keep_sandbox,
+            autonomy_profile: args.autonomy_profile,
+        },
+    })
+}
+
+fn run_id_from_result_dir(result_dir: &Path) -> String {
+    result_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("run")
+        .to_string()
+}
+
+fn resolve_objective_path_for_workspace(
+    source_workspace: &Path,
+    active_workspace: &Path,
+    objective_file: &Path,
+) -> PathBuf {
+    if objective_file.is_absolute() {
+        objective_file
+            .strip_prefix(source_workspace)
+            .map(|relative| active_workspace.join(relative))
+            .unwrap_or_else(|_| objective_file.to_path_buf())
+    } else {
+        active_workspace.join(objective_file)
+    }
+}
+
+fn resolve_run_objective(
+    workspace: &Path,
+    objective_file: Option<PathBuf>,
+    condition: Option<&str>,
+) -> anyhow::Result<crate::quorp::run_support::ResolvedWorkspaceObjective> {
+    match (
+        crate::quorp::run_support::resolve_workspace_objective(workspace, condition),
+        objective_file,
+    ) {
+        (Ok(discovered), Some(objective_file)) => {
+            Ok(crate::quorp::run_support::ResolvedWorkspaceObjective {
+                objective_file,
+                ..discovered
+            })
+        }
+        (Ok(discovered), None) => Ok(discovered),
+        (Err(error), Some(objective_file)) => {
+            if !objective_file.exists() {
+                return Err(error).with_context(|| {
+                    format!(
+                        "explicit objective file {} does not exist",
+                        objective_file.display()
+                    )
+                });
+            }
+            let workspace_root =
+                std::fs::canonicalize(workspace).unwrap_or_else(|_| workspace.to_path_buf());
+            Ok(crate::quorp::run_support::ResolvedWorkspaceObjective {
+                workspace_root: workspace_root.clone(),
+                challenge_root: workspace_root.clone(),
+                editable_workspace_root: workspace_root,
+                editable_workspace_relative_root: None,
+                objective_file,
+                evaluate_command: None,
+                reset_command: None,
+                selected_condition: None,
+                success_file: None,
+                context_files: Vec::new(),
+                repair_artifacts: Vec::new(),
+                workspace_root_entries: Vec::new(),
+                editable_workspace_entries: Vec::new(),
+            })
+        }
+        (Err(error), None) => Err(error),
+    }
+}
+
+struct RunProofReceiptInput<'a> {
+    result_dir: &'a Path,
+    source_workspace: &'a Path,
+    active_workspace: &'a Path,
+    sandbox_root: Option<PathBuf>,
+    provider: &'a str,
+    model_id: &'a str,
+    resolved: &'a crate::quorp::run_support::ResolvedWorkspaceObjective,
+    outcome: &'a quorp_agent_core::AgentRunOutcome,
+    evaluation: Option<&'a crate::quorp::run_support::EvaluatorOutcome>,
+}
+
+fn write_run_proof_receipt(input: RunProofReceiptInput<'_>) -> anyhow::Result<()> {
+    let mut receipt = quorp_core::ProofReceipt::new(run_id_from_result_dir(input.result_dir));
+    receipt.sandbox_path = input.sandbox_root;
+    receipt.changed_files = changed_files_for_workspace(input.active_workspace)?;
+    receipt.provider = Some(input.provider.to_string());
+    receipt.model = Some(input.model_id.to_string());
+    receipt.usage.insert(
+        "total_billed_tokens".to_string(),
+        input.outcome.total_billed_tokens,
+    );
+    receipt.evaluator_result = input.evaluation.map(|evaluation| {
+        format!(
+            "passed={} process_exit_code={} logical_success={:?}",
+            evaluation.evaluation_passed, evaluation.process_exit_code, evaluation.logical_success
+        )
+    });
+    if let Some(evaluation) = input.evaluation {
+        receipt.validation.push(quorp_core::ValidationRecord {
+            command: evaluation.command.clone(),
+            cwd: input.resolved.challenge_root.clone(),
+            exit_code: evaluation.process_exit_code,
+            raw_log_path: None,
+            raw_log_sha256: None,
+        });
+    }
+    for (name, path) in [
+        ("request", input.result_dir.join("request.json")),
+        ("metadata", input.result_dir.join("metadata.json")),
+        ("summary", input.result_dir.join("summary.json")),
+        ("events", input.result_dir.join("events.jsonl")),
+    ] {
+        if path.exists() {
+            receipt.raw_artifacts.insert(
+                name.to_string(),
+                quorp_core::RawArtifact {
+                    sha256: sha256_file_if_exists(&path)?,
+                    path,
+                },
+            );
+        }
+    }
+    if input.source_workspace != input.active_workspace {
+        receipt.residual_risks.push(
+            "run used a copied workspace; inspect sandbox path or result artifacts for final edits"
+                .to_string(),
+        );
+    }
+    if input.outcome.stop_reason != quorp_agent_core::StopReason::Success
+        && input
+            .evaluation
+            .is_none_or(|evaluation| !evaluation.evaluation_passed)
+    {
+        receipt
+            .residual_risks
+            .push("agent run did not reach a successful stop condition".to_string());
+    }
+    crate::quorp::run_support::write_json(&input.result_dir.join("proof-receipt.json"), &receipt)
+}
+
+fn changed_files_for_workspace(workspace: &Path) -> anyhow::Result<Vec<PathBuf>> {
+    #[allow(clippy::disallowed_methods)]
+    let output = std::process::Command::new("git")
+        .arg("-C")
+        .arg(workspace)
+        .arg("diff")
+        .arg("--name-only")
+        .output()
+        .with_context(|| format!("failed to inspect changed files in {}", workspace.display()))?;
+    if !output.status.success() {
+        return Ok(Vec::new());
+    }
+    let text = String::from_utf8_lossy(&output.stdout);
+    Ok(text
+        .lines()
+        .filter(|line| !line.trim().is_empty())
+        .map(PathBuf::from)
+        .collect())
+}
+
+fn sha256_file_if_exists(path: &Path) -> anyhow::Result<Option<String>> {
+    match std::fs::read(path) {
+        Ok(bytes) => {
+            let mut hasher = Sha256::new();
+            hasher.update(bytes);
+            Ok(Some(format!("{:x}", hasher.finalize())))
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
     }
 }
 
@@ -70,7 +351,7 @@ fn run_autonomous_command(args: RunCliArgs) -> anyhow::Result<()> {
     match args.command {
         Some(RunSubcommand::Resume(args)) => {
             let outcome =
-                crate::quorp::agent_local::resume_headless_agent(args.result_dir.clone())?;
+                crate::quorp::agent_runner::resume_headless_agent(args.result_dir.clone())?;
             crate::quorp::run_support::snapshot_logs(&args.result_dir, None)?;
             println!("Run directory: {}", args.result_dir.display());
             if outcome.stop_reason == quorp_agent_core::StopReason::Success {
@@ -89,52 +370,56 @@ fn run_autonomous_command(args: RunCliArgs) -> anyhow::Result<()> {
                 .workspace
                 .clone()
                 .ok_or_else(|| anyhow::anyhow!("`quorp run` requires --workspace <dir>"))?;
-            let workspace =
+            let source_workspace =
                 std::fs::canonicalize(&workspace_arg).unwrap_or_else(|_| workspace_arg.clone());
-            let resolved = if let Some(objective_file) = start.objective_file.clone() {
-                let path = if objective_file.is_absolute() {
-                    objective_file
-                } else {
-                    workspace.join(objective_file)
-                };
-                let discovered = crate::quorp::run_support::resolve_workspace_objective(
-                    &workspace,
-                    start.condition.as_deref(),
-                )?;
-                crate::quorp::run_support::ResolvedWorkspaceObjective {
-                    objective_file: path,
-                    ..discovered
-                }
-            } else {
-                crate::quorp::run_support::resolve_workspace_objective(
-                    &workspace,
-                    start.condition.as_deref(),
-                )?
-            };
-
-            let provider = start
-                .provider
-                .unwrap_or_else(crate::quorp::executor::interactive_provider_from_env);
-            let model_id = start
-                .model
-                .clone()
-                .or_else(crate::quorp::provider_config::resolved_model_env)
-                .or_else(|| {
-                    crate::quorp::tui::model_registry::default_interactive_model_id(provider)
-                })
-                .ok_or_else(|| {
-                    anyhow::anyhow!("no model could be resolved for {}", provider.label())
-                })?;
-            let result_dir = start.result_dir.unwrap_or_else(|| {
-                crate::quorp::run_support::default_run_result_dir(&workspace, "run")
+            let result_dir = start.result_dir.clone().unwrap_or_else(|| {
+                crate::quorp::run_support::default_run_result_dir(&source_workspace, "run")
             });
             std::fs::create_dir_all(&result_dir)?;
-
+            let provider = start
+                .base_url
+                .as_ref()
+                .map(|_| crate::quorp::executor::InteractiveProviderKind::Nvidia)
+                .unwrap_or(default_provider_for_workspace(&source_workspace)?);
+            let model_id = default_model_for_workspace(&source_workspace, provider)?;
+            let base_url_override = start
+                .base_url
+                .clone()
+                .map(Some)
+                .unwrap_or(default_base_url_for_workspace(&source_workspace, provider)?);
+            let sandbox_mode = quorp_core::SandboxMode::from(
+                start
+                    .sandbox
+                    .unwrap_or(default_sandbox_for_workspace(&source_workspace)?),
+            );
+            let sandbox_lease = match sandbox_mode {
+                quorp_core::SandboxMode::Host => None,
+                quorp_core::SandboxMode::TmpCopy => Some(quorp_sandbox::create_sandbox(
+                    quorp_sandbox::SandboxRequest {
+                        source_workspace: source_workspace.clone(),
+                        run_id: run_id_from_result_dir(&result_dir),
+                        attempt: 1,
+                        mode: quorp_core::SandboxMode::TmpCopy,
+                        keep_sandbox: start.keep_sandbox,
+                    },
+                )?),
+            };
+            let workspace = sandbox_lease
+                .as_ref()
+                .map(|lease| lease.workspace_path().to_path_buf())
+                .unwrap_or_else(|| source_workspace.clone());
+            let objective_file = start.objective_file.as_ref().map(|objective_file| {
+                resolve_objective_path_for_workspace(&source_workspace, &workspace, objective_file)
+            });
+            let resolved =
+                resolve_run_objective(&workspace, objective_file, start.condition.as_deref())?;
             apply_session_env_overrides(&SessionLaunchConfig {
                 workspace_root: resolved.editable_workspace_root.clone(),
                 provider: Some(provider),
                 model: Some(model_id.clone()),
+                base_url: base_url_override.clone(),
                 prompt_compaction_policy: None,
+                initial_prompt: None,
             });
 
             let mut final_outcome: Option<quorp_agent_core::AgentRunOutcome> = None;
@@ -170,17 +455,12 @@ fn run_autonomous_command(args: RunCliArgs) -> anyhow::Result<()> {
                     );
                 }
 
-                let outcome = crate::quorp::agent_local::run_headless_agent(
-                    crate::quorp::agent_local::HeadlessRunOptions {
+                let outcome = crate::quorp::agent_runner::run_headless_agent(
+                    crate::quorp::agent_runner::HeadlessRunOptions {
                         workspace: resolved.editable_workspace_root.clone(),
                         objective_file: resolved.objective_file.clone(),
-                        executor: start.executor,
-                        codex_session_strategy: crate::quorp::executor::CodexSessionStrategy {
-                            mode: start.codex_session_mode,
-                            session_id: start.codex_session_id.clone(),
-                        },
                         model_id: model_id.clone(),
-                        base_url_override: start.base_url.clone(),
+                        base_url_override: base_url_override.clone(),
                         max_steps: start.max_steps,
                         max_seconds: Some(start.max_seconds),
                         max_total_tokens: start.max_total_tokens,
@@ -337,39 +617,45 @@ fn run_autonomous_command(args: RunCliArgs) -> anyhow::Result<()> {
             crate::quorp::run_support::write_json(
                 &result_dir.join("request.json"),
                 &serde_json::json!({
-                    "workspace": workspace,
-                    "challenge_root": resolved.challenge_root,
-                    "editable_workspace_root": resolved.editable_workspace_root,
-                    "objective_file": resolved.objective_file,
+                    "workspace": workspace.clone(),
+                    "source_workspace": source_workspace.clone(),
+                    "challenge_root": resolved.challenge_root.clone(),
+                    "editable_workspace_root": resolved.editable_workspace_root.clone(),
+                    "objective_file": resolved.objective_file.clone(),
+                    "sandbox": format!("{:?}", sandbox_mode),
+                    "sandbox_root": sandbox_lease.as_ref().map(|lease| lease.sandbox_root().to_path_buf()),
                     "provider": provider.label(),
-                    "model_id": model_id,
-                    "condition": resolved.selected_condition,
+                    "model_id": model_id.clone(),
+                    "condition": resolved.selected_condition.clone(),
                     "max_retries": start.max_retries,
-                    "evaluate_command": resolved.evaluate_command,
-                    "reset_command": resolved.reset_command,
-                    "runtime": crate::quorp::docker::runtime_metadata_json(),
+                    "evaluate_command": resolved.evaluate_command.clone(),
+                    "reset_command": resolved.reset_command.clone(),
+                    "runtime": {"mode": "native"},
                 }),
             )?;
             crate::quorp::run_support::write_json(
                 &result_dir.join("metadata.json"),
                 &serde_json::json!({
-                    "workspace": workspace,
-                    "challenge_root": resolved.challenge_root,
-                    "editable_workspace_root": resolved.editable_workspace_root,
-                    "objective_file": resolved.objective_file,
+                    "workspace": workspace.clone(),
+                    "source_workspace": source_workspace.clone(),
+                    "challenge_root": resolved.challenge_root.clone(),
+                    "editable_workspace_root": resolved.editable_workspace_root.clone(),
+                    "objective_file": resolved.objective_file.clone(),
+                    "sandbox": format!("{:?}", sandbox_mode),
+                    "sandbox_root": sandbox_lease.as_ref().map(|lease| lease.sandbox_root().to_path_buf()),
                     "provider": provider.label(),
-                    "model_id": model_id,
-                    "condition": resolved.selected_condition,
+                    "model_id": model_id.clone(),
+                    "condition": resolved.selected_condition.clone(),
                     "attempts_run": attempts_run,
-                    "evaluate_command": resolved.evaluate_command,
-                    "reset_command": resolved.reset_command,
-                    "last_evaluation": final_evaluation,
+                    "evaluate_command": resolved.evaluate_command.clone(),
+                    "reset_command": resolved.reset_command.clone(),
+                    "last_evaluation": final_evaluation.clone(),
                     "process_exit_code": final_evaluation.as_ref().map(|evaluation| evaluation.process_exit_code),
                     "process_passed": final_evaluation.as_ref().map(|evaluation| evaluation.process_passed),
                     "logical_success": final_evaluation.as_ref().and_then(|evaluation| evaluation.logical_success),
                     "evaluation_passed": final_evaluation.as_ref().map(|evaluation| evaluation.evaluation_passed),
                     "objective": crate::quorp::run_support::objective_metadata_json(&resolved, &workspace),
-                    "runtime": crate::quorp::docker::runtime_metadata_json(),
+                    "runtime": {"mode": "native"},
                 }),
             )?;
             crate::quorp::run_support::write_json(
@@ -396,6 +682,19 @@ fn run_autonomous_command(args: RunCliArgs) -> anyhow::Result<()> {
                     "logical_success": final_evaluation.as_ref().and_then(|evaluation| evaluation.logical_success),
                 }),
             )?;
+            write_run_proof_receipt(RunProofReceiptInput {
+                result_dir: &result_dir,
+                source_workspace: &source_workspace,
+                active_workspace: &workspace,
+                sandbox_root: sandbox_lease
+                    .as_ref()
+                    .map(|lease| lease.sandbox_root().to_path_buf()),
+                provider: provider.label(),
+                model_id: &model_id,
+                resolved: &resolved,
+                outcome: &outcome,
+                evaluation: final_evaluation.as_ref(),
+            })?;
             println!("Run directory: {}", result_dir.display());
             let success = final_evaluation
                 .as_ref()
@@ -468,17 +767,12 @@ fn run_agent_command(command: AgentCommand) -> anyhow::Result<()> {
     match command {
         AgentCommand::Run(args) => {
             let objective_file = args.objective_file.clone();
-            let outcome = crate::quorp::agent_local::run_headless_agent(
-                crate::quorp::agent_local::HeadlessRunOptions {
+            let outcome = crate::quorp::agent_runner::run_headless_agent(
+                crate::quorp::agent_runner::HeadlessRunOptions {
                     workspace: std::fs::canonicalize(&args.workspace)
                         .unwrap_or_else(|_| args.workspace.clone()),
                     objective_file: PathBuf::from(objective_file.clone()),
-                    executor: args.executor,
-                    codex_session_strategy: crate::quorp::executor::CodexSessionStrategy {
-                        mode: args.codex_session_mode,
-                        session_id: args.codex_session_id.clone(),
-                    },
-                    model_id: args.model,
+                    model_id: crate::quorp::provider_config::NVIDIA_QWEN_MODEL.to_string(),
                     base_url_override: args.base_url,
                     max_steps: args.max_steps,
                     max_seconds: Some(args.max_seconds),
@@ -502,7 +796,7 @@ fn run_agent_command(command: AgentCommand) -> anyhow::Result<()> {
             }
         }
         AgentCommand::Resume(args) => {
-            let outcome = crate::quorp::agent_local::resume_headless_agent(args.result_dir)?;
+            let outcome = crate::quorp::agent_runner::resume_headless_agent(args.result_dir)?;
             if outcome.stop_reason == quorp_agent_core::StopReason::Success {
                 Ok(())
             } else {
@@ -518,15 +812,30 @@ fn run_agent_command(command: AgentCommand) -> anyhow::Result<()> {
 fn run_benchmark_command(command: BenchmarkCommand) -> anyhow::Result<()> {
     match command {
         BenchmarkCommand::Run(args) => {
+            let workspace = default_workspace_root();
+            let provider = default_provider_for_workspace(&workspace)?;
+            let model = default_model_for_workspace(&workspace, provider)?;
+            let base_url = args
+                .base_url
+                .clone()
+                .map(Some)
+                .unwrap_or(default_base_url_for_workspace(&workspace, provider)?);
+            apply_session_env_overrides(&SessionLaunchConfig::from_workspace(
+                workspace.clone(),
+                Some(provider),
+                Some(model.clone()),
+                base_url.clone(),
+                None,
+            ));
             let result_dir = args.result_dir.clone();
             let compaction_policy = crate::quorp::benchmark::parse_prompt_compaction_policy(
                 args.compaction_policy.as_deref(),
             )?;
             crate::quorp::benchmark::run_benchmark(crate::quorp::benchmark::BenchmarkRunOptions {
                 path: std::fs::canonicalize(&args.path).unwrap_or_else(|_| args.path.clone()),
-                executor: args.executor,
-                model_id: args.model,
-                base_url_override: args.base_url,
+                executor: crate::quorp::benchmark::BenchmarkExecutor::Native,
+                model_id: Some(model),
+                base_url_override: base_url,
                 briefing_file: Some(args.briefing_file),
                 compaction_policy,
                 seed_transcript: args.seed_transcript,
@@ -536,18 +845,28 @@ fn run_benchmark_command(command: BenchmarkCommand) -> anyhow::Result<()> {
                 result_dir: args.result_dir,
                 autonomy_profile: parse_autonomy_profile(&args.autonomy_profile)?,
                 max_attempts: args.max_attempts,
-                allow_heavy_local_model: args.allow_heavy_local_model,
                 condition: args.condition,
                 keep_sandbox: args.keep_sandbox,
             })
             .and_then(|_| ensure_benchmark_succeeded(&result_dir))
         }
         BenchmarkCommand::Prompt(args) => {
+            let workspace = default_workspace_root();
+            let provider = default_provider_for_workspace(&workspace)?;
+            let model = default_model_for_workspace(&workspace, provider)?;
+            let base_url = default_base_url_for_workspace(&workspace, provider)?;
+            apply_session_env_overrides(&SessionLaunchConfig::from_workspace(
+                workspace.clone(),
+                Some(provider),
+                Some(model.clone()),
+                base_url,
+                None,
+            ));
             let bundle = crate::quorp::benchmark::prepare_benchmark_prompt_bundle(
                 &args.path,
                 &args.workspace_dir,
-                args.executor,
-                args.model,
+                crate::quorp::benchmark::BenchmarkExecutor::Native,
+                Some(model),
                 Some(args.briefing_file.as_path()),
                 args.max_steps,
                 Some(args.max_seconds),
@@ -576,6 +895,21 @@ fn run_benchmark_command(command: BenchmarkCommand) -> anyhow::Result<()> {
             Ok(())
         }
         BenchmarkCommand::Batch(args) => {
+            let workspace = default_workspace_root();
+            let provider = default_provider_for_workspace(&workspace)?;
+            let model = default_model_for_workspace(&workspace, provider)?;
+            let base_url = args
+                .base_url
+                .clone()
+                .map(Some)
+                .unwrap_or(default_base_url_for_workspace(&workspace, provider)?);
+            apply_session_env_overrides(&SessionLaunchConfig::from_workspace(
+                workspace,
+                Some(provider),
+                Some(model.clone()),
+                base_url.clone(),
+                None,
+            ));
             let compaction_policy = crate::quorp::benchmark::parse_prompt_compaction_policy(
                 args.compaction_policy.as_deref(),
             )?;
@@ -584,9 +918,9 @@ fn run_benchmark_command(command: BenchmarkCommand) -> anyhow::Result<()> {
                     cases_root: std::fs::canonicalize(&args.cases_root)
                         .unwrap_or_else(|_| args.cases_root.clone()),
                     result_dir: args.result_dir,
-                    executor: args.executor,
-                    model_id: args.model,
-                    base_url_override: args.base_url,
+                    executor: crate::quorp::benchmark::BenchmarkExecutor::Native,
+                    model_id: Some(model),
+                    base_url_override: base_url,
                     briefing_file: Some(args.briefing_file),
                     compaction_policy,
                     seed_transcript: args.seed_transcript,
@@ -595,7 +929,6 @@ fn run_benchmark_command(command: BenchmarkCommand) -> anyhow::Result<()> {
                     max_total_tokens: args.token_budget,
                     max_attempts: args.max_attempts,
                     autonomy_profile: parse_autonomy_profile(&args.autonomy_profile)?,
-                    allow_heavy_local_model: args.allow_heavy_local_model,
                     condition: args.condition,
                     keep_sandbox: args.keep_sandbox,
                     log_dir: args.log_dir,
@@ -649,62 +982,189 @@ fn parse_prompt_compaction_policy_arg(
 }
 
 fn run_session(args: SessionArgs) -> anyhow::Result<()> {
+    let workspace = args.workspace.unwrap_or_else(default_workspace_root);
+    let provider = default_provider_for_workspace(&workspace)?;
+    let model = default_model_for_workspace(&workspace, provider)?;
+    let base_url = default_base_url_for_workspace(&workspace, provider)?;
     let launch = SessionLaunchConfig::from_workspace(
-        args.workspace.unwrap_or_else(default_workspace_root),
-        args.provider,
-        args.model,
+        workspace,
+        Some(provider),
+        Some(model),
+        base_url,
         parse_prompt_compaction_policy_arg(args.prompt_compaction_policy.as_deref())?,
     );
-    run_native_tui(launch)
+    run_inline_cli(launch)
 }
 
-fn run_native_tui(launch: SessionLaunchConfig) -> anyhow::Result<()> {
-    apply_session_env_overrides(&launch);
-    let workspace_root = launch.workspace_root;
-    let app_run_id = crate::quorp::tui::diagnostics::app_run_id().to_string();
-    crate::quorp::tui::diagnostics::log_event(
-        "app.run_native_tui",
-        serde_json::json!({
-            "workspace_root": workspace_root.display().to_string(),
-            "runtime": crate::quorp::docker::runtime_metadata_json(),
-        }),
-    );
-    if let Err(error) =
-        crate::quorp::memory_fingerprint::start_memory_logger(&workspace_root, &app_run_id)
-    {
-        crate::quorp::tui::diagnostics::log_event(
-            "memory.sampler_error",
-            serde_json::json!({
-                "detail": error.to_string(),
-            }),
-        );
-    } else {
-        crate::quorp::tui::diagnostics::log_event(
-            "memory.logger_started",
-            serde_json::json!({
-                "path": paths::memory_log_file().display().to_string(),
-                "sample_interval_ms": crate::quorp::memory_fingerprint::MEMORY_SAMPLE_INTERVAL.as_millis() as u64,
-                "runtime": crate::quorp::docker::runtime_metadata_json(),
-            }),
-        );
-    }
-    let (event_tx, event_rx) = std::sync::mpsc::sync_channel::<crate::quorp::tui::TuiEvent>(
-        crate::quorp::tui::TUI_EVENT_QUEUE_CAPACITY,
-    );
-    let (input_tx, input_rx) = std::sync::mpsc::channel::<crossterm::event::Event>();
-    let chat_tx = event_tx.clone();
+fn run_inline_cli(launch: SessionLaunchConfig) -> anyhow::Result<()> {
+    use std::io::{self, Write};
 
-    crate::quorp::tui::run(
-        workspace_root,
-        event_rx,
-        input_rx,
-        input_tx,
-        chat_tx,
-        None,
-        None,
-        None,
-        None,
-    )
+    apply_session_env_overrides(&launch);
+    let workspace_root = launch.workspace_root.clone();
+    let model = launch.model.as_deref().unwrap_or("default remote model");
+    let loaded = load_workspace_settings(&workspace_root)?;
+    let mut run_mode = quorp_core::RunMode::Act;
+    let mut permission_mode = loaded.settings.permissions.mode;
+    let mut sandbox = loaded.settings.sandbox.mode;
+
+    println!(
+        "{}",
+        quorp_term::startup_card(&workspace_root.display().to_string(), model, sandbox)
+    );
+    println!(
+        "{}",
+        quorp_term::render_card(&quorp_term::TranscriptCard::Plan {
+            title: "inline agent ready".to_string(),
+            steps: vec![
+                "type a task, or use /plan, /act, /full-auto, /sandbox tmp-copy, /doctor, /help"
+                    .to_string(),
+                "remote requests use NVIDIA NIM with Qwen3-Coder".to_string(),
+            ],
+        })
+    );
+
+    if let Some(prompt) = launch
+        .initial_prompt
+        .as_ref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        return run_inline_task(&workspace_root, launch.clone(), prompt.to_string());
+    }
+
+    let stdin = io::stdin();
+    let mut line = String::new();
+    loop {
+        print!("\x1b[36mquorp\x1b[0m> ");
+        io::stdout().flush()?;
+        line.clear();
+        if stdin.read_line(&mut line)? == 0 {
+            break;
+        }
+        let input = line.trim();
+        if input.is_empty() {
+            continue;
+        }
+        if matches!(input, "/quit" | "/exit") {
+            break;
+        }
+        if let Some(command) = quorp_term::parse_slash_command(input) {
+            match command {
+                quorp_term::SlashCommand::Doctor => run_doctor_command()?,
+                quorp_term::SlashCommand::Help => print_inline_help(),
+                quorp_term::SlashCommand::Unknown(name) => {
+                    println!(
+                        "{}",
+                        quorp_term::render_card(&quorp_term::TranscriptCard::ApprovalWarning {
+                            title: format!("unknown slash command /{name}"),
+                            detail: "try /help for supported commands".to_string(),
+                        })
+                    );
+                }
+                other => {
+                    quorp_term::apply_mode_command(
+                        &other,
+                        &mut run_mode,
+                        &mut permission_mode,
+                        &mut sandbox,
+                    );
+                    println!(
+                        "{}",
+                        quorp_term::render_card(&quorp_term::TranscriptCard::ToolCall {
+                            name: "mode".to_string(),
+                            detail: format!(
+                                "run={run_mode:?} permissions={permission_mode:?} sandbox={sandbox:?}"
+                            ),
+                        })
+                    );
+                }
+            }
+            continue;
+        }
+        run_inline_task(&workspace_root, launch.clone(), input.to_string())?;
+    }
+    Ok(())
+}
+
+fn run_inline_task(
+    workspace_root: &Path,
+    launch: SessionLaunchConfig,
+    task: String,
+) -> anyhow::Result<()> {
+    println!(
+        "{}",
+        quorp_term::render_card(&quorp_term::TranscriptCard::ToolCall {
+            name: "exec".to_string(),
+            detail: "starting remote agent run".to_string(),
+        })
+    );
+    println!(
+        "{}",
+        quorp_term::render_card(&quorp_term::TranscriptCard::Validation {
+            label: "agent run".to_string(),
+            status: quorp_term::ValidationStatus::Running,
+            frame: 0,
+        })
+    );
+    let result_dir = crate::quorp::run_support::default_run_result_dir(workspace_root, "inline");
+    let result_dir_display = result_dir.display().to_string();
+    let result = run_exec_command(ExecArgs {
+        task,
+        workspace: Some(workspace_root.to_path_buf()),
+        result_dir: Some(result_dir),
+        base_url: launch.base_url,
+        max_steps: 12,
+        max_seconds: 3600,
+        max_total_tokens: None,
+        sandbox: Some(CliSandboxMode::TmpCopy),
+        keep_sandbox: true,
+        autonomy_profile: "autonomous_host".to_string(),
+    });
+    match result {
+        Ok(()) => {
+            println!(
+                "{}",
+                quorp_term::render_card(&quorp_term::TranscriptCard::Validation {
+                    label: "agent run".to_string(),
+                    status: quorp_term::ValidationStatus::Passed,
+                    frame: 0,
+                })
+            );
+            println!(
+                "{}",
+                quorp_term::render_card(&quorp_term::TranscriptCard::ProofReceipt {
+                    path: format!("{result_dir_display}/proof-receipt.json"),
+                    summary: "remote run completed".to_string(),
+                })
+            );
+            Ok(())
+        }
+        Err(error) => {
+            println!(
+                "{}",
+                quorp_term::render_card(&quorp_term::TranscriptCard::Validation {
+                    label: "agent run".to_string(),
+                    status: quorp_term::ValidationStatus::Failed,
+                    frame: 0,
+                })
+            );
+            Err(error)
+        }
+    }
+}
+
+fn print_inline_help() {
+    println!(
+        "{}",
+        quorp_term::render_card(&quorp_term::TranscriptCard::Plan {
+            title: "slash commands".to_string(),
+            steps: vec![
+                "/plan, /act, /full-auto, /full-permissions".to_string(),
+                "/permissions <mode>, /sandbox <host|tmp-copy>".to_string(),
+                "/hooks, /mcp, /diff, /apply, /revert, /compact, /doctor, /help".to_string(),
+                "/exit or /quit".to_string(),
+            ],
+        })
+    );
 }
 
 fn apply_session_env_overrides(launch: &SessionLaunchConfig) {
@@ -718,6 +1178,18 @@ fn apply_session_env_overrides(launch: &SessionLaunchConfig) {
             std::env::set_var("QUORP_MODEL", model);
         }
     }
+    match (launch.provider, launch.base_url.as_deref()) {
+        (Some(crate::quorp::executor::InteractiveProviderKind::Nvidia), Some(base_url)) => unsafe {
+            std::env::set_var("QUORP_NVIDIA_BASE_URL", base_url);
+            std::env::remove_var("QUORP_BASE_URL");
+            std::env::remove_var("QUORP_CHAT_BASE_URL");
+        },
+        _ => unsafe {
+            std::env::remove_var("QUORP_BASE_URL");
+            std::env::remove_var("QUORP_CHAT_BASE_URL");
+            std::env::remove_var("QUORP_NVIDIA_BASE_URL");
+        },
+    }
     match launch.prompt_compaction_policy {
         Some(policy) => unsafe {
             std::env::set_var("QUORP_PROMPT_COMPACTION_POLICY", policy.as_str());
@@ -726,17 +1198,6 @@ fn apply_session_env_overrides(launch: &SessionLaunchConfig) {
             std::env::remove_var("QUORP_PROMPT_COMPACTION_POLICY");
         },
     }
-}
-
-fn run_ssd_doctor() -> anyhow::Result<()> {
-    let model = crate::quorp::tui::model_registry::get_saved_model().ok_or_else(|| {
-        anyhow::anyhow!("shared SSD-MOE broker did not return any runnable models")
-    })?;
-    println!(
-        "{}",
-        crate::quorp::tui::ssd_moe_tui::SsdMoeManager::doctor_report(&model)
-    );
-    Ok(())
 }
 
 fn run_mem_analyze() -> anyhow::Result<()> {
@@ -761,7 +1222,7 @@ fn default_workspace_root() -> PathBuf {
 
 fn default_benchmark_briefing_file() -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../docs/qwen3-coder-30b-a3b-ssd-moe-benchmark.md")
+        .join("../../docs/src/development/quorp-tui-leaning-plan.md")
 }
 
 fn initial_workspace_root(paths_or_urls: &[String]) -> PathBuf {
@@ -802,7 +1263,9 @@ struct SessionLaunchConfig {
     workspace_root: PathBuf,
     provider: Option<crate::quorp::executor::InteractiveProviderKind>,
     model: Option<String>,
+    base_url: Option<String>,
     prompt_compaction_policy: Option<quorp_agent_core::PromptCompactionPolicy>,
+    initial_prompt: Option<String>,
 }
 
 impl SessionLaunchConfig {
@@ -810,13 +1273,16 @@ impl SessionLaunchConfig {
         workspace: PathBuf,
         provider: Option<crate::quorp::executor::InteractiveProviderKind>,
         model: Option<String>,
+        base_url: Option<String>,
         prompt_compaction_policy: Option<quorp_agent_core::PromptCompactionPolicy>,
     ) -> Self {
         Self {
             workspace_root: initial_workspace_root(&[workspace.display().to_string()]),
             provider,
             model: model.filter(|value| !value.trim().is_empty()),
+            base_url: base_url.filter(|value| !value.trim().is_empty()),
             prompt_compaction_policy,
+            initial_prompt: None,
         }
     }
 
@@ -824,13 +1290,37 @@ impl SessionLaunchConfig {
         paths_or_urls: Vec<String>,
         prompt_compaction_policy: Option<quorp_agent_core::PromptCompactionPolicy>,
     ) -> Self {
+        let workspace_root = initial_workspace_root(&paths_or_urls);
+        let initial_prompt = inline_prompt_from_args(&paths_or_urls, &workspace_root);
+        let provider = default_provider_for_workspace(&workspace_root).ok();
+        let model = provider
+            .and_then(|provider| default_model_for_workspace(&workspace_root, provider).ok());
+        let base_url = provider
+            .and_then(|provider| default_base_url_for_workspace(&workspace_root, provider).ok())
+            .flatten();
         Self {
-            workspace_root: initial_workspace_root(&paths_or_urls),
-            provider: None,
-            model: None,
+            workspace_root,
+            provider,
+            model,
+            base_url,
             prompt_compaction_policy,
+            initial_prompt,
         }
     }
+}
+
+fn inline_prompt_from_args(args: &[String], workspace_root: &Path) -> Option<String> {
+    if args.is_empty() {
+        return None;
+    }
+    if args.len() == 1 {
+        let candidate = Path::new(&args[0]);
+        if candidate.exists() {
+            return None;
+        }
+    }
+    let prompt = args.join(" ");
+    (!prompt.trim().is_empty() && workspace_root.exists()).then_some(prompt)
 }
 
 #[derive(Parser, Debug)]
@@ -845,7 +1335,8 @@ struct CliArgs {
 
 #[derive(Subcommand, Debug)]
 enum Command {
-    SsdDoctor,
+    Doctor,
+    Exec(ExecArgs),
     MemAnalyze,
     MemLogPath,
     Session(SessionArgs),
@@ -864,18 +1355,50 @@ enum Command {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
+pub enum CliSandboxMode {
+    Host,
+    TmpCopy,
+}
+
+impl From<CliSandboxMode> for quorp_core::SandboxMode {
+    fn from(value: CliSandboxMode) -> Self {
+        match value {
+            CliSandboxMode::Host => Self::Host,
+            CliSandboxMode::TmpCopy => Self::TmpCopy,
+        }
+    }
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ExecArgs {
+    task: String,
+    #[arg(long)]
+    workspace: Option<PathBuf>,
+    #[arg(long)]
+    result_dir: Option<PathBuf>,
+    #[arg(long)]
+    base_url: Option<String>,
+    #[arg(long, default_value_t = 12)]
+    max_steps: usize,
+    #[arg(long, default_value_t = 3600)]
+    max_seconds: u64,
+    #[arg(long)]
+    max_total_tokens: Option<u64>,
+    #[arg(long, value_enum)]
+    sandbox: Option<CliSandboxMode>,
+    #[arg(long, default_value_t = true)]
+    keep_sandbox: bool,
+    #[arg(long, default_value = "autonomous_host")]
+    autonomy_profile: String,
+}
+
 #[derive(ClapArgs, Debug)]
 pub struct SessionArgs {
     #[arg(long)]
     workspace: Option<PathBuf>,
-    #[arg(long, value_enum)]
-    provider: Option<crate::quorp::executor::InteractiveProviderKind>,
-    #[arg(long)]
-    model: Option<String>,
     #[arg(long)]
     prompt_compaction_policy: Option<String>,
-    #[command(flatten)]
-    docker: crate::quorp::docker::DockerArgs,
 }
 
 #[allow(clippy::large_enum_variant)]
@@ -913,15 +1436,7 @@ pub struct AgentRunArgs {
     #[arg(long, default_value = "README.md")]
     objective_file: String,
     #[arg(long)]
-    model: String,
-    #[arg(long, value_enum, default_value = "native")]
-    executor: crate::quorp::executor::QuorpExecutor,
-    #[arg(long)]
     base_url: Option<String>,
-    #[arg(long, value_enum, default_value = "fresh")]
-    codex_session_mode: crate::quorp::executor::CodexSessionMode,
-    #[arg(long)]
-    codex_session_id: Option<String>,
     #[arg(long, default_value_t = 12)]
     max_steps: usize,
     #[arg(long, default_value_t = 3600)]
@@ -932,8 +1447,6 @@ pub struct AgentRunArgs {
     result_dir: PathBuf,
     #[arg(long, default_value = "autonomous_host")]
     autonomy_profile: String,
-    #[command(flatten)]
-    docker: crate::quorp::docker::DockerArgs,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -950,18 +1463,8 @@ pub struct RunArgs {
     condition: Option<String>,
     #[arg(long)]
     objective_file: Option<PathBuf>,
-    #[arg(long, value_enum)]
-    provider: Option<crate::quorp::executor::InteractiveProviderKind>,
-    #[arg(long)]
-    model: Option<String>,
-    #[arg(long, value_enum, default_value = "native")]
-    executor: crate::quorp::executor::QuorpExecutor,
     #[arg(long)]
     base_url: Option<String>,
-    #[arg(long, value_enum, default_value = "fresh")]
-    codex_session_mode: crate::quorp::executor::CodexSessionMode,
-    #[arg(long)]
-    codex_session_id: Option<String>,
     #[arg(long, default_value_t = 12)]
     max_steps: usize,
     #[arg(long, default_value_t = 3600)]
@@ -972,10 +1475,12 @@ pub struct RunArgs {
     max_total_tokens: Option<u64>,
     #[arg(long)]
     result_dir: Option<PathBuf>,
+    #[arg(long, value_enum)]
+    sandbox: Option<CliSandboxMode>,
+    #[arg(long, default_value_t = false)]
+    keep_sandbox: bool,
     #[arg(long, default_value = "autonomous_host")]
     autonomy_profile: String,
-    #[command(flatten)]
-    docker: crate::quorp::docker::DockerArgs,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -1014,10 +1519,6 @@ pub struct DiagnosticsSummarizeArgs {
 pub struct BenchmarkRunArgs {
     #[arg(long)]
     path: PathBuf,
-    #[arg(long, value_enum, default_value = "codex")]
-    executor: crate::quorp::benchmark::BenchmarkExecutor,
-    #[arg(long)]
-    model: Option<String>,
     #[arg(long)]
     base_url: Option<String>,
     #[arg(long, default_value_os_t = default_benchmark_briefing_file())]
@@ -1038,24 +1539,20 @@ pub struct BenchmarkRunArgs {
     result_dir: PathBuf,
     #[arg(long, default_value = "autonomous_host")]
     autonomy_profile: String,
-    #[arg(long, default_value_t = false)]
-    allow_heavy_local_model: bool,
     #[arg(long)]
     condition: Option<String>,
     #[arg(long, default_value_t = false)]
     keep_sandbox: bool,
+    #[arg(long, value_enum, default_value = "tmp-copy")]
+    sandbox: CliSandboxMode,
     #[arg(long)]
     log_file: Option<PathBuf>,
-    #[command(flatten)]
-    docker: crate::quorp::docker::DockerArgs,
 }
 
 #[derive(ClapArgs, Debug)]
 pub struct BenchmarkResumeArgs {
     #[arg(long)]
     result_dir: PathBuf,
-    #[command(flatten)]
-    docker: crate::quorp::docker::DockerArgs,
 }
 
 #[derive(ClapArgs, Debug)]
@@ -1076,10 +1573,6 @@ pub struct BenchmarkPromptArgs {
     path: PathBuf,
     #[arg(long)]
     workspace_dir: PathBuf,
-    #[arg(long, value_enum, default_value = "codex")]
-    executor: crate::quorp::benchmark::BenchmarkExecutor,
-    #[arg(long)]
-    model: Option<String>,
     #[arg(long, default_value_os_t = default_benchmark_briefing_file())]
     briefing_file: PathBuf,
     #[arg(long)]
@@ -1100,10 +1593,6 @@ pub struct BenchmarkBatchArgs {
     cases_root: PathBuf,
     #[arg(long)]
     result_dir: PathBuf,
-    #[arg(long, value_enum, default_value = "codex")]
-    executor: crate::quorp::benchmark::BenchmarkExecutor,
-    #[arg(long)]
-    model: Option<String>,
     #[arg(long)]
     base_url: Option<String>,
     #[arg(long, default_value_os_t = default_benchmark_briefing_file())]
@@ -1122,16 +1611,14 @@ pub struct BenchmarkBatchArgs {
     max_attempts: Option<usize>,
     #[arg(long, default_value = "autonomous_host")]
     autonomy_profile: String,
-    #[arg(long, default_value_t = false)]
-    allow_heavy_local_model: bool,
     #[arg(long)]
     condition: Option<String>,
     #[arg(long, default_value_t = false)]
     keep_sandbox: bool,
+    #[arg(long, value_enum, default_value = "tmp-copy")]
+    sandbox: CliSandboxMode,
     #[arg(long)]
     log_dir: Option<PathBuf>,
-    #[command(flatten)]
-    docker: crate::quorp::docker::DockerArgs,
 }
 
 #[cfg(test)]
@@ -1146,7 +1633,7 @@ mod tests {
 
         let shorthand =
             SessionLaunchConfig::from_paths_or_urls(vec![challenge.display().to_string()], None);
-        let explicit = SessionLaunchConfig::from_workspace(challenge, None, None, None);
+        let explicit = SessionLaunchConfig::from_workspace(challenge, None, None, None, None);
 
         assert_eq!(shorthand.workspace_root, explicit.workspace_root);
     }

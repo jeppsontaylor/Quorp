@@ -198,23 +198,6 @@ pub fn default_run_result_dir(workspace: &Path, scope: &str) -> PathBuf {
         ))
 }
 
-pub fn prepare_workspace_run_sandbox(
-    source_workspace: &Path,
-    result_dir: &Path,
-) -> anyhow::Result<ResolvedWorkspaceObjective> {
-    let sandbox_workspace = result_dir.join("workspace");
-    if sandbox_workspace.exists() {
-        fs::remove_dir_all(&sandbox_workspace).with_context(|| {
-            format!(
-                "failed to clean sandbox workspace {}",
-                sandbox_workspace.display()
-            )
-        })?;
-    }
-    copy_dir_recursive(source_workspace, &sandbox_workspace)?;
-    resolve_workspace_objective(&sandbox_workspace, None)
-}
-
 pub fn latest_run_dir(scope: Option<&str>) -> anyhow::Result<Option<LatestRunInfo>> {
     let runs_root = diagnostics_paths().logs_dir.join("runs");
     if !runs_root.exists() {
@@ -292,7 +275,6 @@ pub fn snapshot_logs(result_dir: &Path, app_run_id: Option<&str>) -> anyhow::Res
     let provider = crate::quorp::provider_config::env_value("QUORP_PROVIDER");
     let model = crate::quorp::provider_config::resolved_model_env();
     let executor = std::env::var("QUORP_EXECUTOR").ok();
-    let ollama_host = std::env::var("QUORP_OLLAMA_HOST").ok();
     write_json(
         &log_snapshot_dir.join("system.json"),
         &serde_json::json!({
@@ -304,8 +286,7 @@ pub fn snapshot_logs(result_dir: &Path, app_run_id: Option<&str>) -> anyhow::Res
             "provider": provider,
             "model": model,
             "executor": executor,
-            "ollama_host": ollama_host,
-            "runtime": crate::quorp::docker::runtime_metadata_json(),
+            "runtime": {"mode": "native"},
         }),
     )?;
     Ok(())
@@ -435,7 +416,7 @@ pub fn summarize_run_dir(run_dir: &Path) -> anyhow::Result<String> {
         lines.push(format!("Effective model: {effective_model}"));
     }
     if routing
-        .get("used_local_fallback")
+        .get("used_fallback")
         .and_then(Value::as_bool)
         .unwrap_or(false)
     {
@@ -443,14 +424,15 @@ pub fn summarize_run_dir(run_dir: &Path) -> anyhow::Result<String> {
             .get("fallback_reason")
             .and_then(Value::as_str)
             .unwrap_or("unknown");
-        lines.push(format!("Local fallback: yes ({reason})"));
+        lines.push(format!("Fallback: yes ({reason})"));
     }
-    if let Some(runtime) = metadata
+    if let Some(mode) = metadata
         .get("runtime")
         .or_else(|| request.get("runtime"))
-        .and_then(crate::quorp::docker::runtime_metadata_summary_from_value)
+        .and_then(|value| value.get("mode"))
+        .and_then(Value::as_str)
     {
-        lines.push(format!("Runtime: {runtime}"));
+        lines.push(format!("Runtime: {mode}"));
     }
     if let Some(first_edit) = first_edit {
         lines.push(format!("First edit: {first_edit}"));
@@ -1148,8 +1130,8 @@ mod tests {
             &serde_json::json!({
                 "objective_file": "START_HERE.md",
                 "evaluate_command": "./evaluate.sh",
-                "provider": "ollama",
-                "model_id": "ollama/qwen2.5-coder:32b",
+                "provider": "nvidia",
+                "model_id": "nvidia/qwen/qwen3-coder-480b-a35b-instruct",
                 "logical_success": false,
                 "process_exit_code": 0,
                 "evaluation_passed": false,

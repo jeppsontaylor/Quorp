@@ -1,0 +1,1290 @@
+My strongest recommendation: **do not build “a chat IDE.” Build a Rust-native Agentic Development OS where Qwen3-Coder is the code-generation brain, but the IDE owns context, memory, verification, tool orchestration, rollback, and learning.** The model should never be responsible for remembering everything, reading everything, or deciding blindly from raw terminal output.
+
+Qwen3-Coder-480B-A35B-Instruct is a strong base for this because it is a 480B-parameter MoE model with 35B active parameters, native 262K context, tool-calling support, strong agentic-coding positioning, and FIM support for inline code completion. Its model card also says it is a **non-thinking** model, so the surrounding system should provide explicit planning, verification, self-critique, and memory scaffolding rather than relying on hidden reasoning alone. ([Hugging Face][1])
+
+Below is the architecture I would build.
+
+---
+
+# 1. The core thesis: the IDE is the intelligence layer
+
+The model is only one component. The “world’s greatest vibe coder” would be powerful because of the **agent-computer interface**, context engine, verifier stack, memory system, and patch engine around the model.
+
+Research on SWE-agent found that custom agent-computer interfaces substantially affect coding-agent performance, because agents need better affordances for navigating, editing, and testing software, not just a shell and a prompt. ([arXiv][2]) That is the most important design lesson.
+
+The IDE should have this architecture:
+
+```text
+User intent
+  ↓
+Intent/spec compiler
+  ↓
+Repo intelligence graph
+  ↓
+Context OS + memory router
+  ↓
+Qwen3-Coder planner / editor / reviewer
+  ↓
+Typed tool executor
+  ↓
+Patch engine
+  ↓
+Verification matrix
+  ↓
+Failure analysis + dynamic rules
+  ↓
+Memory update + eval harness
+```
+
+The product should feel like “vibe coding,” but internally it should behave like a paranoid senior engineer, build system, reviewer, test runner, security auditor, and memory manager working together.
+
+---
+
+# 2. Build a Context OS, not a bigger prompt
+
+Large context helps, but it does not solve the core problem. Long-context models can still underuse information placed in the middle of the prompt; the “Lost in the Middle” paper showed that performance often degrades when relevant information is buried in long contexts. ([arXiv][3])
+
+So the IDE needs a **Context OS** that decides what to include, what to exclude, where to place it, and how to compress it.
+
+## The Context OS should maintain a typed repo graph
+
+Every project should be indexed into a live graph:
+
+```text
+File
+Symbol
+Function
+Struct
+Trait
+Impl
+Module
+Crate
+Feature flag
+Test
+Benchmark
+Diagnostic
+Dependency
+Git commit
+Issue
+User instruction
+Past failed attempt
+Past successful fix
+```
+
+This graph should be built from:
+
+| Source              | Purpose                                                          |
+| ------------------- | ---------------------------------------------------------------- |
+| `rust-analyzer`     | semantic symbols, references, diagnostics, completion, refactors |
+| Tree-sitter         | fast incremental syntax trees                                    |
+| Cargo metadata      | workspace/crate/feature graph                                    |
+| Git history         | change frequency, ownership, bug-prone files                     |
+| Test results        | behavioral evidence                                              |
+| Terminal logs       | failure fingerprints                                             |
+| Embeddings          | fuzzy semantic search                                            |
+| Full-text search    | exact search over identifiers, errors, docs                      |
+| User/project memory | preferences, conventions, architecture decisions                 |
+
+Tree-sitter is especially useful because it supports incremental parsing and can update syntax trees efficiently as code changes. ([Tree-sitter][4]) Tantivy is a good Rust-native full-text search engine for exact code/documentation search. ([GitHub][5]) Qdrant is a strong option for vector and hybrid retrieval, including dense/sparse vectors, payload filtering, HNSW indexing, Rust clients, and strict-mode controls to avoid inefficient retrieval patterns. ([Qdrant][6])
+
+The goal is: **never ask Qwen to search the repo manually when the IDE can localize the relevant code precisely.**
+
+---
+
+# 3. Give the model evidence packs, not raw files
+
+For each task, the Context OS should produce an **Evidence Pack**:
+
+```yaml
+task:
+  user_goal: "Add streaming support to the API client"
+  acceptance_criteria:
+    - "Existing sync API still works"
+    - "New stream API yields chunks"
+    - "No new unsafe code"
+    - "Tests pass under selected feature flags"
+
+repo_capsule:
+  architecture_summary: ...
+  relevant_crates: ...
+  active_features: ...
+  known_constraints: ...
+
+relevant_symbols:
+  - symbol: ApiClient::send
+    file: crates/client/src/lib.rs
+    reason: "Existing non-streaming request path"
+    snippet: ...
+  - symbol: ResponseStream
+    file: crates/client/src/stream.rs
+    reason: "Likely extension point"
+    snippet: ...
+
+diagnostics:
+  current_rustc_errors: []
+  current_clippy_errors: []
+
+tests:
+  likely_tests:
+    - crates/client/tests/api.rs
+    - crates/client/tests/stream.rs
+
+memory:
+  project_rules:
+    - "Do not introduce blocking calls in async code"
+    - "Use thiserror for public error enums"
+  past_failures:
+    - "Previously forgot to enable tokio stream feature"
+```
+
+This is much better than dumping 100K tokens of source code. The model should see **targeted, provenance-tagged context**.
+
+Every snippet should include:
+
+```text
+file path
+line range
+symbol name
+why it was retrieved
+freshness
+confidence
+dependencies
+related tests
+```
+
+This enables the model to make smaller, safer changes.
+
+---
+
+# 4. RTK should become a first-class internal subsystem
+
+I would integrate RTK-style token compression deeply. RTK, assuming you mean Rust Token Killer, is a Rust CLI proxy that compresses noisy command output for coding agents; its docs claim 60–90% token savings on common dev commands, and the site advertises about 89% average noise removed. It also keeps full raw output available after failures so the agent can inspect it without rerunning the command. ([GitHub][7])
+
+But I would not merely call `rtk cargo test`. I would build **RTK++ inside the IDE**.
+
+## RTK++ terminal output schema
+
+Every command should produce both raw logs and a compact structured result:
+
+```json
+{
+  "command": "cargo test -p client",
+  "status": "failed",
+  "duration_ms": 18422,
+  "changed_since_last_run": true,
+  "summary": "2 tests failed in stream parser",
+  "failures": [
+    {
+      "test": "stream_chunks_are_ordered",
+      "file": "crates/client/tests/stream.rs",
+      "line": 88,
+      "error_type": "assertion_failure",
+      "expected": "[A, B, C]",
+      "actual": "[A, C, B]",
+      "likely_cause": "nondeterministic chunk ordering"
+    }
+  ],
+  "compiler_errors": [],
+  "warnings": [],
+  "next_best_actions": [
+    "Inspect ResponseStream::poll_next",
+    "Check ordering guarantees in stream buffer"
+  ],
+  "raw_log_ref": "log://session/8934/cargo-test-client"
+}
+```
+
+The model sees the compact schema by default. It only opens the raw log when necessary.
+
+This is one of the biggest performance wins because coding agents waste huge token budgets reading unfiltered `cargo test`, stack traces, build logs, dependency warnings, and repeated compiler messages.
+
+---
+
+# 5. Rust-native verification should be the superpower
+
+For Rust, the IDE should have a **Verification Matrix**. The agent should not merely “write code.” It should choose the cheapest verifier that can invalidate a bad idea.
+
+| Verifier                    | What it catches                       | When to run                       |
+| --------------------------- | ------------------------------------- | --------------------------------- |
+| `cargo check`               | type errors, borrow checker errors    | constantly                        |
+| `rust-analyzer` diagnostics | semantic/editor-level issues          | live                              |
+| `cargo fmt`                 | formatting drift                      | before patches                    |
+| `cargo clippy`              | idiom, mistakes, suspicious code      | before finalizing                 |
+| `cargo nextest`             | fast test execution                   | most test runs                    |
+| `cargo test`                | compatibility fallback                | final verification                |
+| Miri                        | undefined behavior, unsafe issues     | unsafe/concurrency-sensitive code |
+| Kani                        | model checking for critical functions | high-assurance code               |
+| Loom/Shuttle-style testing  | concurrency interleavings             | async/concurrency code            |
+| `cargo fuzz`                | parser/protocol/input handling        | risky input boundaries            |
+| `cargo mutants`             | weak tests                            | test-quality audit                |
+| `cargo deny` / audit        | license/security/dependency policy    | dependency changes                |
+| `cargo semver-checks`       | public API breakage                   | libraries/crates                  |
+
+Rust-analyzer provides the semantic IDE layer for features such as completion, go-to-definition, references, refactorings, formatting, and diagnostics. ([GitHub][8]) Clippy has hundreds of lints for catching mistakes and improving Rust code quality. ([Rust Documentation][9]) Miri can run Rust tests and detect classes of undefined behavior, especially in unsafe code. ([GitHub][10]) Cargo-nextest is useful because it can run Rust tests faster than standard `cargo test` in many situations and provides better isolation/reporting. ([Nexte][11])
+
+For high-assurance Rust, Kani is an open-source model checker for Rust that can check safety and correctness properties. ([Model Checking][12]) Loom and Shuttle are valuable for concurrency testing: Loom explores possible concurrent executions, while Shuttle focuses on randomized concurrency testing that scales to larger cases. ([Docs.rs][13])
+
+The key idea: **the agent should use verifiers as thinking tools.** The model should not guess whether a borrow-checker fix works; it should run the cheapest check and learn from the actual diagnostic.
+
+---
+
+# 6. Build a Rust Borrow Doctor
+
+A killer Rust-specific feature would be a **Borrow Doctor**: a subsystem that specializes in Rust compiler diagnostics, lifetimes, ownership, trait bounds, async borrow issues, `Send`/`Sync`, pinning, and unsafe boundaries.
+
+It should take this:
+
+```text
+error[E0502]: cannot borrow `x` as mutable because it is also borrowed as immutable
+```
+
+And produce this:
+
+```yaml
+borrow_error:
+  kind: mutable_aliasing_conflict
+  immutable_borrow:
+    file: src/cache.rs
+    line: 42
+    symbol: cached
+  mutable_borrow:
+    file: src/cache.rs
+    line: 49
+    symbol: self.entries
+  lifetime_span:
+    starts: line 42
+    ends: line 53
+  safe_fix_candidates:
+    - "Limit immutable borrow scope with inner block"
+    - "Clone key before mutation"
+    - "Use entry API"
+    - "Split struct fields"
+  anti_fixes:
+    - "Do not add unsafe"
+    - "Do not wrap everything in Arc<Mutex<_>> without need"
+```
+
+This would massively reduce common Rust-agent mistakes:
+
+| Common agent mistake              | Borrow Doctor antidote                   |
+| --------------------------------- | ---------------------------------------- |
+| Adds `.clone()` everywhere        | Suggest minimal clone or scope reduction |
+| Wraps too much in `Arc<Mutex<_>>` | Detect unnecessary synchronization       |
+| Fights lifetimes with `'static`   | Explain actual lifetime span             |
+| Uses unsafe to bypass compiler    | Block unsafe unless explicitly justified |
+| Breaks async `Send`               | Trace non-`Send` values across `.await`  |
+| Changes public API unnecessarily  | Check semver and downstream call sites   |
+
+This can be mostly deterministic. Use `rustc --message-format=json`, rust-analyzer diagnostics, MIR-like reasoning where available, and a library of known diagnostic patterns.
+
+---
+
+# 7. Build a “Compiler for Agent Work”
+
+Most coding agents are inefficient because they perform work serially:
+
+```text
+think → search → think → read → think → edit → think → test
+```
+
+Instead, build an agent-work compiler that turns a task into a DAG:
+
+```text
+                ┌─ search symbols
+User request ───┼─ inspect tests
+                ├─ inspect Cargo features
+                ├─ check recent failures
+                └─ retrieve project rules
+                         ↓
+                  synthesize plan
+                         ↓
+               create isolated worktree
+                         ↓
+           edit + generate tests + run checks
+                         ↓
+             compare alternatives / finalize
+```
+
+LLMCompiler-style research is relevant here because it explores parallel function-calling by identifying which tool calls are independent versus dependent. ([GitHub][14])
+
+The IDE should run independent retrieval, diagnostics, dependency inspection, and test discovery in parallel. The model only receives the synthesized result.
+
+That saves both time and tokens.
+
+---
+
+# 8. Use worktree swarms for hard tasks
+
+For difficult changes, create multiple isolated Git worktrees:
+
+```text
+worktree A: minimal patch
+worktree B: larger refactor
+worktree C: test-first implementation
+worktree D: dependency-based solution
+```
+
+Each worktree gets a constrained budget. The IDE runs the verification matrix on each and chooses the best candidate using objective signals:
+
+```yaml
+candidate_score:
+  tests_pass: true
+  clippy_pass: true
+  diff_size: 42 lines
+  public_api_breakage: false
+  new_dependencies: 0
+  unsafe_added: false
+  performance_risk: low
+  maintainability_score: high
+```
+
+The final model call should compare candidates using evidence, not vibes.
+
+For very hard planning, use a lightweight LATS/MCTS-style search. LATS combines language-model planning with tree search, value estimates, self-reflection, and external environment feedback. ([arXiv][15]) You do not need to run this on every task; reserve it for ambiguous, high-risk, or repeatedly failing tasks.
+
+---
+
+# 9. Dynamic rules: learn from mistakes without changing the model
+
+The user specifically asked for “learning in realtime from mistakes” despite a static model API. The right mechanism is a **dynamic rule system** backed by evidence.
+
+Do not trust pure self-reflection. Research on self-correction is mixed; surveys emphasize that reliable external feedback is crucial, and self-correction without external feedback can fail or even degrade outputs. ([arXiv][16])
+
+So the IDE should only create a rule when there is evidence:
+
+```yaml
+lesson:
+  id: rust_async_mutex_await_001
+  scope: project
+  trigger:
+    - "async function"
+    - "std::sync::MutexGuard"
+    - ".await"
+  mistake:
+    "Held std::sync::MutexGuard across await, making future non-Send."
+  evidence:
+    compiler_error: "future cannot be sent between threads safely"
+    failed_commit: "abc123"
+    fixed_commit: "def456"
+  rule:
+    "In async code, avoid holding std::sync::MutexGuard across .await. Prefer dropping guard before await or use tokio::sync::Mutex when appropriate."
+  confidence: 0.93
+  expires_if:
+    - "dependency architecture changes"
+  retrieval_policy:
+    include_when:
+      - "async"
+      - "Mutex"
+      - "Send"
+```
+
+## Rule types
+
+| Rule type              | Example                                                                  |
+| ---------------------- | ------------------------------------------------------------------------ |
+| Project convention     | “Use `anyhow` only in binaries, not library crates.”                     |
+| Architecture invariant | “Database writes go through `Repository`, never direct SQL in handlers.” |
+| Failure fingerprint    | “This test fails when stream chunk order is nondeterministic.”           |
+| Rust-specific rule     | “Do not hold lock guards across `.await`.”                               |
+| Security rule          | “No secrets in config snapshots.”                                        |
+| Dependency rule        | “Avoid adding crates unless already approved.”                           |
+| User preference        | “Prefer minimal diffs over broad refactors.”                             |
+| Anti-pattern           | “Do not fix borrow errors by adding broad clones.”                       |
+
+The rule system should have decay, confidence, provenance, and scope. Bad memory is worse than no memory.
+
+---
+
+# 10. Near-infinite memory: use tiers, not one giant store
+
+MemGPT-style memory systems are relevant because they treat context as a virtual memory problem with multiple storage tiers, rather than trying to put everything into the prompt. ([arXiv][17])
+
+The IDE should have these memory tiers:
+
+| Tier                 |     Lifespan | Contents                                                  |
+| -------------------- | -----------: | --------------------------------------------------------- |
+| Working memory       | current task | active goal, current plan, open files, latest diagnostics |
+| Session memory       |        hours | attempted fixes, commands run, failed hypotheses          |
+| Episodic memory      | weeks/months | previous bugs, user corrections, successful patches       |
+| Semantic repo memory |      durable | architecture, APIs, modules, invariants                   |
+| Procedural memory    |      durable | reusable workflows, debugging recipes, tool macros        |
+| Negative memory      |      durable | things that failed and should not be retried              |
+| User/team memory     |      durable | preferences, style, review rules                          |
+| External memory      |     optional | docs, issues, PRs, CI, production logs                    |
+
+The key is retrieval discipline. The model should not see “all memory.” It should see only the few memories that match the active task, with source and confidence.
+
+Example memory retrieval:
+
+```yaml
+retrieved_memories:
+  - type: project_rule
+    relevance: 0.97
+    rule: "Do not add blocking filesystem calls inside async handlers."
+    evidence: "User rejected PR #148 for this reason."
+  - type: failure_fingerprint
+    relevance: 0.88
+    rule: "When changing parser combinators, run fuzz target `parse_frames`."
+    evidence: "Bug fixed in commit 9b17e2."
+```
+
+---
+
+# 11. Use agentic RAG, not static RAG
+
+Normal RAG retrieves documents once. Agentic RAG retrieves, checks, refines, and sometimes changes strategy. Surveys of agentic RAG describe systems that use planning, reflection, tool use, and multi-agent collaboration to dynamically manage retrieval and context. ([arXiv][18])
+
+For this IDE, agentic RAG should ask:
+
+```text
+What am I trying to change?
+Which symbols define that behavior?
+Which tests assert it?
+Which past failures resemble this?
+Which docs/API contracts are authoritative?
+Which retrieved items conflict?
+What evidence is stale?
+```
+
+The Context OS should support hybrid retrieval:
+
+1. Exact symbol search.
+2. Call graph expansion.
+3. Test-to-code mapping.
+4. Embedding search.
+5. Git history search.
+6. Diagnostic/error fingerprint search.
+7. Dependency/API docs retrieval.
+8. Memory retrieval.
+
+This produces much better results than “search embeddings for the user’s sentence.”
+
+---
+
+# 12. Tool layer: expose tools as typed capabilities, not shell strings
+
+The agent should not freely type arbitrary shell commands unless needed. It should call typed tools:
+
+```rust
+enum Tool {
+    SearchSymbols(SearchSymbolsArgs),
+    ReadSpan(ReadSpanArgs),
+    ExplainDiagnostic(DiagnosticArgs),
+    ApplyPatch(PatchArgs),
+    RunCargoCheck(CargoCheckArgs),
+    RunTargetedTests(TestArgs),
+    QueryMemory(MemoryQuery),
+    CreateWorktree(WorktreeArgs),
+    CompareCandidates(CompareArgs),
+}
+```
+
+This reduces mistakes, improves logging, enables permissions, and makes results compressible.
+
+MCP is useful here as a plugin interface. The Model Context Protocol standardizes how LLM applications connect to external data and tools, including resources, prompts, and tools, with explicit security principles around user consent, data privacy, and tool safety. ([Model Context Protocol][19])
+
+But I would wrap MCP tools in a permissioned Rust sandbox. The IDE should classify tools by risk:
+
+| Risk           | Examples                     | Policy                  |
+| -------------- | ---------------------------- | ----------------------- |
+| Safe read      | symbol search, docs lookup   | automatic               |
+| Local write    | apply patch, format file     | automatic with rollback |
+| Build/test     | cargo check/test             | automatic               |
+| Network        | fetch docs, package metadata | ask or policy-gated     |
+| Destructive    | delete files, migrations     | explicit confirmation   |
+| Secret-bearing | env vars, deploy logs        | redacted by default     |
+
+---
+
+# 13. Common coding-agent failures and the antidotes
+
+| Agent failure               | Why it happens                    | IDE antidote                                         |
+| --------------------------- | --------------------------------- | ---------------------------------------------------- |
+| Reads too much context      | Agent does not know what matters  | Context OS with typed evidence packs                 |
+| Misses relevant files       | Weak repo localization            | symbol graph + call graph + test map                 |
+| Hallucinates APIs           | Model relies on memory            | live rust-analyzer signatures and docs retrieval     |
+| Makes giant diffs           | No patch discipline               | diff budget, minimality checker                      |
+| Repeats failed fixes        | No negative memory                | failure fingerprint DB                               |
+| Ignores tests               | Tests are expensive/noisy         | nextest + targeted test selection + RTK++            |
+| Believes own self-critique  | No external signal                | evidence-only rule learning                          |
+| Fixes symptom not cause     | Poor failure analysis             | root-cause classifier                                |
+| Breaks public API           | Does not check downstream effects | semver checker and public API guard                  |
+| Adds bad dependency         | Convenience bias                  | dependency governor + cargo-deny                     |
+| Misuses unsafe              | Shortcut around compiler          | unsafe gate + Miri/Kani audit                        |
+| Fights borrow checker badly | Rust-specific weakness            | Borrow Doctor                                        |
+| Fails on async Rust         | `Send`, lock, lifetime issues     | async hazard detector                                |
+| Overwrites user work        | Poor state tracking               | worktrees, dirty-file guard, rollback                |
+| Gets lost in long sessions  | No task ledger                    | state machine + progress invariants                  |
+| Wastes tokens on logs       | Terminal spam                     | RTK++ structured summaries                           |
+| Makes security mistakes     | Untrusted inputs/context          | sandbox, prompt-injection firewall, secret redaction |
+
+---
+
+# 14. The patch engine should be AST-aware
+
+Many agents edit text too loosely. The IDE should prefer structured edits:
+
+```text
+rename symbol
+insert impl block
+add match arm
+modify function body
+add test module
+change Cargo feature
+update error enum
+```
+
+Use text patches only as a fallback. The patch engine should verify:
+
+```yaml
+patch_checks:
+  parses: true
+  rustfmt_passes: true
+  symbol_still_exists: true
+  no_unrelated_files_changed: true
+  public_api_delta: acceptable
+  unsafe_delta: none
+  dependency_delta: none
+```
+
+The ideal flow:
+
+```text
+Model proposes semantic edit
+  ↓
+Patch engine applies AST-aware transformation
+  ↓
+rustfmt
+  ↓
+cargo check
+  ↓
+diagnostic compression
+  ↓
+model receives only relevant failures
+```
+
+This dramatically reduces syntax errors and accidental broad edits.
+
+---
+
+# 15. Add a Spec Compiler before coding starts
+
+A huge number of coding-agent failures happen because the agent starts coding before the task is specified.
+
+The IDE should convert user intent into a compact spec:
+
+```yaml
+goal: "Add retry support to API client"
+non_goals:
+  - "Do not change server API"
+  - "Do not add a new HTTP client crate"
+acceptance_tests:
+  - "Retries idempotent GET on 503"
+  - "Does not retry POST unless explicitly configured"
+  - "Backoff is configurable"
+constraints:
+  - "No new unsafe"
+  - "No public breaking changes"
+  - "Preserve existing timeout behavior"
+uncertainties:
+  - "Should retries include network timeouts?"
+```
+
+The model can ask a clarifying question only when necessary. Otherwise, the IDE should infer a default and record it:
+
+```yaml
+assumption:
+  "Network timeouts are retryable because existing error enum groups them with transient transport errors."
+```
+
+This makes the agent accountable.
+
+---
+
+# 16. Build a Test Oracle Generator
+
+The IDE should generate tests before or alongside implementation. Not just unit tests: **oracles**.
+
+Examples:
+
+```text
+Golden tests
+Property tests
+Snapshot tests
+Fuzz harnesses
+Mutation-test probes
+Regression tests
+Concurrency schedule tests
+API compatibility tests
+```
+
+For Rust specifically:
+
+| Situation                  | Test strategy                    |
+| -------------------------- | -------------------------------- |
+| Parser/input handling      | fuzz + property tests            |
+| Async/concurrent code      | Loom/Shuttle-style interleavings |
+| Unsafe code                | Miri + Kani harnesses            |
+| Public crate API           | semver checks                    |
+| Performance-sensitive path | criterion benchmark guard        |
+| Bug fix                    | regression test first            |
+| Error handling             | exhaustive enum/path tests       |
+
+Cargo-fuzz is a Rust wrapper around libFuzzer and is useful for fuzzing Rust code. ([GitHub][20]) Cargo-mutants is valuable because mutation testing helps find bugs that existing tests do not catch. ([Cargo Mutants][21])
+
+The IDE should learn which tests are most predictive for each part of the repo.
+
+---
+
+# 17. Build a Failure Fingerprint Database
+
+Every failed run should be converted into a fingerprint:
+
+```yaml
+fingerprint:
+  kind: rustc_error
+  code: E0277
+  normalized_message: "trait bound {T}: {Trait} is not satisfied"
+  symbols:
+    - ApiClient
+    - RetryPolicy
+  likely_causes:
+    - "missing trait impl"
+    - "feature-gated dependency"
+    - "generic bound not propagated"
+  successful_fixes:
+    - commit: def456
+      strategy: "added bound to impl block, not struct definition"
+```
+
+This lets the IDE say:
+
+> “This looks like the same feature-gated trait-bound failure we saw last week. The successful fix was to enable `serde` on the internal crate, not to add a new dependency.”
+
+That is how a static model appears to learn.
+
+---
+
+# 18. Build an “Unsafe and Invariant Auditor”
+
+Rust agents often underestimate unsafe code. The IDE should maintain an unsafe graph:
+
+```text
+unsafe block
+  ↓
+raw pointer creation
+  ↓
+aliasing assumption
+  ↓
+lifetime assumption
+  ↓
+public safe API boundary
+  ↓
+tests/verifiers covering it
+```
+
+For every unsafe block, require:
+
+```yaml
+unsafe_contract:
+  invariant: ...
+  caller_obligations: ...
+  callee_guarantees: ...
+  miri_coverage: true
+  fuzz_coverage: true
+  kani_harness: optional
+```
+
+If the agent edits code near unsafe, the IDE should automatically raise the verification level.
+
+---
+
+# 19. Build a Dependency Governor
+
+Agents love adding dependencies. A great Rust IDE should make dependency changes deliberate.
+
+The Dependency Governor should check:
+
+```text
+Is a dependency really needed?
+Is it already in the workspace?
+Does it duplicate an existing crate?
+Does it increase compile time materially?
+Does it violate license policy?
+Does it have advisories?
+Does it change MSRV?
+Does it introduce default features accidentally?
+Does it bloat binary size?
+```
+
+Cargo-deny can help enforce advisories, bans, licenses, sources, and duplicate dependency checks. ([GitHub][22]) Cargo-semver-checks is useful for detecting semantic-versioning issues in Rust libraries. ([Rust Programming Language][23])
+
+A coding agent should not be allowed to casually add a crate just to avoid thinking.
+
+---
+
+# 20. Performance architecture: Rust everywhere it matters
+
+For the IDE itself, I would use Rust for the backend, indexing, tool execution, patching, memory, sandboxing, and terminal summarization.
+
+Good UI options:
+
+| Approach                   | Use when                                        |
+| -------------------------- | ----------------------------------------------- |
+| GPUI/custom native Rust UI | maximum performance/editor feel                 |
+| Tauri                      | want web frontend flexibility with Rust backend |
+| Zed-like architecture      | want Rust-native, GPU-accelerated editor design |
+
+Zed is a useful inspiration because it is a Rust editor built for multicore and GPU performance. ([Zed][24]) Tauri is useful if you want a small, fast cross-platform shell with a Rust backend and web frontend. ([Tauri][25]) GPUI is a Rust UI framework from the creators of Zed. ([Gpui][26])
+
+## Rust backend modules
+
+```text
+ide-core
+  editor state
+  file watching
+  project graph
+
+context-os
+  retrieval
+  ranking
+  token budgeting
+  evidence packs
+
+agent-runtime
+  planner
+  tool scheduler
+  model gateway
+  retries
+
+rtk-plus
+  terminal compression
+  log fingerprints
+  raw log storage
+
+patch-engine
+  AST edits
+  text patches
+  rollback
+  diff scoring
+
+verification
+  cargo check/test/nextest
+  clippy
+  miri
+  fuzz
+  semver
+  deny/audit
+
+memory
+  rules
+  lessons
+  vector index
+  episodic store
+
+sandbox
+  permissions
+  secrets redaction
+  network policy
+
+eval-lab
+  internal benchmarks
+  regression tasks
+  project-specific evals
+```
+
+Use `sccache` to reduce rebuild time; it caches compilation outputs locally or remotely to avoid unnecessary recompilation. ([GitHub][27])
+
+---
+
+# 21. Qwen-specific usage pattern
+
+Because Qwen3-Coder supports FIM, tool use, and large contexts, I would use it in multiple modes rather than one generic chat mode. ([Hugging Face][1])
+
+| Mode              | Context size | Temperature | Purpose                     |
+| ----------------- | -----------: | ----------: | --------------------------- |
+| Inline completion |         tiny |         low | fast FIM edits              |
+| Local explanation |        small |         low | explain selected code/error |
+| Patch mode        |       medium |  medium-low | make targeted code changes  |
+| Debug mode        |       medium |      medium | diagnose failed tests       |
+| Architecture mode |        large |      medium | plan/refactor               |
+| Reviewer mode     |       medium |         low | critique patch              |
+| Recovery mode     |       medium |         low | fix repeated failures       |
+
+The model card recommends sampling values such as temperature 0.7, top-p 0.8, top-k 20, repetition penalty 1.05, and up to 65,536 output tokens, but the IDE should impose much smaller default budgets for normal coding turns. ([Hugging Face][1])
+
+The prompt contract should force structured outputs:
+
+```yaml
+decision:
+  summary: ...
+  confidence: ...
+  required_tools: ...
+  edit_plan:
+    - file: ...
+      operation: ...
+      reason: ...
+  risks:
+    - ...
+  verification_plan:
+    - ...
+```
+
+Do not let the model ramble. Let tools gather evidence. Let the verifier judge.
+
+---
+
+# 22. Invented killer features
+
+## A. Context receipts
+
+Every AI change should come with a receipt:
+
+```yaml
+change:
+  file: src/client.rs
+  lines: 88-124
+  reason: "Add retry loop around transient transport errors"
+  supporting_evidence:
+    - "User requested retry support"
+    - "Existing Error::Transport is classified transient"
+    - "Test retry_get_on_503 added"
+  verified_by:
+    - cargo check
+    - cargo nextest -p client
+  memory_used:
+    - "No new HTTP client dependencies"
+```
+
+This prevents mysterious AI edits.
+
+## B. “Do-not-repeat” guard
+
+Before applying a patch, the IDE checks:
+
+```text
+Has this strategy failed before?
+Did the user reject this pattern?
+Did this exact diagnostic appear earlier?
+Did a previous patch add and then remove this code?
+```
+
+If yes, the agent must justify why this time is different.
+
+## C. Diff budget
+
+The IDE should compute an expected diff size. If the agent exceeds it, require escalation.
+
+```yaml
+expected_diff_budget: 80 lines
+actual_diff: 430 lines
+status: blocked
+reason: "Patch is 5.3x larger than expected and touches unrelated modules."
+```
+
+## D. Architecture invariant checker
+
+Users can define invariants:
+
+```yaml
+invariants:
+  - "Handlers may not access database pool directly."
+  - "Library crate may not depend on binary crate."
+  - "No blocking calls in async runtime."
+  - "No public API breakage without explicit approval."
+```
+
+The IDE turns these into static checks where possible.
+
+## E. “Compiler whisperer”
+
+A specialized Rust diagnostic interpreter that maps compiler errors to minimal edits.
+
+```text
+E0277 trait bound failure
+  → Find missing bound.
+  → Determine whether bound belongs on function, impl, struct, or trait.
+  → Check whether feature flag hides impl.
+  → Propose smallest valid fix.
+```
+
+## F. Project-specific evals
+
+Every repo gets its own mini benchmark:
+
+```text
+10 previous bugs
+10 common feature requests
+10 refactor tasks
+10 dependency-sensitive tasks
+10 style/convention tasks
+```
+
+The IDE runs these against new agent versions, prompt changes, and rule changes.
+
+SWE-bench is a useful external inspiration because it evaluates agents on real GitHub issues by requiring patches that resolve described problems. ([SWE-bench][28]) Terminal-Bench is useful for evaluating agents on realistic terminal tasks across software engineering, ML, security, data science, and related domains. ([Terminal-Bench][29])
+
+## G. Shadow reviewer
+
+A second model pass or same-model reviewer sees only:
+
+```text
+spec
+diff
+tests
+risks
+```
+
+It does **not** see the implementer’s full conversation. This reduces anchoring.
+
+## H. Semantic time travel
+
+The user can ask:
+
+```text
+“When did this invariant change?”
+“Why do we use this crate?”
+“What broke the last time we touched this module?”
+“What tests protect this behavior?”
+```
+
+The IDE answers from git history, memory, tests, and docs.
+
+## I. Tool hallucination firewall
+
+The model cannot claim it ran a command unless the tool ledger confirms it.
+
+```yaml
+claimed:
+  - cargo test
+actual:
+  - cargo check
+violation:
+  "Model claimed unverified test result."
+```
+
+## J. Confidence-calibrated autonomy
+
+The IDE should adapt autonomy level:
+
+|  Confidence | Behavior                             |
+| ----------: | ------------------------------------ |
+|       0.95+ | apply small safe patch               |
+|   0.80–0.95 | patch + run verification             |
+|   0.60–0.80 | produce candidate and ask for review |
+|       <0.60 | investigate, do not edit             |
+| destructive | always require explicit approval     |
+
+---
+
+# 23. Full-auto coding needs a state machine
+
+Most autonomous agents fail because they drift. Use an explicit state machine:
+
+```text
+Understand
+  → Localize
+  → Plan
+  → Edit
+  → Verify
+  → Diagnose
+  → Repair
+  → Review
+  → Summarize
+  → Learn
+```
+
+Each state has exit criteria.
+
+Example:
+
+```yaml
+state: Verify
+exit_only_if:
+  - cargo_check_passed
+  - targeted_tests_passed
+  - no_unexpected_diff
+  - no_policy_violation
+on_failure:
+  - classify_failure
+  - retrieve_similar_failures
+  - update_plan
+```
+
+This prevents endless loops.
+
+---
+
+# 24. The IDE should have multiple specialized agents, but one controller
+
+Do not create a chaotic multi-agent chatroom. Use a single orchestrator with specialized roles:
+
+| Role                 | Job                                              |
+| -------------------- | ------------------------------------------------ |
+| Planner              | turns goal into spec and task DAG                |
+| Localizer            | finds relevant files/symbols/tests               |
+| Implementer          | writes patch                                     |
+| Rust reviewer        | checks idiomatic Rust, borrow/lifetime risks     |
+| Test engineer        | creates and runs targeted tests                  |
+| Security reviewer    | checks unsafe/secrets/dependencies               |
+| Performance reviewer | checks allocations, async blocking, compile cost |
+| Memory curator       | records only evidence-backed lessons             |
+
+These can be separate prompts to Qwen or separate model calls with constrained contexts. The important part is that they produce structured artifacts, not conversation noise.
+
+---
+
+# 25. Security and prompt-injection hardening
+
+A coding IDE is exposed to untrusted text: repo files, READMEs, test logs, dependency docs, issues, webpages, comments, and maybe malicious prompts hidden in source.
+
+Rules:
+
+```text
+Repo text is data, not instruction.
+Tool output is data, not instruction.
+Web docs are data, not instruction.
+Only the system/developer/user policy can command the agent.
+```
+
+The IDE should:
+
+```text
+redact secrets from logs
+block exfiltration
+sandbox commands
+disable arbitrary network by default
+show permission prompts for destructive actions
+track provenance of every retrieved context item
+isolate plugin permissions
+prevent tools from mutating memory without approval
+```
+
+This is especially important if using MCP or external tools; MCP’s security guidance emphasizes user consent, data privacy, and tool safety. ([Model Context Protocol][19])
+
+---
+
+# 26. Token minimization strategy
+
+The fastest agent is the one that does not spend tokens unnecessarily.
+
+## Token-saving hierarchy
+
+| Strategy                                        | Impact      |
+| ----------------------------------------------- | ----------- |
+| Do not retrieve irrelevant files                | massive     |
+| Compress terminal output                        | massive     |
+| Use typed tool results                          | high        |
+| Use code spans, not whole files                 | high        |
+| Cache repo summaries                            | high        |
+| Use deterministic tools before model calls      | high        |
+| Summarize memory into rules                     | medium-high |
+| Keep raw logs out of prompt                     | medium-high |
+| Use FIM for local edits                         | medium      |
+| Use small model/router for cheap classification | optional    |
+
+A normal model call should not exceed something like:
+
+```yaml
+project_capsule: 1_500 tokens
+task_spec: 800 tokens
+evidence_pack: 6_000 tokens
+relevant_code: 8_000 tokens
+diagnostics: 1_500 tokens
+rules/memory: 1_000 tokens
+tool_schema: 1_000 tokens
+```
+
+Even with a huge context window, the default should be disciplined.
+
+---
+
+# 27. What I would actually build first
+
+## Phase 1: Rust-native agent substrate
+
+Build:
+
+```text
+Rust editor shell
+rust-analyzer integration
+tree-sitter index
+Tantivy search
+Qdrant/hybrid retrieval
+Cargo metadata graph
+typed tool executor
+RTK++ output compression
+patch engine
+verification runner
+session ledger
+```
+
+This already beats most coding agents.
+
+## Phase 2: Memory and rules
+
+Add:
+
+```text
+project rules
+failure fingerprints
+negative memory
+lesson cards
+memory retrieval
+context receipts
+dynamic rule compiler
+```
+
+This makes the IDE improve over time.
+
+## Phase 3: Worktree swarm and eval lab
+
+Add:
+
+```text
+parallel candidates
+automated comparison
+repo-specific evals
+benchmark tasks
+mutation testing
+fuzz harness generation
+semver/security audits
+```
+
+This makes it powerful for hard tasks.
+
+## Phase 4: Full platform
+
+Add:
+
+```text
+MCP plugin marketplace
+team memory
+CI integration
+production-log integration
+PR review mode
+architecture map
+semantic time travel
+enterprise policy engine
+```
+
+---
+
+# 28. The “greatest vibe coder” UX
+
+The user experience should feel simple:
+
+> “Make the stream parser support partial frames and add tests.”
+
+But internally the IDE does this:
+
+```text
+1. Converts request to spec.
+2. Finds parser, stream state machine, frame tests.
+3. Retrieves previous parser bugs.
+4. Checks project rules.
+5. Generates regression/property tests.
+6. Applies minimal AST-aware patch.
+7. Runs cargo check.
+8. Runs targeted tests.
+9. Runs fuzz smoke test if parser changed.
+10. Summarizes diff with context receipt.
+11. Stores any new lesson from failures.
+```
+
+The user sees:
+
+```text
+Done.
+
+Changed:
+- src/stream/parser.rs
+- tests/partial_frames.rs
+
+Verified:
+- cargo check
+- cargo nextest -p stream
+- fuzz smoke: parse_frame, 30s
+
+Notes:
+- No new dependencies.
+- No unsafe changes.
+- Added regression coverage for split frame boundaries.
+```
+
+That is what “vibe coding” should become: effortless on the surface, rigorous underneath.
+
+---
+
+# 29. The highest-leverage inventions
+
+If I had to pick the most important original systems:
+
+1. **Context OS**: typed, provenance-aware, token-budgeted repo context.
+2. **RTK++**: terminal/log compression with structured failure summaries and raw-log pointers.
+3. **Borrow Doctor**: Rust-specific diagnostic-to-minimal-fix engine.
+4. **Failure Fingerprint DB**: prevents repeated mistakes and creates evidence-backed memory.
+5. **Dynamic Rule Compiler**: turns mistakes, user feedback, and tests into scoped executable rules.
+6. **Worktree Swarm**: parallel candidate patches scored by objective verification.
+7. **Context Receipts**: every AI edit explains what evidence justified it.
+8. **Verification Matrix**: chooses the cheapest sufficient Rust verifier automatically.
+9. **Spec Compiler**: prevents coding before the goal is understood.
+10. **Prompt-Injection Firewall**: treats repo/docs/logs as untrusted data.
+11. **Architecture Invariant Checker**: project rules become static/dynamic checks.
+12. **Repo-Specific Eval Lab**: the IDE improves against the actual user’s codebase, not just generic benchmarks.
+
+---
+
+# 30. Final design principle
+
+The best version of this IDE is not “Qwen with a terminal.”
+
+It is:
+
+```text
+Qwen3-Coder
++ Rust-native context operating system
++ semantic repo graph
++ RTK-style token compression
++ typed tool execution
++ AST-aware patching
++ cargo/rust-analyzer verification
++ memory with evidence and decay
++ dynamic rules learned from real failures
++ worktree-based search
++ security sandbox
++ project-specific evals
+```
+
+That combination would make it fast, cheap, context-aware, self-improving, Rust-native, and much more reliable than typical full-auto coding agents.
+
+[1]: https://huggingface.co/Qwen/Qwen3-Coder-480B-A35B-Instruct "Qwen/Qwen3-Coder-480B-A35B-Instruct · Hugging Face"
+[2]: https://arxiv.org/abs/2405.15793?utm_source=chatgpt.com "SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering"
+[3]: https://arxiv.org/abs/2307.03172?utm_source=chatgpt.com "Lost in the Middle: How Language Models Use Long Contexts"
+[4]: https://tree-sitter.github.io/?utm_source=chatgpt.com "Tree-sitter: Introduction"
+[5]: https://github.com/quickwit-oss/tantivy?utm_source=chatgpt.com "Tantivy is a full-text search engine library inspired ..."
+[6]: https://qdrant.tech/documentation/overview/ "Overview - Qdrant"
+[7]: https://github.com/rtk-ai/rtk "GitHub - rtk-ai/rtk: CLI proxy that reduces LLM token consumption by 60-90% on common dev commands. Single Rust binary, zero dependencies · GitHub"
+[8]: https://github.com/rust-lang/rust-analyzer?utm_source=chatgpt.com "rust-lang/rust-analyzer: A Rust compiler front-end for IDEs"
+[9]: https://doc.rust-lang.org/stable/clippy?utm_source=chatgpt.com "Introduction - Clippy Documentation"
+[10]: https://github.com/rust-lang/miri/?utm_source=chatgpt.com "rust-lang/miri"
+[11]: https://nexte.st/?utm_source=chatgpt.com "cargo-nextest: Home"
+[12]: https://model-checking.github.io/kani/?utm_source=chatgpt.com "Getting started - The Kani Rust Verifier"
+[13]: https://docs.rs/loom/latest/loom/?utm_source=chatgpt.com "loom - Rust"
+[14]: https://github.com/SqueezeAILab/LLMCompiler?utm_source=chatgpt.com "[ICML 2024] LLMCompiler: An LLM Compiler for Parallel ..."
+[15]: https://arxiv.org/abs/2310.04406?utm_source=chatgpt.com "Language Agent Tree Search Unifies Reasoning Acting and Planning in Language Models"
+[16]: https://arxiv.org/abs/2406.01297?utm_source=chatgpt.com "When Can LLMs Actually Correct Their Own Mistakes? A Critical Survey of Self-Correction of LLMs"
+[17]: https://arxiv.org/abs/2310.08560?utm_source=chatgpt.com "MemGPT: Towards LLMs as Operating Systems"
+[18]: https://arxiv.org/html/2501.09136v4?utm_source=chatgpt.com "Agentic Retrieval-Augmented Generation: A Survey on ..."
+[19]: https://modelcontextprotocol.io/specification/2025-11-25 "Specification - Model Context Protocol"
+[20]: https://github.com/rust-secure-code/projects/blob/master/README.md?utm_source=chatgpt.com "projects/README.md at master · rust-secure-code/projects"
+[21]: https://mutants.rs/?utm_source=chatgpt.com "cargo-mutants: Welcome"
+[22]: https://github.com/embarkstudios/cargo-deny?utm_source=chatgpt.com "EmbarkStudios/cargo-deny: ❌ Cargo plugin for linting your ..."
+[23]: https://rust-lang.github.io/rust-project-goals/2024h2/cargo-semver-checks.html?utm_source=chatgpt.com "Begin resolving `cargo-semver-checks` blockers for ..."
+[24]: https://zed.dev/?utm_source=chatgpt.com "Zed — Love your editor again"
+[25]: https://v2.tauri.app/?utm_source=chatgpt.com "Tauri 2.0 | Tauri"
+[26]: https://www.gpui.rs/?utm_source=chatgpt.com "gpui"
+[27]: https://github.com/mozilla/sccache?utm_source=chatgpt.com "Sccache is a ccache-like tool. It is used as a compiler ..."
+[28]: https://www.swebench.com/SWE-bench/?utm_source=chatgpt.com "Overview - SWE-bench"
+[29]: https://www.tbench.ai/?utm_source=chatgpt.com "Terminal-Bench"
+

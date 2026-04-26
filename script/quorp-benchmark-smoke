@@ -3,8 +3,12 @@
 set -euo pipefail
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
-issue_dir="${QUORP_BENCHMARK_ISSUE_DIR:-${repo_root}/benchmark/exhaustive/issues/ISSUE-00-toy-preview}"
-model_id="${1:-${QUORP_BENCHMARK_MODEL:-${QUORP_PARITY_MODEL:-gpt-5.3-codex-spark}}}"
+default_issue_dir="${repo_root}/benchmark/challenges/rust-swebench-top5/01-bincode-serde-decoder-memory"
+warpos_issue_dir="${repo_root}/../WarpOS/challenges/cases/06-rust-swebench-bincode-serde-decoder-memory"
+if [[ -d "$warpos_issue_dir/workspace/proof-full" ]]; then
+  default_issue_dir="$warpos_issue_dir"
+fi
+issue_dir="${QUORP_BENCHMARK_ISSUE_DIR:-$default_issue_dir}"
 max_steps="${QUORP_BENCHMARK_MAX_STEPS:-1}"
 max_seconds="${QUORP_BENCHMARK_MAX_SECONDS:-1800}"
 result_dir="${QUORP_BENCHMARK_RESULT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/quorp-benchmark-smoke.XXXXXX")}"
@@ -15,12 +19,10 @@ cd "$repo_root"
 
 echo "[quorp-benchmark-smoke] issue_dir=$issue_dir"
 echo "[quorp-benchmark-smoke] result_dir=$result_dir"
-echo "[quorp-benchmark-smoke] model=$model_id"
+echo "[quorp-benchmark-smoke] model=qwen/qwen3-coder-480b-a35b-instruct"
 
 cargo run -p quorp -- benchmark run \
   --path "$issue_dir" \
-  --executor codex \
-  --model "$model_id" \
   --max-steps "$max_steps" \
   --max-seconds "$max_seconds" \
   --max-attempts 1 \

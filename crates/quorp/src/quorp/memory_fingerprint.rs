@@ -1,3 +1,5 @@
+#![allow(dead_code)]
+
 use anyhow::{Context as _, anyhow, bail};
 use serde_json::{Value, json};
 use std::collections::{BTreeMap, BTreeSet};
@@ -53,6 +55,7 @@ struct ProcessNode {
     rss_bytes: u64,
 }
 
+#[allow(dead_code)]
 pub fn register_managed_pid(pid: u32) {
     let managed = EXTRA_MANAGED_PIDS.get_or_init(|| Mutex::new(BTreeSet::new()));
     if let Ok(mut pids) = managed.lock() {

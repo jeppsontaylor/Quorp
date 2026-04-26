@@ -1,0 +1,977 @@
+## Executive direction
+
+Build QUORP as a **terminal-native agentic coding IDE**, but do **not** build the main experience as a heavy full-screen Rust TUI dashboard. Use Rust for speed, safety, streaming, patching, indexing, and tooling, while rendering through **direct ANSI/VT escape sequences, Unicode glyphs, truecolor RGB, and small cursor-controlled regions**.
+
+A useful correction: Rust itself is not what makes text pixelated. Terminal apps do not rasterize text; the terminal emulator and font do. Codex CLI is officially described as a local terminal coding agent that can read, change, and run code, and OpenAI’s docs say it is open source and built in Rust; its docs also describe an interactive full-screen terminal UI. Claude Code is similarly documented as a full-featured CLI that works directly in the terminal. The “sharp” look comes from the terminal renderer, vector font, truecolor ANSI styling, tight redraw strategy, and restrained UI—not from avoiding Rust. ([OpenAI Developers][1])
+
+My recommendation: **Rust core + ANSI cinematic renderer + optional editor integrations**.
+
+---
+
+# 1. Product identity: QUORP
+
+Your mascot reads as:
+
+**A charcoal-black, rounded terminal familiar with rabbit/cat-like ears, molten orange eyes, an orange terminal prompt, a smug tiny mouth, and a long tail ending in glowing ember bulbs.**
+
+That gives QUORP a strong visual language:
+
+**Brand concept:**
+QUORP is the “molten coding familiar” that lives in the terminal, watches the repo, forges diffs, and guards dangerous actions.
+
+**Visual language:**
+
+* Background: near-black void.
+* Body: charcoal, graphite, slate highlights.
+* Soul/eyes: molten orange, amber, gold.
+* Tools: cyan and violet.
+* Diffs: saturated green and red backgrounds.
+* Permissions/security: rare mystical symbols and protective emojis.
+* Motion: subtle ember pulsing, not noisy rainbow animation.
+
+**Tone:**
+Fast, sharp, mischievous, high-contrast, magical, but still professional.
+
+---
+
+# 2. Core architecture
+
+Use a Rust workspace with a reusable agent core and multiple frontends.
+
+```text
+quorp/
+  crates/
+    quorp-cli/          # terminal entrypoint
+    quorp-ui-ansi/      # direct ANSI renderer, no heavy TUI dependency
+    quorp-agent/        # agent loop, context, model adapters
+    quorp-tools/        # read_file, apply_patch, shell, git, search
+    quorp-diff/         # diff engine, color renderer, patch validation
+    quorp-index/        # repo map, symbols, embeddings/FTS
+    quorp-mcp/          # MCP client/server support
+    quorp-lsp/          # diagnostics, go-to-definition, code actions
+    quorp-config/       # config, profiles, themes
+    quorp-security/     # permissions, sandboxing, trust model
+    quorp-telemetry/    # tracing, logs, perf counters
+```
+
+The main UI should be an **event stream renderer**, not a full dashboard.
+
+```text
+User input
+   ↓
+Composer / slash commands
+   ↓
+Agent loop
+   ↓
+Tool calls, model stream, diffs, approvals
+   ↓
+UiEvent stream
+   ↓
+ANSI renderer
+   ↓
+Terminal
+```
+
+This keeps QUORP feeling fast because each action becomes a small rendered event:
+
+```text
+🜁 thinking    scanning workspace conventions
+🧿 read        crates/quorp-agent/src/loop.rs
+🜃 index       912 files, 84 symbols
+🪄 patch       src/main.rs  +42 −7
+🧪 test        cargo test -q
+🪬 approval    write outside workspace blocked
+```
+
+---
+
+# 3. Recommended Rust stack
+
+## CLI and runtime
+
+| Need          | Recommended stack                          | Why                                          |
+| ------------- | ------------------------------------------ | -------------------------------------------- |
+| CLI args      | `clap`, `clap_complete`                    | Mature flags, subcommands, completions       |
+| Async runtime | `tokio`                                    | Streaming model output, tools, file watchers |
+| HTTP/SSE      | `reqwest`, `eventsource-stream`, `futures` | Model streaming and MCP HTTP transports      |
+| Serialization | `serde`, `serde_json`, `toml`              | Config, tool schemas, transcripts            |
+| Tool schemas  | `schemars`                                 | Generate JSON schema for tool calling        |
+| Errors        | `anyhow`, `thiserror`, `color-eyre`        | Clean CLI diagnostics                        |
+| Logging       | `tracing`, `tracing-subscriber`            | Debug without polluting user UI              |
+| Cancellation  | `tokio-util::sync::CancellationToken`      | Stop model/tool execution cleanly            |
+| Secrets       | `keyring`, `secrecy`, `zeroize`            | Store provider keys safely                   |
+
+## Terminal rendering
+
+| Need                | Recommended stack                                                    | Why                                                                        |
+| ------------------- | -------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| ANSI/cursor control | `crossterm`                                                          | Cross-platform terminal control without committing to a full TUI framework |
+| Styling             | raw ANSI truecolor, `anstyle`, `nu-ansi-term`, or custom RGB helpers | Precise brand colors                                                       |
+| Unicode width       | `unicode-width`                                                      | Emojis and wide glyphs need correct alignment                              |
+| Grapheme handling   | `unicode-segmentation`                                               | Avoid splitting composed glyphs                                            |
+| Wrapping            | `textwrap`                                                           | Clean terminal-width-aware output                                          |
+| Color detection     | `supports-color`, env checks for `COLORTERM=truecolor`               | Truecolor fallback                                                         |
+| Markdown rendering  | `pulldown-cmark` or `comrak` + custom ANSI renderer                  | Avoid generic markdown UI blandness                                        |
+| Syntax highlighting | `syntect`, `tree-sitter-highlight`                                   | Sharp code blocks                                                          |
+
+Avoid making the main UI depend on `ratatui` unless you want an optional dashboard mode. `ratatui` is excellent, but the QUORP feel should be **streaming, cinematic, scrollback-friendly, and minimal**, not boxed-in.
+
+## Input and command palette
+
+| Need               | Recommended stack                             |
+| ------------------ | --------------------------------------------- |
+| Line editing       | `reedline` or `rustyline`                     |
+| Multiline composer | `reedline` with custom keybindings            |
+| Fuzzy picker       | `nucleo`, `skim`, or custom matcher           |
+| Slash commands     | custom registry over `clap`-like definitions  |
+| File mentions      | `ignore`, `walkdir`, `globset`, fuzzy matcher |
+| History            | SQLite or JSONL in `~/.quorp/history`         |
+
+QUORP commands should feel keyboard-first:
+
+```text
+/plan
+/diff
+/apply
+/undo
+/test
+/review
+/commit
+/sandbox
+/model
+/mcp
+/hooks
+/theme
+/doctor
+/summon
+```
+
+Codex’s official docs describe slash commands as a fast keyboard-first control surface for switching models, permissions, summarization, and similar actions; QUORP should use the same pattern, but with its own brand and interaction language. ([OpenAI Developers][2])
+
+---
+
+# 4. Model, tools, and reasoning architecture
+
+## Agent loop
+
+The QUORP agent loop should be explicit and inspectable:
+
+```text
+1. Receive user request.
+2. Build context pack.
+3. Ask model for next action.
+4. If text: stream answer.
+5. If tool call: validate arguments.
+6. Ask for permission if needed.
+7. Execute tool.
+8. Render output.
+9. Feed result back to model.
+10. Repeat until final answer.
+```
+
+Do not expose raw hidden chain-of-thought. Instead, show **reasoning summaries and action states**:
+
+```text
+🜁 intent     locate the failing parser path
+🧭 plan       inspect lexer → patch tokenizer → run focused tests
+🧿 evidence   failure reproduces in parse_nested_call
+🪄 action     applying minimal patch
+🧪 verify     cargo test parser::nested_call
+```
+
+That gives the user confidence without dumping private model reasoning.
+
+## Tool-call UX
+
+Use compact cards:
+
+```text
+🧿 read
+   file: crates/quorp-parser/src/token.rs
+   range: 1..220
+   3.8 ms
+
+🜂 run
+   cmd: cargo test parser::nested_call --quiet
+   sandbox: workspace-write, network-off
+   1.42 s
+
+🪄 patch
+   file: crates/quorp-parser/src/token.rs
+   +14 −3
+   status: awaiting review
+```
+
+## Tool registry
+
+Each tool should declare:
+
+```rust
+pub struct ToolSpec {
+    pub name: &'static str,
+    pub description: &'static str,
+    pub input_schema: serde_json::Value,
+    pub permission: PermissionClass,
+    pub risk: RiskLevel,
+}
+```
+
+Suggested built-in tools:
+
+| Tool              | Purpose                       | Permission class              |
+| ----------------- | ----------------------------- | ----------------------------- |
+| `read_file`       | Read a file range             | Read-only                     |
+| `list_dir`        | Inspect workspace             | Read-only                     |
+| `search`          | ripgrep-style search          | Read-only                     |
+| `repo_map`        | Summarize project symbols     | Read-only                     |
+| `shell`           | Run command                   | Approval depending on command |
+| `apply_patch`     | Apply validated unified patch | Write approval                |
+| `create_file`     | Add file                      | Write approval                |
+| `delete_file`     | Delete file                   | High-risk approval            |
+| `git_diff`        | Show diff                     | Read-only                     |
+| `git_status`      | Show status                   | Read-only                     |
+| `git_checkpoint`  | Create safety checkpoint      | Write approval                |
+| `lsp_diagnostics` | Pull editor diagnostics       | Read-only                     |
+| `mcp_call`        | Call external MCP tool        | Depends on server/tool        |
+
+Anthropic documents Claude tool use as structured tool calls that your application executes and then returns as tool results; this is exactly the pattern QUORP should implement internally. ([Claude API Docs][3])
+
+## MCP support
+
+Support MCP early. It is now table-stakes for agentic coding tools. Codex docs state that MCP connects models to third-party tools and context and that Codex supports MCP servers in both CLI and IDE extension contexts; the MCP spec defines resources, prompts, and tools as server features. ([OpenAI Developers][4])
+
+Implement:
+
+```text
+quorp mcp add github --transport http ...
+quorp mcp add figma --transport http ...
+quorp mcp add local-docs --transport stdio -- npx some-server
+quorp mcp list
+quorp mcp test github
+```
+
+MCP tool cards should look distinct:
+
+```text
+🪬 mcp:github.search_issues
+   query: "crash on startup label:bug"
+   auth: bearer-token
+   result: 12 issues
+```
+
+## Hooks
+
+Add lifecycle hooks modeled around agent events:
+
+```text
+UserPromptSubmit
+PreToolUse
+PermissionRequest
+PostToolUse
+PatchPreview
+PatchApplied
+TestsFinished
+Stop
+```
+
+Codex and Claude Code both document hooks as a way to run scripts at lifecycle points; Codex’s docs specifically describe hooks around events such as pre-tool use, permission requests, post-tool use, prompt submit, and stop. ([OpenAI Developers][5])
+
+Example:
+
+```toml
+[hooks.pre_tool_use.shell]
+command = "quorp-secret-scan --stdin"
+
+[hooks.patch_preview]
+command = "cargo fmt --check"
+
+[hooks.stop]
+command = "quorp-memory-summarize"
+```
+
+---
+
+# 5. Diff design
+
+This should be one of QUORP’s signature visuals.
+
+## Diff palette
+
+| Element             | Foreground |  Background | Hex                      |
+| ------------------- | ---------: | ----------: | ------------------------ |
+| Added line text     |  `#D8FFE2` |   `#073B1A` | soft green on deep green |
+| Added gutter        |  `#2DFF75` |   `#073B1A` | neon green               |
+| Deleted line text   |  `#FFE0E5` |   `#401018` | pale rose on deep red    |
+| Deleted gutter      |  `#FF4D5B` |   `#401018` | hot red                  |
+| Modified inline old |  `#FFD6DC` |   `#5A1420` | red ember                |
+| Modified inline new |  `#D8FFE2` |   `#0B4D24` | green ember              |
+| Hunk header         |  `#FFD166` |   `#241A07` | gold on burnt amber      |
+| File header         |  `#F8FAFC` |   `#111827` | snow on slate            |
+| Line numbers        |  `#7A8293` | transparent | muted slate              |
+| Context             |  `#C8D0E0` | transparent | cool text                |
+
+## Diff rendering style
+
+Use compact unified diffs by default:
+
+```text
+╭─ 🪄 patch  crates/quorp-parser/src/token.rs
+│
+│ @@ -42,7 +42,8 @@ fn parse_token(...)
+│  42   match ch {
+│- 43       '"' => parse_string(input),
+│+ 43       '"' if escaped => parse_escaped_string(input),
+│+ 44       '"' => parse_string(input),
+│  45       _ => parse_atom(input),
+│
+╰─ +2 −1  awaiting approval
+```
+
+For wide terminals, add optional side-by-side mode:
+
+```text
+quorp /diff --side-by-side
+```
+
+Use `similar` or `dissimilar` for inline changes, and `gix` or `git2` for repository state. For applying edits, use a strict patch validator:
+
+```text
+- Check file is inside workspace.
+- Check old lines match exactly.
+- Reject overlapping patches.
+- Reject binary edits unless using binary tool.
+- Create git checkpoint before applying.
+- Render before/after diff.
+- Apply.
+- Re-read file hash.
+- Run requested tests.
+```
+
+---
+
+# 6. Color system
+
+Use **24-bit truecolor ANSI**:
+
+```text
+Foreground: \x1b[38;2;R;G;Bm
+Background: \x1b[48;2;R;G;Bm
+Reset:      \x1b[0m
+```
+
+## QUORP molten theme
+
+| Token              |       Hex | Use                         |
+| ------------------ | --------: | --------------------------- |
+| `void.black`       | `#000000` | image-faithful background   |
+| `obsidian`         | `#050608` | default terminal background |
+| `panel.0`          | `#090B10` | subtle panels               |
+| `panel.1`          | `#0E1117` | cards                       |
+| `graphite`         | `#151923` | separators                  |
+| `mascot.body`      | `#242632` | mascot body                 |
+| `mascot.highlight` | `#3A3E4A` | mascot highlights           |
+| `text.primary`     | `#F8FAFC` | main text                   |
+| `text.secondary`   | `#C8D0E0` | secondary text              |
+| `text.muted`       | `#7A8293` | dim labels                  |
+| `text.ghost`       | `#4B5262` | very dim                    |
+| `quorp.orange`     | `#FF5A00` | primary brand               |
+| `quorp.ember`      | `#FF7A1A` | glow edge                   |
+| `quorp.lava`       | `#FF2E00` | hot warning/orange red      |
+| `quorp.gold`       | `#FFD166` | eyes, sparks, highlights    |
+| `quorp.aura`       | `#B73300` | soft glow                   |
+| `tool.cyan`        | `#2DE2E6` | read/search/tool metadata   |
+| `tool.blue`        | `#48A7FF` | links, files                |
+| `tool.violet`      | `#A855F7` | model/reasoning             |
+| `tool.magenta`     | `#FF4FD8` | special commands            |
+| `status.success`   | `#2DFF75` | success                     |
+| `status.warning`   | `#FFC247` | warning                     |
+| `status.error`     | `#FF4D5B` | error                       |
+| `status.guard`     | `#8B5CF6` | permission/security         |
+| `diff.add.bg`      | `#073B1A` | added diff line             |
+| `diff.add.fg`      | `#D8FFE2` | added diff text             |
+| `diff.del.bg`      | `#401018` | deleted diff line           |
+| `diff.del.fg`      | `#FFE0E5` | deleted diff text           |
+| `diff.hunk.bg`     | `#241A07` | hunk header                 |
+| `diff.hunk.fg`     | `#FFD166` | hunk text                   |
+
+## Syntax highlighting
+
+| Syntax    |     Color |
+| --------- | --------: |
+| Keywords  | `#A855F7` |
+| Strings   | `#FFD166` |
+| Numbers   | `#B8FF1A` |
+| Functions | `#2DE2E6` |
+| Types     | `#48A7FF` |
+| Comments  | `#7A8293` |
+| Operators | `#FF7A1A` |
+| Errors    | `#FF4D5B` |
+| Paths     | `#7DD3FC` |
+| Symbols   | `#F8FAFC` |
+
+---
+
+# 7. Emojis and rare glyphs
+
+Use rare emojis sparingly. The terminal experience should feel enchanted, not cluttered.
+
+| Glyph | Meaning                   |
+| ----- | ------------------------- |
+| `🜁`  | thinking / air / analysis |
+| `🜂`  | running command / fire    |
+| `🜃`  | indexing / earth          |
+| `🜄`  | tests / water             |
+| `🪬`  | permission guard          |
+| `🧿`  | inspect/read/watch        |
+| `🪄`  | patch/apply               |
+| `🪲`  | bug hunt                  |
+| `🧬`  | refactor                  |
+| `🪐`  | project/repo space        |
+| `🫧`  | cleanup                   |
+| `⚚`   | diagnosis                 |
+| `☄`   | fast action               |
+| `✦`   | brand spark               |
+| `✹`   | hot ember                 |
+| `❯_`  | QUORP prompt sigil        |
+
+Add a fallback:
+
+```toml
+[ui]
+emoji = "auto" # auto | always | never
+```
+
+When `emoji = "never"`:
+
+```text
+[think] scanning workspace
+[read]  src/main.rs
+[patch] +14 -2
+[test]  cargo test -q
+```
+
+Use `unicode-width` to prevent emoji alignment bugs.
+
+---
+
+# 8. Sharpness strategy
+
+To make QUORP look crisp:
+
+1. **Use direct ANSI truecolor**, not raster images.
+2. **Use vector-friendly Unicode**: box drawing, block glyphs, braille, half-blocks.
+3. **Avoid sixel/inline PNG as the default**; that can look pixelated or fail across terminals.
+4. **Recommend modern terminals**: Ghostty, WezTerm, Kitty, iTerm2, Alacritty, Windows Terminal.
+5. **Recommend vector coding fonts**: JetBrains Mono, Monaspace, Cascadia Code, Berkeley Mono, Fira Code.
+6. **Implement `quorp doctor`** to test:
+
+   * truecolor support
+   * emoji width
+   * Nerd Font glyphs
+   * background contrast
+   * terminal dimensions
+   * shell integration
+   * sandbox availability
+
+The app cannot force the terminal to render text beautifully. It can, however, detect poor conditions and recommend fixes.
+
+---
+
+# 9. Supporting tools outside Rust
+
+| Tool                               | Use                                                     |
+| ---------------------------------- | ------------------------------------------------------- |
+| `ripgrep`                          | extremely fast search; can shell out or use Rust crates |
+| `fd`                               | file discovery inspiration                              |
+| `git`                              | source of truth for checkpoints and diffs               |
+| `delta`                            | visual inspiration for diffs                            |
+| `node` / `npx`                     | MCP server ecosystem                                    |
+| Python                             | user hooks and scripts                                  |
+| Docker / Podman                    | sandboxed execution                                     |
+| `bubblewrap` / `firejail`          | Linux sandbox                                           |
+| Windows Job Objects / sandbox APIs | Windows process control                                 |
+| `rust-analyzer`                    | Rust diagnostics                                        |
+| `typescript-language-server`       | TS/JS diagnostics                                       |
+| `pyright`                          | Python diagnostics                                      |
+| SQLite                             | session store, transcripts, FTS                         |
+| Tantivy                            | optional fast local code index                          |
+| Tree-sitter grammars               | syntax trees and symbol extraction                      |
+| OpenTelemetry Collector            | optional production observability                       |
+
+---
+
+# 10. UX modes
+
+## Normal mode
+
+Scrollable, terminal-native, copyable.
+
+```text
+quorp
+```
+
+## Prompt mode
+
+Start with a request:
+
+```text
+quorp "fix the failing parser test"
+```
+
+## Review mode
+
+Open pending patch review:
+
+```text
+quorp review
+```
+
+## Doctor mode
+
+Check terminal sharpness:
+
+```text
+quorp doctor
+```
+
+## Summon mode
+
+Show the mascot and environment:
+
+```text
+quorp summon
+```
+
+## Compact CI mode
+
+No emojis, no animation, no cursor control:
+
+```text
+quorp --plain --no-animation
+```
+
+---
+
+# 11. QUORP load screen design
+
+The load screen should:
+
+* Clear the terminal.
+* Hide cursor during boot.
+* Center a gradient QUORP logo.
+* Render a Unicode mascot inspired by the uploaded image.
+* Pulse the orange eyes and embers.
+* Show version, OS, arch.
+* Show a molten progress bar.
+* Restore cursor at the end.
+* Use direct ANSI and `crossterm`, not a full TUI framework.
+
+## Folder layout
+
+```text
+quorp-loadscreen/
+  Cargo.toml
+  src/
+    main.rs
+```
+
+## `Cargo.toml`
+
+```toml
+[package]
+name = "quorp-loadscreen"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crossterm = "0.28"
+unicode-width = "0.1"
+```
+
+## `src/main.rs`
+
+```rust
+use crossterm::{
+    cursor::{Hide, MoveTo, Show},
+    execute,
+    terminal::{self, Clear, ClearType},
+};
+use std::{
+    env,
+    io::{self, Write},
+    thread,
+    time::Duration,
+};
+use unicode_width::UnicodeWidthStr;
+
+const RESET: &str = "\x1b[0m";
+const BOLD: &str = "\x1b[1m";
+const DIM: &str = "\x1b[2m";
+
+#[derive(Clone, Copy)]
+struct Rgb(u8, u8, u8);
+
+impl Rgb {
+    fn fg(self) -> String {
+        format!("\x1b[38;2;{};{};{}m", self.0, self.1, self.2)
+    }
+
+    fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
+        let t = t.clamp(0.0, 1.0);
+
+        let r = a.0 as f32 + (b.0 as f32 - a.0 as f32) * t;
+        let g = a.1 as f32 + (b.1 as f32 - a.1 as f32) * t;
+        let bl = a.2 as f32 + (b.2 as f32 - a.2 as f32) * t;
+
+        Rgb(r.round() as u8, g.round() as u8, bl.round() as u8)
+    }
+}
+
+mod color {
+    use super::Rgb;
+
+    pub const TEXT: Rgb = Rgb(248, 250, 252);
+    pub const MUTED: Rgb = Rgb(122, 130, 147);
+    pub const GHOST: Rgb = Rgb(75, 82, 98);
+
+    pub const BODY: Rgb = Rgb(58, 62, 74);
+    pub const BODY_DARK: Rgb = Rgb(36, 38, 50);
+
+    pub const ORANGE: Rgb = Rgb(255, 90, 0);
+    pub const EMBER: Rgb = Rgb(255, 122, 26);
+    pub const LAVA: Rgb = Rgb(255, 46, 0);
+    pub const GOLD: Rgb = Rgb(255, 209, 102);
+
+    pub const CYAN: Rgb = Rgb(45, 226, 230);
+    pub const VIOLET: Rgb = Rgb(168, 85, 247);
+    pub const GREEN: Rgb = Rgb(45, 255, 117);
+}
+
+const LOGO: &[&str] = &[
+    " ██████╗ ██╗   ██╗ ██████╗ ██████╗ ██████╗ ",
+    "██╔═══██╗██║   ██║██╔═══██╗██╔══██╗██╔══██╗",
+    "██║   ██║██║   ██║██║   ██║██████╔╝██████╔╝",
+    "██║▄▄ ██║██║   ██║██║   ██║██╔══██╗██╔═══╝ ",
+    "╚██████╔╝╚██████╔╝╚██████╔╝██║  ██║██║     ",
+    " ╚══▀▀═╝  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝     ",
+];
+
+const MASCOT: &[&str] = &[
+    "     ⠂⠁        ✧                 ╭╲      ╱╮                 ✧        ⠁⠂",
+    "                 ❯_           ╭────╯ ╲____╱ ╰────╮                    ",
+    "                             ╱     ◉     •     ◉     ╲                 ",
+    "                            │        ╭╮     ╭╮        │                ",
+    "                            │      ╰─╯ ╲___╱ ╰─╯      │                ",
+    "                             ╲       ╭╮     ╭╮       ╱                 ",
+    "                              ╰╮     ╰╯     ╰╯     ╭╯                  ",
+    "                                ╰────╮       ╭────╯                    ",
+    "                                      ╰╮   ╭╯╲________________╮        ",
+    "                                        ╰──╯        ╲___✦___✦__╮      ",
+    "                                                       ╲__● ╲__●       ",
+    "                                                          ╲__●  ✹      ",
+];
+
+const RUNES: &[&str] = &["🜁", "🜂", "🜃", "🜄", "🪬", "🧿", "🪄", "☄"];
+
+struct CursorGuard;
+
+impl Drop for CursorGuard {
+    fn drop(&mut self) {
+        let _ = execute!(io::stdout(), Show);
+    }
+}
+
+fn main() -> io::Result<()> {
+    let _cursor_guard = CursorGuard;
+    let mut out = io::stdout();
+
+    execute!(out, Hide)?;
+
+    let total_frames = 34;
+
+    for frame in 0..=total_frames {
+        let (cols, rows) = terminal::size().unwrap_or((100, 34));
+
+        execute!(out, MoveTo(0, 0), Clear(ClearType::All))?;
+        render_screen(&mut out, cols, rows, frame, total_frames)?;
+        out.flush()?;
+
+        thread::sleep(Duration::from_millis(38));
+    }
+
+    execute!(out, Show)?;
+    Ok(())
+}
+
+fn render_screen(
+    out: &mut impl Write,
+    cols: u16,
+    rows: u16,
+    frame: usize,
+    total_frames: usize,
+) -> io::Result<()> {
+    let full_layout = cols >= 88;
+    let content_height = if full_layout { 26 } else { 10 };
+    let top_pad = rows.saturating_sub(content_height) / 2;
+
+    for _ in 0..top_pad {
+        writeln!(out)?;
+    }
+
+    if full_layout {
+        for line in LOGO {
+            gradient_centered(out, cols, line, color::ORANGE, color::GOLD, true)?;
+        }
+
+        writeln!(out)?;
+
+        for line in MASCOT {
+            mascot_centered(out, cols, line, frame)?;
+        }
+    } else {
+        gradient_centered(
+            out,
+            cols,
+            "❯_  QUORP  ◉ • ◉",
+            color::ORANGE,
+            color::GOLD,
+            true,
+        )?;
+
+        centered(
+            out,
+            cols,
+            "molten coding familiar",
+            color::MUTED,
+            false,
+            false,
+        )?;
+    }
+
+    writeln!(out)?;
+
+    let version = format!(
+        "QUORP v{}  •  molten terminal IDE  •  {}-{}",
+        env!("CARGO_PKG_VERSION"),
+        env::consts::OS,
+        env::consts::ARCH
+    );
+
+    centered(out, cols, &version, color::TEXT, true, false)?;
+
+    centered(
+        out,
+        cols,
+        "sharp ANSI • glowing diffs • fast tools • guarded edits",
+        color::MUTED,
+        false,
+        true,
+    )?;
+
+    writeln!(out)?;
+
+    render_progress(out, cols, frame, total_frames)?;
+
+    Ok(())
+}
+
+fn centered(
+    out: &mut impl Write,
+    cols: u16,
+    text: &str,
+    fg: Rgb,
+    bold: bool,
+    dim: bool,
+) -> io::Result<()> {
+    let width = UnicodeWidthStr::width(text);
+    let pad = (cols as usize).saturating_sub(width) / 2;
+
+    write!(out, "{}", " ".repeat(pad))?;
+
+    if bold {
+        write!(out, "{BOLD}")?;
+    }
+
+    if dim {
+        write!(out, "{DIM}")?;
+    }
+
+    writeln!(out, "{}{}{}", fg.fg(), text, RESET)?;
+    Ok(())
+}
+
+fn gradient_centered(
+    out: &mut impl Write,
+    cols: u16,
+    text: &str,
+    from: Rgb,
+    to: Rgb,
+    bold: bool,
+) -> io::Result<()> {
+    let width = UnicodeWidthStr::width(text);
+    let pad = (cols as usize).saturating_sub(width) / 2;
+
+    write!(out, "{}", " ".repeat(pad))?;
+
+    if bold {
+        write!(out, "{BOLD}")?;
+    }
+
+    let chars: Vec<char> = text.chars().collect();
+    let denom = chars.len().saturating_sub(1).max(1) as f32;
+
+    for (idx, ch) in chars.iter().enumerate() {
+        if *ch == ' ' {
+            write!(out, " ")?;
+            continue;
+        }
+
+        let t = idx as f32 / denom;
+        let fg = Rgb::lerp(from, to, t);
+        write!(out, "{}{}", fg.fg(), ch)?;
+    }
+
+    writeln!(out, "{RESET}")?;
+    Ok(())
+}
+
+fn mascot_centered(
+    out: &mut impl Write,
+    cols: u16,
+    line: &str,
+    frame: usize,
+) -> io::Result<()> {
+    let width = UnicodeWidthStr::width(line);
+    let pad = (cols as usize).saturating_sub(width) / 2;
+
+    write!(out, "{}", " ".repeat(pad))?;
+
+    for ch in line.chars() {
+        if ch == ' ' {
+            write!(out, " ")?;
+            continue;
+        }
+
+        let fg = mascot_color(ch, frame);
+        write!(out, "{}{}{}", fg.fg(), ch, RESET)?;
+    }
+
+    writeln!(out)?;
+    Ok(())
+}
+
+fn mascot_color(ch: char, frame: usize) -> Rgb {
+    let pulse = ember_pulse(frame);
+
+    match ch {
+        '◉' | '●' => pulse,
+        '❯' | '_' => Rgb::lerp(color::ORANGE, color::GOLD, 0.35),
+        '•' => color::EMBER,
+        '✧' | '✦' | '✹' | '⠁' | '⠂' => Rgb::lerp(color::GOLD, color::EMBER, 0.25),
+        '╭' | '╮' | '╰' | '╯' | '╲' | '╱' | '─' | '│' => color::BODY,
+        _ => color::BODY_DARK,
+    }
+}
+
+fn ember_pulse(frame: usize) -> Rgb {
+    let cycle = (frame % 18) as f32 / 17.0;
+    let wave = if cycle < 0.5 {
+        cycle * 2.0
+    } else {
+        (1.0 - cycle) * 2.0
+    };
+
+    Rgb::lerp(color::ORANGE, color::GOLD, wave)
+}
+
+fn render_progress(
+    out: &mut impl Write,
+    cols: u16,
+    frame: usize,
+    total_frames: usize,
+) -> io::Result<()> {
+    let pct = ((frame as f32 / total_frames as f32) * 100.0).round() as usize;
+
+    let phase = match pct {
+        0..=20 => "igniting prompt sigil",
+        21..=40 => "polishing molten glyphs",
+        41..=60 => "priming tool lattice",
+        61..=80 => "arming sandbox wards",
+        _ => "awakening diff engine",
+    };
+
+    let rune = RUNES[frame % RUNES.len()];
+    let bar_width = (cols as usize).saturating_sub(42).clamp(18, 48);
+    let filled = ((pct as f32 / 100.0) * bar_width as f32).round() as usize;
+
+    let label = format!("{}  {}  {:>3}%", rune, phase, pct);
+    let visible_width = UnicodeWidthStr::width(label.as_str()) + bar_width + 4;
+    let pad = (cols as usize).saturating_sub(visible_width) / 2;
+
+    write!(out, "{}", " ".repeat(pad))?;
+
+    write!(out, "{}{}{}  ", color::GOLD.fg(), rune, RESET)?;
+    write!(out, "{}[", color::GHOST.fg())?;
+
+    for idx in 0..bar_width {
+        if idx < filled {
+            let t = idx as f32 / bar_width.saturating_sub(1).max(1) as f32;
+            let fg = Rgb::lerp(color::LAVA, color::GOLD, t);
+            write!(out, "{}━", fg.fg())?;
+        } else {
+            write!(out, "{}·", color::GHOST.fg())?;
+        }
+    }
+
+    write!(
+        out,
+        "{}]{}  {}{}{} {:>3}%{}",
+        color::GHOST.fg(),
+        RESET,
+        DIM,
+        color::MUTED.fg(),
+        phase,
+        pct,
+        RESET
+    )?;
+
+    writeln!(out)?;
+    Ok(())
+}
+```
+
+Run it:
+
+```bash
+cargo run --release
+```
+
+This is intentionally **not** a Ratatui app. It is a direct ANSI boot renderer with Unicode art, truecolor gradients, cursor control, and a pulsing QUORP mascot.
+
+---
+
+# 12. Next build milestone
+
+Build QUORP in this order:
+
+1. **Load screen and theme system**
+2. **ANSI renderer and event cards**
+3. **Composer with slash commands**
+4. **Read/search tools**
+5. **Patch preview and green/red diff renderer**
+6. **Approval system**
+7. **Shell tool with sandbox**
+8. **Git checkpoint/undo**
+9. **LSP diagnostics**
+10. **MCP client**
+11. **Hooks**
+12. **Editor integrations**
+
+The highest-leverage decision is this: make QUORP feel like a **fast magical terminal stream**, not a boxed application trapped inside a terminal grid.
+
+[1]: https://developers.openai.com/codex/cli?utm_source=chatgpt.com "Codex CLI"
+[2]: https://developers.openai.com/codex/cli/slash-commands?utm_source=chatgpt.com "Slash commands in Codex CLI"
+[3]: https://docs.anthropic.com/en/docs/build-with-claude/tool-use?utm_source=chatgpt.com "Tool use with Claude - Claude API Docs"
+[4]: https://developers.openai.com/codex/mcp?utm_source=chatgpt.com "Model Context Protocol – Codex"
+[5]: https://developers.openai.com/codex/hooks?utm_source=chatgpt.com "Hooks – Codex"
+

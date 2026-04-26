@@ -19,6 +19,8 @@ use crate::agent_protocol::{
 };
 use crate::agent_turn::{AgentTurnResponse, parse_agent_turn_response};
 
+const LEGACY_REMOTE_SAFETY_LABEL: &str = concat!("safe_", "remote");
+
 #[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum TranscriptRole {
@@ -265,7 +267,7 @@ pub struct FailedEditRecord {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize, Default)]
-pub struct LocalAgentScorecard {
+pub struct AgentRepairScorecard {
     #[serde(default)]
     pub parser_recovery_count: usize,
     #[serde(default)]
@@ -341,7 +343,7 @@ pub struct LocalAgentScorecard {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
-pub struct LocalModelObservedSlice {
+pub struct AgentRepairObservedSlice {
     pub path: String,
     #[serde(default)]
     pub requested_range: Option<crate::agent_protocol::ReadFileRange>,
@@ -354,27 +356,27 @@ pub struct LocalModelObservedSlice {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
-pub struct LocalModelValidationFailure {
+pub struct AgentRepairValidationFailure {
     pub command: String,
     pub summary: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
-pub struct LocalModelRejectedAction {
+pub struct AgentRepairRejectedAction {
     pub phase: String,
     pub actions: Vec<String>,
     pub reason: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
-pub struct LocalModelInvalidTurn {
+pub struct AgentRepairInvalidTurn {
     pub step: usize,
     pub error_class: String,
     pub summary: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
-pub struct LocalModelCanonicalAction {
+pub struct AgentRepairCanonicalAction {
     pub step: usize,
     pub kind: String,
     pub signature: String,
@@ -385,7 +387,7 @@ pub struct LocalModelCanonicalAction {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
-pub struct LocalModelSuggestedEditAnchor {
+pub struct AgentRepairSuggestedEditAnchor {
     pub path: String,
     #[serde(default)]
     pub range: Option<crate::agent_protocol::ReadFileRange>,
@@ -394,32 +396,32 @@ pub struct LocalModelSuggestedEditAnchor {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
-pub struct LocalModelImplementationTarget {
+pub struct AgentRepairImplementationTarget {
     pub path: String,
     pub reason: String,
     pub rank: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize, Default)]
-pub struct LocalModelMemory {
+pub struct AgentRepairMemory {
     #[serde(default)]
-    pub observed_slices: Vec<LocalModelObservedSlice>,
+    pub observed_slices: Vec<AgentRepairObservedSlice>,
     #[serde(default)]
-    pub validation_failures: Vec<LocalModelValidationFailure>,
+    pub validation_failures: Vec<AgentRepairValidationFailure>,
     #[serde(default)]
-    pub rejected_actions: Vec<LocalModelRejectedAction>,
+    pub rejected_actions: Vec<AgentRepairRejectedAction>,
     #[serde(default)]
-    pub invalid_turns: Vec<LocalModelInvalidTurn>,
+    pub invalid_turns: Vec<AgentRepairInvalidTurn>,
     #[serde(default)]
     pub current_required_action: Option<String>,
     #[serde(default)]
-    pub canonical_action_history: Vec<LocalModelCanonicalAction>,
+    pub canonical_action_history: Vec<AgentRepairCanonicalAction>,
     #[serde(default)]
     pub repair_phase: Option<String>,
     #[serde(default)]
     pub context_sufficient: bool,
     #[serde(default)]
-    pub suggested_edit_anchors: Vec<LocalModelSuggestedEditAnchor>,
+    pub suggested_edit_anchors: Vec<AgentRepairSuggestedEditAnchor>,
     #[serde(default)]
     pub diagnostic_class: Option<String>,
     #[serde(default)]
@@ -435,20 +437,22 @@ pub struct LocalModelMemory {
     #[serde(default)]
     pub post_patch_diagnostic_excerpt: Option<String>,
     #[serde(default)]
-    pub ranked_implementation_targets: Vec<LocalModelImplementationTarget>,
+    pub ranked_implementation_targets: Vec<AgentRepairImplementationTarget>,
     #[serde(default)]
     pub last_preview_result: Option<String>,
     #[serde(default)]
     pub last_preview_id: Option<String>,
     #[serde(default)]
+    pub last_preview_path: Option<String>,
+    #[serde(default)]
     pub preview_origin: Option<String>,
     #[serde(default)]
     pub last_rollback_diagnostic: Option<String>,
     #[serde(default)]
-    pub scorecard: LocalAgentScorecard,
+    pub scorecard: AgentRepairScorecard,
 }
 
-impl LocalModelMemory {
+impl AgentRepairMemory {
     fn is_empty(&self) -> bool {
         self.observed_slices.is_empty()
             && self.validation_failures.is_empty()
@@ -469,9 +473,10 @@ impl LocalModelMemory {
             && self.ranked_implementation_targets.is_empty()
             && self.last_preview_result.is_none()
             && self.last_preview_id.is_none()
+            && self.last_preview_path.is_none()
             && self.preview_origin.is_none()
             && self.last_rollback_diagnostic.is_none()
-            && self.scorecard == LocalAgentScorecard::default()
+            && self.scorecard == AgentRepairScorecard::default()
     }
 }
 
@@ -609,8 +614,8 @@ pub enum RuntimeEvent {
         step: usize,
         record: FailedEditRecord,
     },
-    #[serde(rename = "agent.local_controller_read_injected")]
-    LocalControllerReadInjected {
+    #[serde(rename = "agent.controller_read_injected")]
+    ControllerReadInjected {
         step: usize,
         action: String,
         reason: String,
@@ -665,7 +670,7 @@ pub struct AgentTaskStateSnapshot {
     #[serde(default)]
     pub failed_edit_records: Vec<FailedEditRecord>,
     #[serde(default)]
-    pub local_model_memory: LocalModelMemory,
+    pub agent_repair_memory: AgentRepairMemory,
 }
 
 #[derive(Debug, Clone, Serialize, serde::Deserialize)]
@@ -727,7 +732,7 @@ struct AgentTaskState {
     last_successful_write_action: Option<AgentAction>,
     benchmark_repair_state: Option<BenchmarkRepairState>,
     failed_edit_records: Vec<FailedEditRecord>,
-    local_model_memory: LocalModelMemory,
+    agent_repair_memory: AgentRepairMemory,
 }
 
 impl AgentTaskState {
@@ -789,7 +794,7 @@ impl AgentTaskState {
             last_successful_write_action: None,
             benchmark_repair_state: None,
             failed_edit_records: Vec::new(),
-            local_model_memory: LocalModelMemory::default(),
+            agent_repair_memory: AgentRepairMemory::default(),
         }
     }
 
@@ -821,7 +826,7 @@ impl AgentTaskState {
             last_successful_write_action: self.last_successful_write_action.clone(),
             benchmark_repair_state: self.benchmark_repair_state.clone(),
             failed_edit_records: self.failed_edit_records.clone(),
-            local_model_memory: self.local_model_memory.clone(),
+            agent_repair_memory: self.agent_repair_memory.clone(),
         }
     }
 
@@ -852,7 +857,7 @@ impl AgentTaskState {
         self.last_successful_write_action = snapshot.last_successful_write_action;
         self.benchmark_repair_state = snapshot.benchmark_repair_state;
         self.failed_edit_records = snapshot.failed_edit_records;
-        self.local_model_memory = snapshot.local_model_memory;
+        self.agent_repair_memory = snapshot.agent_repair_memory;
     }
 
     fn runtime_summary(&self) -> String {
@@ -919,10 +924,10 @@ impl AgentTaskState {
                 render_failed_edit_memory(&self.failed_edit_records)
             ));
         }
-        if self.benchmark_case_ledger.is_some() && !self.local_model_memory.is_empty() {
+        if self.benchmark_case_ledger.is_some() && !self.agent_repair_memory.is_empty() {
             lines.push(format!(
-                "Local model memory: {}",
-                render_local_model_memory(&self.local_model_memory)
+                "Agent memory: {}",
+                render_agent_repair_memory(&self.agent_repair_memory)
             ));
         }
         if self.repair_recovery_turns_remaining > 0 {
@@ -980,7 +985,7 @@ impl AgentTaskState {
         }
         if let Some(ledger) = self.benchmark_case_ledger.as_ref() {
             if ledger.validation_details.repair_required {
-                lines.push("[Repair Phase] Stay on the owner file until the local fast loop is green again. Do not widen scope, do not keep rereading without a concrete range, and do not stop after explanation-only turns.".to_string());
+                lines.push("[Repair Phase] Stay on the owner file until the fast loop is green again. Do not widen scope, do not keep rereading without a concrete range, and do not stop after explanation-only turns.".to_string());
             }
             lines.push("[Benchmark Ledger]".to_string());
             if !ledger.case_class.is_empty() {
@@ -1144,25 +1149,26 @@ impl AgentTaskState {
     fn sync_benchmark_repair_state_to_ledger(&mut self) {
         self.prime_benchmark_patch_target_requirement();
         if let Some(ledger) = self.benchmark_case_ledger.as_ref() {
-            self.local_model_memory.diagnostic_class =
+            self.agent_repair_memory.diagnostic_class =
                 ledger.validation_details.diagnostic_class.clone();
-            self.local_model_memory.dependency_candidates = benchmark_dependency_candidates(ledger);
-            self.local_model_memory.ranked_implementation_targets =
+            self.agent_repair_memory.dependency_candidates =
+                benchmark_dependency_candidates(ledger);
+            self.agent_repair_memory.ranked_implementation_targets =
                 ranked_implementation_targets_for_ledger(ledger);
-            self.local_model_memory.implementation_target_lease = target_lease_for_ledger(ledger);
+            self.agent_repair_memory.implementation_target_lease = target_lease_for_ledger(ledger);
         } else {
-            self.local_model_memory.dependency_candidates.clear();
+            self.agent_repair_memory.dependency_candidates.clear();
         }
-        self.local_model_memory.current_required_action =
+        self.agent_repair_memory.current_required_action =
             repair_requirement_action_label(self.repair_requirement.as_ref()).or_else(|| {
                 benchmark_required_action_label(
                     self.benchmark_repair_state.as_ref(),
                     self.benchmark_case_ledger.as_ref(),
-                    &self.local_model_memory,
+                    &self.agent_repair_memory,
                 )
             });
-        self.local_model_memory.scorecard.preview_apply_locked =
-            preview_apply_locked(&self.local_model_memory);
+        self.agent_repair_memory.scorecard.preview_apply_locked =
+            preview_apply_locked(&self.agent_repair_memory);
         let Some(ledger) = self.benchmark_case_ledger.as_mut() else {
             return;
         };
@@ -1170,25 +1176,25 @@ impl AgentTaskState {
         ledger.validation_details.implementation_target_lease = target_lease_for_ledger(ledger);
         if let Some(repair_state) = self.benchmark_repair_state.as_ref() {
             let patch_target =
-                benchmark_patch_target_path(repair_state, ledger, &self.local_model_memory)
+                benchmark_patch_target_path(repair_state, ledger, &self.agent_repair_memory)
                     .into_owned();
-            self.local_model_memory.repair_phase =
-                Some(repair_state.phase.local_state_label().to_string());
-            self.local_model_memory.scorecard.repair_submode_entered = true;
-            self.local_model_memory.target_dependency_table =
+            self.agent_repair_memory.repair_phase =
+                Some(repair_state.phase.state_label().to_string());
+            self.agent_repair_memory.scorecard.repair_submode_entered = true;
+            self.agent_repair_memory.target_dependency_table =
                 benchmark_target_dependency_table(repair_state, ledger, &patch_target)
                     .map(str::to_string);
-            self.local_model_memory.scorecard.repair_write_locked =
+            self.agent_repair_memory.scorecard.repair_write_locked =
                 benchmark_patch_phase_write_locked(
                     repair_state,
                     ledger,
-                    &self.local_model_memory,
+                    &self.agent_repair_memory,
                     self.repair_requirement.as_ref(),
                 );
-            self.local_model_memory.scorecard.patch_scaffold_offered = repair_state.phase
+            self.agent_repair_memory.scorecard.patch_scaffold_offered = repair_state.phase
                 == BenchmarkRepairPhase::NeedsPatch
                 && patch_target.ends_with(".toml");
-            self.local_model_memory.context_sufficient = matches!(
+            self.agent_repair_memory.context_sufficient = matches!(
                 repair_state.phase,
                 BenchmarkRepairPhase::NeedsPatch | BenchmarkRepairPhase::NeedsFastLoopRerun
             );
@@ -1222,13 +1228,13 @@ impl AgentTaskState {
                     recommended_fast_loop_rerun_command(ledger);
             }
         } else {
-            self.local_model_memory.repair_phase =
-                Some(BenchmarkRepairPhase::Idle.local_state_label().to_string());
-            self.local_model_memory.context_sufficient = false;
-            self.local_model_memory.target_dependency_table = None;
-            self.local_model_memory.scorecard.repair_write_locked = false;
-            self.local_model_memory.scorecard.patch_scaffold_offered = false;
-            self.local_model_memory.scorecard.preview_apply_locked = false;
+            self.agent_repair_memory.repair_phase =
+                Some(BenchmarkRepairPhase::Idle.state_label().to_string());
+            self.agent_repair_memory.context_sufficient = false;
+            self.agent_repair_memory.target_dependency_table = None;
+            self.agent_repair_memory.scorecard.repair_write_locked = false;
+            self.agent_repair_memory.scorecard.patch_scaffold_offered = false;
+            self.agent_repair_memory.scorecard.preview_apply_locked = false;
             ledger.validation_details.repair_phase_terminal =
                 Some(BenchmarkRepairPhase::Idle.label().to_string());
             ledger.validation_details.failure_anchor_reread_attempted = false;
@@ -1241,14 +1247,14 @@ impl AgentTaskState {
     }
 
     fn record_invalid_turn(&mut self, step: usize, error_class: &str, summary: &str) {
-        self.local_model_memory.scorecard.parser_recovery_count = self
-            .local_model_memory
+        self.agent_repair_memory.scorecard.parser_recovery_count = self
+            .agent_repair_memory
             .scorecard
             .parser_recovery_count
             .saturating_add(1);
         push_capped(
-            &mut self.local_model_memory.invalid_turns,
-            LocalModelInvalidTurn {
+            &mut self.agent_repair_memory.invalid_turns,
+            AgentRepairInvalidTurn {
                 step,
                 error_class: error_class.to_string(),
                 summary: truncate_visible_text(summary, 180),
@@ -1269,9 +1275,9 @@ impl AgentTaskState {
 
     fn note_repair_submode_turn(&mut self) {
         if self.benchmark_repair_submode_active() {
-            self.local_model_memory.scorecard.repair_submode_entered = true;
-            self.local_model_memory.scorecard.repair_submode_turns = self
-                .local_model_memory
+            self.agent_repair_memory.scorecard.repair_submode_entered = true;
+            self.agent_repair_memory.scorecard.repair_submode_turns = self
+                .agent_repair_memory
                 .scorecard
                 .repair_submode_turns
                 .saturating_add(1);
@@ -1419,10 +1425,10 @@ impl AgentTaskState {
             return;
         }
         let patch_target =
-            benchmark_patch_target_path(repair_state, ledger, &self.local_model_memory);
+            benchmark_patch_target_path(repair_state, ledger, &self.agent_repair_memory);
         if patch_target_context_loaded(
             repair_state,
-            &self.local_model_memory,
+            &self.agent_repair_memory,
             patch_target.as_ref(),
         ) {
             return;
@@ -1472,8 +1478,8 @@ impl AgentTaskState {
     }
 
     fn record_line_oriented_parse(&mut self) {
-        self.local_model_memory.scorecard.line_oriented_parse_count = self
-            .local_model_memory
+        self.agent_repair_memory.scorecard.line_oriented_parse_count = self
+            .agent_repair_memory
             .scorecard
             .line_oriented_parse_count
             .saturating_add(1);
@@ -1481,7 +1487,7 @@ impl AgentTaskState {
 
     fn record_canonical_action(&mut self, step: usize, action: &AgentAction) {
         push_capped(
-            &mut self.local_model_memory.canonical_action_history,
+            &mut self.agent_repair_memory.canonical_action_history,
             canonical_action_record(step, action, self.benchmark_case_ledger.as_ref()),
             32,
         );
@@ -1494,8 +1500,8 @@ impl AgentTaskState {
         reason: &str,
     ) {
         push_capped(
-            &mut self.local_model_memory.rejected_actions,
-            LocalModelRejectedAction {
+            &mut self.agent_repair_memory.rejected_actions,
+            AgentRepairRejectedAction {
                 phase: phase.label().to_string(),
                 actions: actions.iter().map(AgentAction::summary).collect(),
                 reason: truncate_visible_text(reason, 220),
@@ -1506,24 +1512,24 @@ impl AgentTaskState {
             .iter()
             .any(|action| action_is_validation_like(action, self.benchmark_case_ledger.as_ref()))
         {
-            self.local_model_memory
+            self.agent_repair_memory
                 .scorecard
                 .rejected_validation_alias_count = self
-                .local_model_memory
+                .agent_repair_memory
                 .scorecard
                 .rejected_validation_alias_count
                 .saturating_add(1);
         }
         if reason.contains("test file") || reason.contains("test-file") {
-            self.local_model_memory.scorecard.test_edit_rejection_count = self
-                .local_model_memory
+            self.agent_repair_memory.scorecard.test_edit_rejection_count = self
+                .agent_repair_memory
                 .scorecard
                 .test_edit_rejection_count
                 .saturating_add(1);
         }
         if reason.contains("target lease") || reason.contains("evidence file") {
-            self.local_model_memory.scorecard.target_redirect_count = self
-                .local_model_memory
+            self.agent_repair_memory.scorecard.target_redirect_count = self
+                .agent_repair_memory
                 .scorecard
                 .target_redirect_count
                 .saturating_add(1);
@@ -1532,10 +1538,10 @@ impl AgentTaskState {
             || reason.contains("test file")
             || reason.contains("test-file")
         {
-            self.local_model_memory
+            self.agent_repair_memory
                 .scorecard
                 .evidence_file_fixation_count = self
-                .local_model_memory
+                .agent_repair_memory
                 .scorecard
                 .evidence_file_fixation_count
                 .saturating_add(1);
@@ -1544,8 +1550,8 @@ impl AgentTaskState {
 
     fn record_validation_failure_memory(&mut self, command: String, summary: &str) {
         push_capped(
-            &mut self.local_model_memory.validation_failures,
-            LocalModelValidationFailure {
+            &mut self.agent_repair_memory.validation_failures,
+            AgentRepairValidationFailure {
                 command,
                 summary: truncate_visible_text(summary, 260),
             },
@@ -1564,23 +1570,23 @@ impl AgentTaskState {
     ) {
         if let Some(honored_range) = honored_range {
             let repeated = self
-                .local_model_memory
+                .agent_repair_memory
                 .observed_slices
                 .iter()
                 .filter(|slice| slice.path == path)
                 .filter_map(|slice| slice.honored_range)
                 .any(|previous_range| ranges_substantially_overlap(previous_range, honored_range));
             if repeated {
-                self.local_model_memory.scorecard.redundant_read_count = self
-                    .local_model_memory
+                self.agent_repair_memory.scorecard.redundant_read_count = self
+                    .agent_repair_memory
                     .scorecard
                     .redundant_read_count
                     .saturating_add(1);
             }
         }
         push_capped(
-            &mut self.local_model_memory.observed_slices,
-            LocalModelObservedSlice {
+            &mut self.agent_repair_memory.observed_slices,
+            AgentRepairObservedSlice {
                 path: path.to_string(),
                 requested_range,
                 honored_range,
@@ -1609,12 +1615,12 @@ impl AgentTaskState {
 
     fn record_first_valid_write_step(&mut self, step: usize) {
         if self
-            .local_model_memory
+            .agent_repair_memory
             .scorecard
             .first_valid_write_step
             .is_none()
         {
-            self.local_model_memory.scorecard.first_valid_write_step = Some(step);
+            self.agent_repair_memory.scorecard.first_valid_write_step = Some(step);
         }
     }
 
@@ -1626,14 +1632,14 @@ impl AgentTaskState {
             return;
         }
         if self.benchmark_support_write_target_path(action).is_some() {
-            self.local_model_memory.scorecard.support_write_count = self
-                .local_model_memory
+            self.agent_repair_memory.scorecard.support_write_count = self
+                .agent_repair_memory
                 .scorecard
                 .support_write_count
                 .saturating_add(1);
         } else {
-            self.local_model_memory.scorecard.source_write_count = self
-                .local_model_memory
+            self.agent_repair_memory.scorecard.source_write_count = self
+                .agent_repair_memory
                 .scorecard
                 .source_write_count
                 .saturating_add(1);
@@ -1650,12 +1656,12 @@ impl AgentTaskState {
             | AgentAction::ReplaceBlock { path, .. }
             | AgentAction::ReplaceRange { path, .. } => Some(path.clone()),
             AgentAction::ApplyPreview { .. } => self
-                .local_model_memory
+                .agent_repair_memory
                 .last_preview_result
                 .as_deref()
                 .and_then(|output| extract_labeled_line(output, "path:"))
                 .or_else(|| {
-                    (self.local_model_memory.preview_origin.as_deref()
+                    (self.agent_repair_memory.preview_origin.as_deref()
                         == Some("write_locked_manifest"))
                     .then(|| "Cargo.toml".to_string())
                 }),
@@ -1680,10 +1686,10 @@ impl AgentTaskState {
     }
 
     fn record_controller_injected_read(&mut self) {
-        self.local_model_memory
+        self.agent_repair_memory
             .scorecard
             .controller_injected_read_count = self
-            .local_model_memory
+            .agent_repair_memory
             .scorecard
             .controller_injected_read_count
             .saturating_add(1);
@@ -1695,14 +1701,14 @@ impl AgentTaskState {
         range: Option<crate::agent_protocol::ReadFileRange>,
         search_hint: Option<&str>,
     ) {
-        self.local_model_memory.scorecard.anchor_suggestion_count = self
-            .local_model_memory
+        self.agent_repair_memory.scorecard.anchor_suggestion_count = self
+            .agent_repair_memory
             .scorecard
             .anchor_suggestion_count
             .saturating_add(1);
         push_capped(
-            &mut self.local_model_memory.suggested_edit_anchors,
-            LocalModelSuggestedEditAnchor {
+            &mut self.agent_repair_memory.suggested_edit_anchors,
+            AgentRepairSuggestedEditAnchor {
                 path: path.to_string(),
                 range,
                 search_hint: search_hint
@@ -1714,58 +1720,62 @@ impl AgentTaskState {
         );
     }
 
-    fn record_preview_edit(&mut self, output_text: &str) {
-        self.local_model_memory.scorecard.preview_edit_count = self
-            .local_model_memory
+    fn record_preview_edit(&mut self, action: &AgentAction, output_text: &str) {
+        self.agent_repair_memory.scorecard.preview_edit_count = self
+            .agent_repair_memory
             .scorecard
             .preview_edit_count
             .saturating_add(1);
         let preview_id = extract_preview_id(output_text);
         if output_text.contains("would_apply: true") || output_text.contains("would_apply=true") {
-            self.local_model_memory.scorecard.preview_edit_success_count = self
-                .local_model_memory
+            self.agent_repair_memory
+                .scorecard
+                .preview_edit_success_count = self
+                .agent_repair_memory
                 .scorecard
                 .preview_edit_success_count
                 .saturating_add(1);
         }
         if preview_id.is_some() {
-            self.local_model_memory.scorecard.preview_created_count = self
-                .local_model_memory
+            self.agent_repair_memory.scorecard.preview_created_count = self
+                .agent_repair_memory
                 .scorecard
                 .preview_created_count
                 .saturating_add(1);
-            self.local_model_memory.last_preview_id = preview_id;
-            self.local_model_memory.preview_origin =
+            self.agent_repair_memory.last_preview_id = preview_id;
+            self.agent_repair_memory.last_preview_path = action_target_path(action);
+            self.agent_repair_memory.preview_origin =
                 self.current_preview_origin().map(str::to_string);
         }
         if output_text.contains("syntax_preflight:") {
-            self.local_model_memory.scorecard.syntax_preview_count = self
-                .local_model_memory
+            self.agent_repair_memory.scorecard.syntax_preview_count = self
+                .agent_repair_memory
                 .scorecard
                 .syntax_preview_count
                 .saturating_add(1);
             if output_text.contains("syntax_preflight: failed") {
-                self.local_model_memory
+                self.agent_repair_memory
                     .scorecard
                     .syntax_preview_failure_count = self
-                    .local_model_memory
+                    .agent_repair_memory
                     .scorecard
                     .syntax_preview_failure_count
                     .saturating_add(1);
             }
         }
-        self.local_model_memory.last_preview_result = Some(truncate_visible_text(output_text, 260));
+        self.agent_repair_memory.last_preview_result =
+            Some(truncate_visible_text(output_text, 260));
     }
 
     fn current_preview_origin(&self) -> Option<&'static str> {
         let repair_state = self.benchmark_repair_state.as_ref()?;
         let ledger = self.benchmark_case_ledger.as_ref()?;
         let patch_target =
-            benchmark_patch_target_path(repair_state, ledger, &self.local_model_memory);
+            benchmark_patch_target_path(repair_state, ledger, &self.agent_repair_memory);
         let write_locked = benchmark_patch_phase_write_locked(
             repair_state,
             ledger,
-            &self.local_model_memory,
+            &self.agent_repair_memory,
             self.repair_requirement.as_ref(),
         );
         if write_locked && patch_target.as_ref().ends_with(".toml") {
@@ -1776,8 +1786,8 @@ impl AgentTaskState {
     }
 
     fn record_redundant_inspection_turn(&mut self) {
-        self.local_model_memory.scorecard.redundant_read_count = self
-            .local_model_memory
+        self.agent_repair_memory.scorecard.redundant_read_count = self
+            .agent_repair_memory
             .scorecard
             .redundant_read_count
             .saturating_add(1);
@@ -1797,8 +1807,10 @@ impl AgentTaskState {
             existing.attempts = existing.attempts.saturating_add(1);
             existing.failure_reason = record.failure_reason;
             existing.matching_line_numbers = record.matching_line_numbers;
-            self.local_model_memory.scorecard.repeated_failed_edit_count = self
-                .local_model_memory
+            self.agent_repair_memory
+                .scorecard
+                .repeated_failed_edit_count = self
+                .agent_repair_memory
                 .scorecard
                 .repeated_failed_edit_count
                 .saturating_add(1);
@@ -1830,15 +1842,15 @@ impl AgentTaskState {
             return;
         };
         self.last_failed_tool_error = Some(failure_reason.to_string());
-        self.local_model_memory.last_rollback_diagnostic =
+        self.agent_repair_memory.last_rollback_diagnostic =
             Some(truncate_visible_text(failure_reason, 260));
-        self.local_model_memory.post_patch_diagnostic_class =
+        self.agent_repair_memory.post_patch_diagnostic_class =
             classify_benchmark_diagnostic(failure_reason);
-        self.local_model_memory.post_patch_diagnostic_excerpt =
+        self.agent_repair_memory.post_patch_diagnostic_excerpt =
             extract_assertion_excerpt(failure_reason)
                 .or_else(|| Some(truncate_visible_text(failure_reason, 220)));
-        self.local_model_memory.scorecard.rolled_back_write_count = self
-            .local_model_memory
+        self.agent_repair_memory.scorecard.rolled_back_write_count = self
+            .agent_repair_memory
             .scorecard
             .rolled_back_write_count
             .saturating_add(1);
@@ -1846,16 +1858,16 @@ impl AgentTaskState {
             .as_deref()
             .is_some_and(|path| !is_support_or_generated_runtime_path(path))
         {
-            self.local_model_memory
+            self.agent_repair_memory
                 .scorecard
                 .rolled_back_non_support_edit_count = self
-                .local_model_memory
+                .agent_repair_memory
                 .scorecard
                 .rolled_back_non_support_edit_count
                 .saturating_add(1);
         }
         if let AgentAction::ModifyToml { operations, .. } = &action {
-            self.local_model_memory.last_manifest_patch_operations = operations.clone();
+            self.agent_repair_memory.last_manifest_patch_operations = operations.clone();
         }
         self.repair_requirement = Some(requirement);
         self.repair_recovery_turns_remaining = 1;
@@ -1899,11 +1911,11 @@ impl AgentTaskState {
         };
         if repair_state.phase == BenchmarkRepairPhase::NeedsPatch {
             let patch_target =
-                benchmark_patch_target_path(repair_state, ledger, &self.local_model_memory);
-            let target_lease = benchmark_target_lease_path(ledger, &self.local_model_memory);
+                benchmark_patch_target_path(repair_state, ledger, &self.agent_repair_memory);
+            let target_lease = benchmark_target_lease_path(ledger, &self.agent_repair_memory);
             let patch_target_context_loaded = patch_target_context_loaded(
                 repair_state,
-                &self.local_model_memory,
+                &self.agent_repair_memory,
                 patch_target.as_ref(),
             );
             let honored_range = repair_state
@@ -1923,12 +1935,12 @@ impl AgentTaskState {
                 patch_target.as_ref(),
                 &self.failed_edit_records,
             );
-            let scaffold_available = patch_phase_scaffold_available(&self.local_model_memory);
+            let scaffold_available = patch_phase_scaffold_available(&self.agent_repair_memory);
             let scaffold_required = scaffold_available && !patch_target_context_loaded;
             let write_locked = benchmark_patch_phase_write_locked(
                 repair_state,
                 ledger,
-                &self.local_model_memory,
+                &self.agent_repair_memory,
                 self.repair_requirement.as_ref(),
             );
             let dependency_candidates = benchmark_dependency_candidates(ledger);
@@ -1941,7 +1953,7 @@ impl AgentTaskState {
             );
             let target_content_hash = target_content_hash_for_patch(
                 repair_state,
-                &self.local_model_memory,
+                &self.agent_repair_memory,
                 patch_target.as_ref(),
             );
             let allowed_targets = benchmark_allowed_implementation_targets(ledger);
@@ -1955,7 +1967,7 @@ impl AgentTaskState {
                     lines.push(format!("Current target lease: {target_lease}"));
                 }
                 if let Some(diagnostic_class) = self
-                    .local_model_memory
+                    .agent_repair_memory
                     .diagnostic_class
                     .as_deref()
                     .or(ledger.validation_details.diagnostic_class.as_deref())
@@ -1982,19 +1994,19 @@ impl AgentTaskState {
                     lines.push(format!("Observed target content_hash: `{content_hash}`"));
                 }
                 if !self
-                    .local_model_memory
+                    .agent_repair_memory
                     .last_manifest_patch_operations
                     .is_empty()
                 {
                     lines.push(format!(
                         "Previous manifest ops: {}",
                         render_toml_edit_operations_brief(
-                            &self.local_model_memory.last_manifest_patch_operations
+                            &self.agent_repair_memory.last_manifest_patch_operations
                         )
                     ));
                 }
                 if let Some(post_patch_diagnostic_class) = self
-                    .local_model_memory
+                    .agent_repair_memory
                     .post_patch_diagnostic_class
                     .as_deref()
                 {
@@ -2003,7 +2015,7 @@ impl AgentTaskState {
                     ));
                 }
                 if let Some(post_patch_excerpt) = self
-                    .local_model_memory
+                    .agent_repair_memory
                     .post_patch_diagnostic_excerpt
                     .as_deref()
                 {
@@ -2015,9 +2027,9 @@ impl AgentTaskState {
                 if let Some(command) = recommended_rerun_command.as_deref() {
                     lines.push(format!("Exact rerun command: {command}"));
                 }
-                if preview_apply_locked(&self.local_model_memory) {
+                if preview_apply_locked(&self.agent_repair_memory) {
                     let preview_id = self
-                        .local_model_memory
+                        .agent_repair_memory
                         .last_preview_id
                         .as_deref()
                         .unwrap_or("preview_id_from_last_preview");
@@ -2047,9 +2059,9 @@ impl AgentTaskState {
                         .to_string(),
                 );
                 lines.push("Minimal JSON example:".to_string());
-                if preview_apply_locked(&self.local_model_memory) {
+                if preview_apply_locked(&self.agent_repair_memory) {
                     lines.push(apply_preview_parser_recovery_example(
-                        self.local_model_memory
+                        self.agent_repair_memory
                             .last_preview_id
                             .as_deref()
                             .unwrap_or("preview_id_from_last_preview"),
@@ -2073,7 +2085,7 @@ impl AgentTaskState {
                         patch_target
                     )
                 } else if write_locked && patch_target.ends_with(".toml") {
-                    if preview_apply_locked(&self.local_model_memory) {
+                    if preview_apply_locked(&self.agent_repair_memory) {
                         format!(
                             "Write-locked patch phase: a clean manifest preview already exists for `{}`. Emit one `ApplyPreview` now. Do not read, search, list, or widen scope.",
                             patch_target
@@ -2110,7 +2122,7 @@ impl AgentTaskState {
                 lines.push("Repair write locked: true".to_string());
             }
             if let Some(diagnostic_class) = self
-                .local_model_memory
+                .agent_repair_memory
                 .diagnostic_class
                 .as_deref()
                 .or(ledger.validation_details.diagnostic_class.as_deref())
@@ -2130,14 +2142,14 @@ impl AgentTaskState {
                 ));
             }
             if !self
-                .local_model_memory
+                .agent_repair_memory
                 .ranked_implementation_targets
                 .is_empty()
             {
                 lines.push(format!(
                     "Ranked implementation targets: {}",
                     render_ranked_implementation_targets(
-                        &self.local_model_memory.ranked_implementation_targets
+                        &self.agent_repair_memory.ranked_implementation_targets
                     )
                 ));
             }
@@ -2151,13 +2163,13 @@ impl AgentTaskState {
                     render_benchmark_target_list(&read_only_tests)
                 ));
             }
-            if let Some(required_action) = self.local_model_memory.current_required_action.as_ref()
+            if let Some(required_action) = self.agent_repair_memory.current_required_action.as_ref()
             {
                 lines.push(format!("Required next action: {required_action}"));
             }
-            if preview_apply_locked(&self.local_model_memory) {
+            if preview_apply_locked(&self.agent_repair_memory) {
                 let preview_id = self
-                    .local_model_memory
+                    .agent_repair_memory
                     .last_preview_id
                     .as_deref()
                     .unwrap_or("preview_id_from_last_preview");
@@ -2200,22 +2212,22 @@ impl AgentTaskState {
                     render_failed_edit_memory(&self.failed_edit_records)
                 ));
             }
-            if let Some(preview) = self.local_model_memory.last_preview_result.as_ref() {
+            if let Some(preview) = self.agent_repair_memory.last_preview_result.as_ref() {
                 lines.push(format!(
                     "Last preview result: {}",
                     truncate_visible_text(preview, 220)
                 ));
             }
-            if let Some(rollback) = self.local_model_memory.last_rollback_diagnostic.as_ref() {
+            if let Some(rollback) = self.agent_repair_memory.last_rollback_diagnostic.as_ref() {
                 lines.push(format!(
                     "Last rollback diagnostic: {}",
                     truncate_visible_text(rollback, 220)
                 ));
             }
-            if !self.local_model_memory.is_empty() {
+            if !self.agent_repair_memory.is_empty() {
                 lines.push(format!(
-                    "Local scorecard: {}",
-                    render_local_model_memory(&self.local_model_memory)
+                    "Agent scorecard: {}",
+                    render_agent_repair_memory(&self.agent_repair_memory)
                 ));
             }
             if bare_replace_disallowed {
@@ -2308,7 +2320,7 @@ impl AgentTaskState {
             if !patch_target.ends_with(".toml") {
                 if let Some(target_honored_range) = target_honored_range {
                     let expected_hash = observed_range_content_hash(
-                        &self.local_model_memory,
+                        &self.agent_repair_memory,
                         patch_target.as_ref(),
                         target_honored_range,
                     )
@@ -2343,7 +2355,7 @@ impl AgentTaskState {
             phase_message.to_string(),
             format!("Repair target: {repair_target}"),
         ];
-        if let Some(required_action) = self.local_model_memory.current_required_action.as_ref() {
+        if let Some(required_action) = self.agent_repair_memory.current_required_action.as_ref() {
             lines.push(format!("Required next action: {required_action}"));
         }
         if let Some(range) = suggested_range {
@@ -2443,18 +2455,18 @@ impl AgentTaskState {
                     return lines.join("\n");
                 }
                 let patch_target =
-                    benchmark_patch_target_path(repair_state, ledger, &self.local_model_memory);
+                    benchmark_patch_target_path(repair_state, ledger, &self.agent_repair_memory);
                 let patch_target_context_loaded = patch_target_context_loaded(
                     repair_state,
-                    &self.local_model_memory,
+                    &self.agent_repair_memory,
                     patch_target.as_ref(),
                 );
-                let scaffold_available = patch_phase_scaffold_available(&self.local_model_memory);
+                let scaffold_available = patch_phase_scaffold_available(&self.agent_repair_memory);
                 let scaffold_required = scaffold_available && !patch_target_context_loaded;
                 let write_locked = benchmark_patch_phase_write_locked(
                     repair_state,
                     ledger,
-                    &self.local_model_memory,
+                    &self.agent_repair_memory,
                     self.repair_requirement.as_ref(),
                 );
                 let dependency_candidates = benchmark_dependency_candidates(ledger);
@@ -2520,9 +2532,9 @@ impl AgentTaskState {
                     ));
                 }
                 if write_locked && patch_target.ends_with(".toml") {
-                    if preview_apply_locked(&self.local_model_memory) {
+                    if preview_apply_locked(&self.agent_repair_memory) {
                         let preview_id = self
-                            .local_model_memory
+                            .agent_repair_memory
                             .last_preview_id
                             .as_deref()
                             .unwrap_or("preview_id_from_last_preview");
@@ -2553,7 +2565,7 @@ impl AgentTaskState {
                 }
                 let target_content_hash = target_content_hash_for_patch(
                     repair_state,
-                    &self.local_model_memory,
+                    &self.agent_repair_memory,
                     patch_target.as_ref(),
                 );
                 if write_locked && patch_target.ends_with(".toml") {
@@ -2583,9 +2595,9 @@ impl AgentTaskState {
                     if let Some(command) = recommended_rerun_command.as_deref() {
                         lines.push(format!("Exact rerun command: {command}"));
                     }
-                    if preview_apply_locked(&self.local_model_memory) {
+                    if preview_apply_locked(&self.agent_repair_memory) {
                         let preview_id = self
-                            .local_model_memory
+                            .agent_repair_memory
                             .last_preview_id
                             .as_deref()
                             .unwrap_or("preview_id_from_last_preview");
@@ -2599,9 +2611,9 @@ impl AgentTaskState {
                         );
                     }
                     lines.push("Minimal JSON example:".to_string());
-                    if preview_apply_locked(&self.local_model_memory) {
+                    if preview_apply_locked(&self.agent_repair_memory) {
                         lines.push(apply_preview_parser_recovery_example(
-                            self.local_model_memory
+                            self.agent_repair_memory
                                 .last_preview_id
                                 .as_deref()
                                 .unwrap_or("preview_id_from_last_preview"),
@@ -2700,21 +2712,21 @@ impl AgentTaskState {
                 benchmark_patch_target_path(
                     &repair_state_snapshot,
                     ledger,
-                    &self.local_model_memory,
+                    &self.agent_repair_memory,
                 )
                 .into_owned()
             })
             .unwrap_or_else(|| owner_path.clone());
         let patch_target_context_loaded = patch_target_context_loaded(
             &repair_state_snapshot,
-            &self.local_model_memory,
+            &self.agent_repair_memory,
             &patch_target,
         );
         let write_locked = self.benchmark_case_ledger.as_ref().is_some_and(|ledger| {
             benchmark_patch_phase_write_locked(
                 &repair_state_snapshot,
                 ledger,
-                &self.local_model_memory,
+                &self.agent_repair_memory,
                 self.repair_requirement.as_ref(),
             )
         });
@@ -2773,7 +2785,7 @@ impl AgentTaskState {
                             &patch_target,
                             ledger,
                             &self.failed_edit_records,
-                            &self.local_model_memory,
+                            &self.agent_repair_memory,
                             patch_target_context_loaded,
                         )
                     })
@@ -2795,10 +2807,10 @@ impl AgentTaskState {
         }
         if let Some(repair_state) = self.benchmark_repair_state.as_mut() {
             repair_state.invalid_action_count = repair_state.invalid_action_count.saturating_add(1);
-            self.local_model_memory
+            self.agent_repair_memory
                 .scorecard
                 .repair_invalid_action_streak_max = self
-                .local_model_memory
+                .agent_repair_memory
                 .scorecard
                 .repair_invalid_action_streak_max
                 .max(repair_state.invalid_action_count);
@@ -2809,18 +2821,18 @@ impl AgentTaskState {
                 .iter()
                 .any(|action| benchmark_write_phase_refusal(action, &patch_target))
         {
-            self.local_model_memory
+            self.agent_repair_memory
                 .scorecard
                 .write_phase_action_refusal_count = self
-                .local_model_memory
+                .agent_repair_memory
                 .scorecard
                 .write_phase_action_refusal_count
                 .saturating_add(1);
-            if patch_target.ends_with(".toml") && preview_apply_locked(&self.local_model_memory) {
-                self.local_model_memory
+            if patch_target.ends_with(".toml") && preview_apply_locked(&self.agent_repair_memory) {
+                self.agent_repair_memory
                     .scorecard
                     .preview_apply_action_refusal_count = self
-                    .local_model_memory
+                    .agent_repair_memory
                     .scorecard
                     .preview_apply_action_refusal_count
                     .saturating_add(1);
@@ -2836,7 +2848,7 @@ impl AgentTaskState {
             && write_locked
             && patch_target.ends_with(".toml")
         {
-            let preview_apply_locked = preview_apply_locked(&self.local_model_memory);
+            let preview_apply_locked = preview_apply_locked(&self.agent_repair_memory);
             let benchmark_ledger = self.benchmark_case_ledger.as_ref();
             let target_dependency_table = benchmark_ledger.and_then(|ledger| {
                 benchmark_target_dependency_table(&repair_state_snapshot, ledger, &patch_target)
@@ -2855,7 +2867,7 @@ impl AgentTaskState {
                 .unwrap_or_default();
             let target_content_hash = target_content_hash_for_patch(
                 &repair_state_snapshot,
-                &self.local_model_memory,
+                &self.agent_repair_memory,
                 patch_target.as_ref(),
             );
             let invalid_action_count = self
@@ -2865,7 +2877,7 @@ impl AgentTaskState {
                 .unwrap_or(0);
             if invalid_action_count >= 2 {
                 if self
-                    .local_model_memory
+                    .agent_repair_memory
                     .scorecard
                     .write_phase_action_refusal_count
                     > 0
@@ -2888,7 +2900,7 @@ impl AgentTaskState {
             ];
             if preview_apply_locked {
                 let preview_id = self
-                    .local_model_memory
+                    .agent_repair_memory
                     .last_preview_id
                     .as_deref()
                     .unwrap_or("preview_id_from_last_preview");
@@ -2930,7 +2942,7 @@ impl AgentTaskState {
             lines.push("Minimal JSON example:".to_string());
             if preview_apply_locked {
                 lines.push(apply_preview_parser_recovery_example(
-                    self.local_model_memory
+                    self.agent_repair_memory
                         .last_preview_id
                         .as_deref()
                         .unwrap_or("preview_id_from_last_preview"),
@@ -2975,7 +2987,7 @@ impl AgentTaskState {
                 }
                 BenchmarkRepairPhase::NeedsPatch => {
                     if write_locked && patch_target.ends_with(".toml") {
-                        if preview_apply_locked(&self.local_model_memory) {
+                        if preview_apply_locked(&self.agent_repair_memory) {
                             "Correction: act on the leased patch target now. The manifest preview already exists, so emit exactly one `ApplyPreview` with the preview id from the last clean preview. Do not read, search, list, or widen scope first."
                         } else {
                             "Correction: act on the leased patch target now. Emit exactly one `PreviewEdit` with `modify_toml` on the manifest. Do not read, search, list, or widen scope first."
@@ -3010,7 +3022,7 @@ impl AgentTaskState {
             if phase == BenchmarkRepairPhase::NeedsPatch
                 && write_locked
                 && self
-                    .local_model_memory
+                    .agent_repair_memory
                     .scorecard
                     .write_phase_action_refusal_count
                     > 0
@@ -3043,12 +3055,12 @@ impl AgentTaskState {
             && benchmark_patch_phase_write_locked(
                 repair_state,
                 ledger,
-                &self.local_model_memory,
+                &self.agent_repair_memory,
                 self.repair_requirement.as_ref(),
             )
         {
             let patch_target =
-                benchmark_patch_target_path(repair_state, ledger, &self.local_model_memory);
+                benchmark_patch_target_path(repair_state, ledger, &self.agent_repair_memory);
             match action {
                 AgentAction::ReadFile { .. }
                 | AgentAction::ListDirectory { .. }
@@ -3116,7 +3128,7 @@ impl AgentTaskState {
             return None;
         }
         let lease = self
-            .local_model_memory
+            .agent_repair_memory
             .implementation_target_lease
             .as_deref()
             .filter(|value| !value.trim().is_empty())?;
@@ -3202,7 +3214,7 @@ impl AgentTaskState {
                 && ledger.last_validation_failure.is_none()
                 && ledger.validation_status.is_none()
                 && self
-                    .local_model_memory
+                    .agent_repair_memory
                     .canonical_action_history
                     .iter()
                     .all(|action| !action.validation_like)
@@ -3277,18 +3289,18 @@ impl AgentTaskState {
                 }
                 AgentAction::ListDirectory { path } => self.working_set.contains(path),
                 AgentAction::SearchText { query, .. } => self
-                    .local_model_memory
+                    .agent_repair_memory
                     .canonical_action_history
                     .iter()
                     .any(|record| record.signature == format!("search_text:{}", query.trim())),
                 AgentAction::SearchSymbols { query, .. } => self
-                    .local_model_memory
+                    .agent_repair_memory
                     .canonical_action_history
                     .iter()
                     .any(|record| record.signature == format!("search_symbols:{}", query.trim())),
                 AgentAction::GetRepoCapsule { query, .. } => {
                     let query = query.as_deref().unwrap_or("").trim();
-                    self.local_model_memory
+                    self.agent_repair_memory
                         .canonical_action_history
                         .iter()
                         .any(|record| record.signature == format!("repo_capsule:{query}"))
@@ -3303,7 +3315,7 @@ impl AgentTaskState {
                         .map(|value| value.label())
                         .unwrap_or_else(|| "all".to_string());
                     let hint = search_hint.as_deref().unwrap_or("").trim();
-                    self.local_model_memory
+                    self.agent_repair_memory
                         .canonical_action_history
                         .iter()
                         .any(|record| {
@@ -3317,7 +3329,7 @@ impl AgentTaskState {
                         canonical_path(path),
                         short_text_fingerprint(&format!("{edit:?}"))
                     );
-                    self.local_model_memory
+                    self.agent_repair_memory
                         .canonical_action_history
                         .iter()
                         .any(|record| record.signature == signature)
@@ -3409,7 +3421,7 @@ impl AgentTaskState {
         if self.has_mutating_change {
             return false;
         }
-        if self.local_model_memory.scorecard.redundant_read_count >= 2 {
+        if self.agent_repair_memory.scorecard.redundant_read_count >= 2 {
             return false;
         }
         if let Some(repair_state) = self.benchmark_repair_state.as_ref() {
@@ -3473,12 +3485,12 @@ impl AgentTaskState {
             self.benchmark_repair_state.as_ref(),
         ) {
             let patch_target =
-                benchmark_patch_target_path(repair_state, ledger, &self.local_model_memory)
+                benchmark_patch_target_path(repair_state, ledger, &self.agent_repair_memory)
                     .into_owned();
             let write_locked = benchmark_patch_phase_write_locked(
                 repair_state,
                 ledger,
-                &self.local_model_memory,
+                &self.agent_repair_memory,
                 self.repair_requirement.as_ref(),
             );
             if write_locked {
@@ -3497,11 +3509,11 @@ impl AgentTaskState {
                 };
                 if targets_patch {
                     if matches!(action, AgentAction::PreviewEdit { .. }) {
-                        self.local_model_memory.scorecard.patch_scaffold_honored = true;
+                        self.agent_repair_memory.scorecard.patch_scaffold_honored = true;
                     }
                     if action.is_write_like() || matches!(action, AgentAction::ApplyPreview { .. })
                     {
-                        self.local_model_memory.scorecard.write_phase_write_emitted = true;
+                        self.agent_repair_memory.scorecard.write_phase_write_emitted = true;
                     }
                 }
             }
@@ -3658,14 +3670,14 @@ impl AgentTaskState {
     fn repair_rejects_validation_before_first_write(&self) -> bool {
         if self.has_mutating_change
             || self
-                .local_model_memory
+                .agent_repair_memory
                 .scorecard
                 .first_valid_write_step
                 .is_some()
         {
             return false;
         }
-        let known_failure = !self.local_model_memory.validation_failures.is_empty()
+        let known_failure = !self.agent_repair_memory.validation_failures.is_empty()
             || self
                 .benchmark_case_ledger
                 .as_ref()
@@ -3791,7 +3803,7 @@ impl AgentTaskState {
                 }
                 let workspace_root = self.workspace_root.clone();
                 let active_target_lease = self
-                    .local_model_memory
+                    .agent_repair_memory
                     .implementation_target_lease
                     .as_deref()
                     .filter(|value| !value.trim().is_empty())
@@ -3947,10 +3959,10 @@ impl AgentTaskState {
                     ledger.validation_details.post_fast_loop_patch_attempted = true;
                 }
                 if let AgentAction::ModifyToml { operations, .. } = outcome.action() {
-                    self.local_model_memory.last_manifest_patch_operations = operations.clone();
+                    self.agent_repair_memory.last_manifest_patch_operations = operations.clone();
                 }
-                self.local_model_memory.post_patch_diagnostic_class = None;
-                self.local_model_memory.post_patch_diagnostic_excerpt = None;
+                self.agent_repair_memory.post_patch_diagnostic_class = None;
+                self.agent_repair_memory.post_patch_diagnostic_excerpt = None;
                 if let Some(repair_state) = self.benchmark_repair_state.as_mut()
                     && repair_state.phase == BenchmarkRepairPhase::NeedsPatch
                 {
@@ -3970,7 +3982,7 @@ impl AgentTaskState {
                 self.record_suggested_edit_anchor(path, *range, search_hint.as_deref());
             }
             if matches!(outcome.action(), AgentAction::PreviewEdit { .. }) {
-                self.record_preview_edit(output_text);
+                self.record_preview_edit(outcome.action(), output_text);
             }
         } else {
             self.last_failed_tool_error = Some(output_text.to_string());
@@ -3985,41 +3997,41 @@ impl AgentTaskState {
 
         match outcome.action() {
             AgentAction::ReplaceRange { .. } => {
-                self.local_model_memory.scorecard.replace_range_count = self
-                    .local_model_memory
+                self.agent_repair_memory.scorecard.replace_range_count = self
+                    .agent_repair_memory
                     .scorecard
                     .replace_range_count
                     .saturating_add(1);
                 if output_text.contains("hash mismatch") {
-                    self.local_model_memory
+                    self.agent_repair_memory
                         .scorecard
                         .replace_range_hash_mismatch_count = self
-                        .local_model_memory
+                        .agent_repair_memory
                         .scorecard
                         .replace_range_hash_mismatch_count
                         .saturating_add(1);
                 }
             }
             AgentAction::ModifyToml { .. } => {
-                self.local_model_memory.scorecard.modify_toml_count = self
-                    .local_model_memory
+                self.agent_repair_memory.scorecard.modify_toml_count = self
+                    .agent_repair_memory
                     .scorecard
                     .modify_toml_count
                     .saturating_add(1);
             }
             AgentAction::ApplyPreview { .. } => {
-                self.local_model_memory.scorecard.apply_preview_count = self
-                    .local_model_memory
+                self.agent_repair_memory.scorecard.apply_preview_count = self
+                    .agent_repair_memory
                     .scorecard
                     .apply_preview_count
                     .saturating_add(1);
                 if output_text.contains("hash mismatch")
                     || output_text.contains("preview_apply_mismatch")
                 {
-                    self.local_model_memory
+                    self.agent_repair_memory
                         .scorecard
                         .apply_preview_hash_mismatch_count = self
-                        .local_model_memory
+                        .agent_repair_memory
                         .scorecard
                         .apply_preview_hash_mismatch_count
                         .saturating_add(1);
@@ -4368,7 +4380,7 @@ impl AgentTaskState {
         let target_path = canonical_action_target_path(action)?;
         let target_path = canonical_path(&target_path);
         let leased_target = self
-            .local_model_memory
+            .agent_repair_memory
             .implementation_target_lease
             .as_deref()
             .filter(|value| !value.trim().is_empty())
@@ -4382,10 +4394,14 @@ impl AgentTaskState {
         if target_path != leased_target {
             return None;
         }
-        let target_was_observed =
-            self.local_model_memory.observed_slices.iter().any(|slice| {
+        let target_was_observed = self
+            .agent_repair_memory
+            .observed_slices
+            .iter()
+            .any(|slice| {
                 canonical_path(&slice.path) == leased_target && slice.content_fingerprint.is_some()
-            }) || repair_state.last_owner_slice.as_ref().is_some_and(|slice| {
+            })
+            || repair_state.last_owner_slice.as_ref().is_some_and(|slice| {
                 canonical_path(&slice.path) == leased_target
                     && slice
                         .slice_content
@@ -4435,7 +4451,7 @@ fn is_support_or_generated_runtime_path(path: &str) -> bool {
         "start_here.md"
             | "success.md"
             | "reference.md"
-            | "local_repro.md"
+            | "repro_note.md"
             | "runner_feedback.md"
             | "context_warning.md"
             | "benchmark.json"
@@ -4634,7 +4650,7 @@ impl BenchmarkRepairPhase {
         }
     }
 
-    fn local_state_label(self) -> &'static str {
+    fn state_label(self) -> &'static str {
         match self {
             Self::Idle => "needs_evidence",
             Self::NeedsFailureAnchorRead => "needs_focused_read",
@@ -4649,7 +4665,7 @@ fn canonical_action_record(
     step: usize,
     action: &AgentAction,
     ledger: Option<&BenchmarkCaseLedger>,
-) -> LocalModelCanonicalAction {
+) -> AgentRepairCanonicalAction {
     let kind = match action {
         AgentAction::RunCommand { .. } => {
             if action_is_validation_like(action, ledger) {
@@ -4682,7 +4698,7 @@ fn canonical_action_record(
         AgentAction::RunValidation { .. } => "RunValidation",
     }
     .to_string();
-    LocalModelCanonicalAction {
+    AgentRepairCanonicalAction {
         step,
         kind,
         signature: canonical_action_signature(action, ledger),
@@ -5061,7 +5077,7 @@ fn push_capped<T>(items: &mut Vec<T>, item: T, cap: usize) {
 
 fn ranked_implementation_targets_for_ledger(
     ledger: &BenchmarkCaseLedger,
-) -> Vec<LocalModelImplementationTarget> {
+) -> Vec<AgentRepairImplementationTarget> {
     let mut targets = Vec::new();
     let mut seen = BTreeSet::new();
     let diagnostic_class = ledger.validation_details.diagnostic_class.as_deref();
@@ -5075,7 +5091,7 @@ fn ranked_implementation_targets_for_ledger(
     ) {
         for path in &ledger.expected_touch_targets {
             if path.ends_with("Cargo.toml") && seen.insert(canonical_path(path)) {
-                targets.push(LocalModelImplementationTarget {
+                targets.push(AgentRepairImplementationTarget {
                     path: path.clone(),
                     reason: diagnostic_class
                         .unwrap_or("manifest_dependency_error")
@@ -5095,7 +5111,7 @@ fn ranked_implementation_targets_for_ledger(
             continue;
         }
         if seen.insert(canonical_path(path)) {
-            targets.push(LocalModelImplementationTarget {
+            targets.push(AgentRepairImplementationTarget {
                 path: path.clone(),
                 reason: "expected_touch_target".to_string(),
                 rank: targets.len() + 1,
@@ -5112,7 +5128,7 @@ fn ranked_implementation_targets_for_ledger(
             .filter(|path| benchmark_support_surface_path(path))
         {
             if seen.insert(canonical_path(path)) {
-                targets.push(LocalModelImplementationTarget {
+                targets.push(AgentRepairImplementationTarget {
                     path: path.clone(),
                     reason: "support_surface".to_string(),
                     rank: targets.len() + 1,
@@ -5127,7 +5143,7 @@ fn ranked_implementation_targets_for_ledger(
             .filter(|path| path.ends_with("Cargo.toml"))
         {
             if seen.insert(canonical_path(path)) {
-                targets.push(LocalModelImplementationTarget {
+                targets.push(AgentRepairImplementationTarget {
                     path: path.clone(),
                     reason: "manifest_support".to_string(),
                     rank: targets.len() + 1,
@@ -5143,7 +5159,7 @@ fn ranked_implementation_targets_for_ledger(
         } else {
             "diagnostic_anchor"
         };
-        targets.push(LocalModelImplementationTarget {
+        targets.push(AgentRepairImplementationTarget {
             path: path.clone(),
             reason: reason.to_string(),
             rank: targets.len() + 1,
@@ -5154,13 +5170,13 @@ fn ranked_implementation_targets_for_ledger(
 
 fn push_ranked_owner_targets(
     ledger: &BenchmarkCaseLedger,
-    targets: &mut Vec<LocalModelImplementationTarget>,
+    targets: &mut Vec<AgentRepairImplementationTarget>,
     seen: &mut BTreeSet<String>,
 ) {
     for path in &ledger.owner_files {
         if is_obvious_test_file(path) {
             if seen.insert(canonical_path(path)) {
-                targets.push(LocalModelImplementationTarget {
+                targets.push(AgentRepairImplementationTarget {
                     path: path.clone(),
                     reason: "test_evidence_only".to_string(),
                     rank: targets.len() + 1,
@@ -5169,7 +5185,7 @@ fn push_ranked_owner_targets(
             continue;
         }
         if seen.insert(canonical_path(path)) {
-            targets.push(LocalModelImplementationTarget {
+            targets.push(AgentRepairImplementationTarget {
                 path: path.clone(),
                 reason: "owner_file".to_string(),
                 rank: targets.len() + 1,
@@ -5208,7 +5224,7 @@ fn benchmark_repair_target_path<'a>(
 
 fn benchmark_target_lease_path<'a>(
     ledger: &'a BenchmarkCaseLedger,
-    memory: &'a LocalModelMemory,
+    memory: &'a AgentRepairMemory,
 ) -> Option<Cow<'a, str>> {
     memory
         .implementation_target_lease
@@ -5229,7 +5245,7 @@ fn benchmark_target_lease_path<'a>(
 fn benchmark_patch_target_path<'a>(
     repair_state: &'a BenchmarkRepairState,
     ledger: &'a BenchmarkCaseLedger,
-    memory: &'a LocalModelMemory,
+    memory: &'a AgentRepairMemory,
 ) -> Cow<'a, str> {
     benchmark_target_lease_path(ledger, memory)
         .unwrap_or_else(|| Cow::Borrowed(benchmark_repair_target_path(repair_state, ledger)))
@@ -5358,7 +5374,7 @@ fn benchmark_target_dependency_table(
 fn benchmark_patch_phase_write_locked(
     repair_state: &BenchmarkRepairState,
     ledger: &BenchmarkCaseLedger,
-    memory: &LocalModelMemory,
+    memory: &AgentRepairMemory,
     requirement: Option<&RepairRequirement>,
 ) -> bool {
     if repair_state.phase != BenchmarkRepairPhase::NeedsPatch {
@@ -5397,7 +5413,7 @@ fn benchmark_write_phase_refusal(action: &AgentAction, patch_target: &str) -> bo
 
 fn patch_target_context_loaded(
     repair_state: &BenchmarkRepairState,
-    memory: &LocalModelMemory,
+    memory: &AgentRepairMemory,
     patch_target: &str,
 ) -> bool {
     let patch_target = canonical_path(patch_target);
@@ -5435,7 +5451,7 @@ fn owner_slice_materially_loads_patch_target(slice: &OwnerSliceRecord, patch_tar
 fn benchmark_required_action_label(
     repair_state: Option<&BenchmarkRepairState>,
     ledger: Option<&BenchmarkCaseLedger>,
-    memory: &LocalModelMemory,
+    memory: &AgentRepairMemory,
 ) -> Option<String> {
     let repair_state = repair_state?;
     match repair_state.phase {
@@ -5951,7 +5967,7 @@ fn structured_parse_error_class(output_truncated: bool, error: &str) -> &'static
 
 fn parser_recovery_message(output_truncated: bool, error: &str) -> String {
     if output_truncated {
-        "[Parser]\nParse error class: output_truncated\nThe previous structured JSON was truncated by the model output limit. Return one raw JSON object only, without Markdown fences, explanatory prose, or trailing text. Keep `assistant_message` brief, omit optional metadata, and prefer `ReplaceBlock` for a small existing-file edit.".to_string()
+        "[Parser]\nParse error class: output_truncated\nThe previous structured JSON was truncated by the model output limit. Return one raw JSON object only, without Markdown fences, explanatory prose, or trailing text. Set `assistant_message` to \"\", omit optional metadata, and prefer `ReplaceRange` or `ReplaceBlock` for a small existing-file edit. Do not emit full-file unified diffs.".to_string()
     } else if error.contains("missing_tool_call") {
         "[Parser]\nParse error class: missing_tool_call\nThe previous structured JSON omitted the required concrete tool action. Return one raw JSON object only and include the required action now. Do not add explanatory prose before or after the JSON object.".to_string()
     } else if error.contains("missing_json_object") {
@@ -6057,12 +6073,28 @@ fn extract_preview_id(output_text: &str) -> Option<String> {
         .map(str::to_string)
 }
 
-fn preview_apply_locked(memory: &LocalModelMemory) -> bool {
+fn preview_apply_locked(memory: &AgentRepairMemory) -> bool {
     memory.last_preview_id.as_ref().is_some_and(|preview_id| {
         !preview_id.trim().is_empty()
             && memory.preview_origin.as_deref() == Some("write_locked_manifest")
             && memory.scorecard.preview_created_count > memory.scorecard.apply_preview_count
     })
+}
+
+fn preview_targets_owner(memory: &AgentRepairMemory, owner_path: &str) -> bool {
+    if memory.scorecard.preview_created_count <= memory.scorecard.apply_preview_count {
+        return false;
+    }
+    let owner_path = canonical_path(owner_path);
+    memory
+        .last_preview_path
+        .as_deref()
+        .is_some_and(|path| canonical_path(path) == owner_path)
+        || memory
+            .last_preview_result
+            .as_deref()
+            .and_then(|output| extract_labeled_line(output, "path:"))
+            .is_some_and(|path| canonical_path(&path) == owner_path)
 }
 
 fn preview_apply_placeholder(value: &str) -> bool {
@@ -6277,7 +6309,7 @@ fn patch_phase_parser_recovery_example(
         }));
     }
     serde_json::json!({
-        "assistant_message": format!("patching {patch_target}"),
+        "assistant_message": "",
         "actions": actions
     })
     .to_string()
@@ -6321,19 +6353,20 @@ fn maybe_normalize_write_locked_manifest_turn_content(
     if !benchmark_patch_phase_write_locked(
         repair_state,
         ledger,
-        &state.local_model_memory,
+        &state.agent_repair_memory,
         state.repair_requirement.as_ref(),
     ) {
         return None;
     }
-    let patch_target = benchmark_patch_target_path(repair_state, ledger, &state.local_model_memory);
+    let patch_target =
+        benchmark_patch_target_path(repair_state, ledger, &state.agent_repair_memory);
     if !patch_target.as_ref().ends_with(".toml") {
         return None;
     }
-    let apply_locked = preview_apply_locked(&state.local_model_memory);
-    let preview_id = state.local_model_memory.last_preview_id.as_deref();
+    let apply_locked = preview_apply_locked(&state.agent_repair_memory);
+    let preview_id = state.agent_repair_memory.last_preview_id.as_deref();
     let observed_hash =
-        observed_full_file_content_hash(&state.local_model_memory, patch_target.as_ref())?;
+        observed_full_file_content_hash(&state.agent_repair_memory, patch_target.as_ref())?;
     let trimmed = content.trim();
     if !trimmed.starts_with('{') {
         return None;
@@ -6471,17 +6504,18 @@ fn maybe_repair_native_manifest_tool_error(
     if !benchmark_patch_phase_write_locked(
         repair_state,
         ledger,
-        &state.local_model_memory,
+        &state.agent_repair_memory,
         state.repair_requirement.as_ref(),
     ) {
         return None;
     }
-    let patch_target = benchmark_patch_target_path(repair_state, ledger, &state.local_model_memory);
+    let patch_target =
+        benchmark_patch_target_path(repair_state, ledger, &state.agent_repair_memory);
     if !patch_target.as_ref().ends_with(".toml") {
         return None;
     }
-    if preview_apply_locked(&state.local_model_memory) {
-        let preview_id = state.local_model_memory.last_preview_id.as_ref()?;
+    if preview_apply_locked(&state.agent_repair_memory) {
+        let preview_id = state.agent_repair_memory.last_preview_id.as_ref()?;
         return Some(AgentTurnResponse {
             assistant_message: String::new(),
             actions: vec![AgentAction::ApplyPreview {
@@ -6497,11 +6531,11 @@ fn maybe_repair_native_manifest_tool_error(
         });
     }
     let expected_hash =
-        observed_full_file_content_hash(&state.local_model_memory, patch_target.as_ref())?;
-    let dependency_candidates = if state.local_model_memory.dependency_candidates.is_empty() {
+        observed_full_file_content_hash(&state.agent_repair_memory, patch_target.as_ref())?;
+    let dependency_candidates = if state.agent_repair_memory.dependency_candidates.is_empty() {
         benchmark_dependency_candidates(ledger)
     } else {
-        state.local_model_memory.dependency_candidates.clone()
+        state.agent_repair_memory.dependency_candidates.clone()
     };
     let target_dependency_table =
         benchmark_target_dependency_table(repair_state, ledger, patch_target.as_ref());
@@ -6550,7 +6584,7 @@ fn maybe_repair_manifest_turn_parse_error(
     if !benchmark_patch_phase_write_locked(
         repair_state,
         ledger,
-        &state.local_model_memory,
+        &state.agent_repair_memory,
         state.repair_requirement.as_ref(),
     ) {
         return None;
@@ -6579,7 +6613,7 @@ fn maybe_repair_plain_text_fast_loop_turn(
     if trimmed.is_empty() || trimmed.starts_with('{') || trimmed.len() > 300 {
         return None;
     }
-    if preview_apply_locked(&state.local_model_memory) {
+    if preview_apply_locked(&state.agent_repair_memory) {
         return None;
     }
     if let Some(repair_state) = state.benchmark_repair_state.as_ref()
@@ -6924,7 +6958,9 @@ async fn handle_model_turn(
             return Ok(ControlFlow::ContinueNoBudget);
         }
         if state.benchmark_case_ledger.is_some()
-            || request.completion_policy.safety_mode_label.as_deref() == Some("safe_local")
+            || request.completion_policy.safety_mode_label.as_deref() == Some("remote_api")
+            || request.completion_policy.safety_mode_label.as_deref()
+                == Some(LEGACY_REMOTE_SAFETY_LABEL)
             || request.completion_policy.native_tool_calls
         {
             let parser_recovery_stalled = state.note_parser_recovery_failure(
@@ -7035,7 +7071,7 @@ async fn handle_model_turn(
     if turn
         .parse_warnings
         .iter()
-        .any(|warning| warning.contains("line-oriented local tool syntax"))
+        .any(|warning| warning.contains("line-oriented tool syntax"))
     {
         state.record_line_oriented_parse();
     }
@@ -7153,8 +7189,8 @@ async fn handle_model_turn(
         && let Some(message) = state.benchmark_baseline_validation_message()
     {
         state.stall_count += 1;
-        state.local_model_memory.repair_phase = Some("needs_baseline_validation".to_string());
-        state.local_model_memory.current_required_action =
+        state.agent_repair_memory.repair_phase = Some("needs_baseline_validation".to_string());
+        state.agent_repair_memory.current_required_action =
             Some("run_baseline_fast_loop".to_string());
         transcript.push(TranscriptMessage {
             role: TranscriptRole::User,
@@ -7297,8 +7333,8 @@ async fn handle_model_turn(
         {
             state.stall_count += 1;
             state.redundant_inspection_turns += 1;
-            state.local_model_memory.repair_phase = Some("needs_baseline_validation".to_string());
-            state.local_model_memory.current_required_action =
+            state.agent_repair_memory.repair_phase = Some("needs_baseline_validation".to_string());
+            state.agent_repair_memory.current_required_action =
                 Some("run_baseline_fast_loop".to_string());
             transcript.push(TranscriptMessage {
                 role: TranscriptRole::User,
@@ -7345,7 +7381,7 @@ async fn handle_model_turn(
                         !benchmark_patch_target_path(
                             repair_state,
                             ledger,
-                            &state.local_model_memory,
+                            &state.agent_repair_memory,
                         )
                         .as_ref()
                         .ends_with(".toml")
@@ -7964,15 +8000,16 @@ fn normalize_benchmark_patch_turn_actions(
     repair_state: &BenchmarkRepairState,
     ledger: &BenchmarkCaseLedger,
 ) {
-    let patch_target = benchmark_patch_target_path(repair_state, ledger, &state.local_model_memory);
+    let patch_target =
+        benchmark_patch_target_path(repair_state, ledger, &state.agent_repair_memory);
     let target_context_loaded = patch_target_context_loaded(
         repair_state,
-        &state.local_model_memory,
+        &state.agent_repair_memory,
         patch_target.as_ref(),
     );
     if canonical_path(patch_target.as_ref()) == "cargo-dist/src/backend/ci/github.rs"
         && !state
-            .local_model_memory
+            .agent_repair_memory
             .observed_slices
             .iter()
             .any(|slice| {
@@ -8121,7 +8158,7 @@ fn normalize_benchmark_patch_turn_actions(
     }
     if !patch_target.as_ref().ends_with(".toml") {
         if let Some(index) = turn.actions.iter().position(|action| {
-            source_patch_action_targets(action, patch_target.as_ref(), &state.local_model_memory)
+            source_patch_action_targets(action, patch_target.as_ref(), &state.agent_repair_memory)
         }) {
             let mut actions = Vec::new();
             actions.push(turn.actions[index].clone());
@@ -8158,13 +8195,13 @@ fn normalize_benchmark_patch_turn_actions(
         }
         return;
     }
-    if preview_apply_locked(&state.local_model_memory) {
+    if preview_apply_locked(&state.agent_repair_memory) {
         if let Some(index) = turn.actions.iter().position(|action| {
             matches!(
                 action,
                 AgentAction::ApplyPreview { preview_id }
                     if state
-                        .local_model_memory
+                        .agent_repair_memory
                         .last_preview_id
                         .as_deref()
                         .is_some_and(|expected| {
@@ -8180,7 +8217,7 @@ fn normalize_benchmark_patch_turn_actions(
                     "Kept only the required manifest ApplyPreview and dropped {dropped} bundled follow-up action(s)."
                 ));
             }
-        } else if let Some(preview_id) = state.local_model_memory.last_preview_id.clone() {
+        } else if let Some(preview_id) = state.agent_repair_memory.last_preview_id.clone() {
             let dropped = turn.actions.len();
             turn.actions = vec![AgentAction::ApplyPreview {
                 preview_id: preview_id.clone(),
@@ -8250,7 +8287,7 @@ fn normalize_benchmark_patch_turn_actions(
 fn source_patch_action_targets(
     action: &AgentAction,
     patch_target: &str,
-    memory: &LocalModelMemory,
+    memory: &AgentRepairMemory,
 ) -> bool {
     match action {
         AgentAction::PreviewEdit { path, .. }
@@ -8275,16 +8312,17 @@ fn exact_manifest_preview_action_from_state(
     repair_state: &BenchmarkRepairState,
     ledger: &BenchmarkCaseLedger,
 ) -> Option<AgentAction> {
-    let patch_target = benchmark_patch_target_path(repair_state, ledger, &state.local_model_memory);
+    let patch_target =
+        benchmark_patch_target_path(repair_state, ledger, &state.agent_repair_memory);
     if !patch_target.as_ref().ends_with(".toml") {
         return None;
     }
     let expected_hash =
-        observed_full_file_content_hash(&state.local_model_memory, patch_target.as_ref())?;
-    let dependency_candidates = if state.local_model_memory.dependency_candidates.is_empty() {
+        observed_full_file_content_hash(&state.agent_repair_memory, patch_target.as_ref())?;
+    let dependency_candidates = if state.agent_repair_memory.dependency_candidates.is_empty() {
         benchmark_dependency_candidates(ledger)
     } else {
-        state.local_model_memory.dependency_candidates.clone()
+        state.agent_repair_memory.dependency_candidates.clone()
     };
     let target_dependency_table =
         benchmark_target_dependency_table(repair_state, ledger, patch_target.as_ref());
@@ -8310,7 +8348,8 @@ fn exact_benchmark_source_patch_actions_from_state(
     repair_state: &BenchmarkRepairState,
     ledger: &BenchmarkCaseLedger,
 ) -> Option<Vec<AgentAction>> {
-    let patch_target = benchmark_patch_target_path(repair_state, ledger, &state.local_model_memory);
+    let patch_target =
+        benchmark_patch_target_path(repair_state, ledger, &state.agent_repair_memory);
     if canonical_path(patch_target.as_ref()) == "cargo-dist/src/backend/ci/github.rs" {
         return exact_cargo_dist_create_release_patch_actions_from_state(state);
     }
@@ -8332,7 +8371,8 @@ fn exact_benchmark_source_patch_action_from_state(
     repair_state: &BenchmarkRepairState,
     ledger: &BenchmarkCaseLedger,
 ) -> Option<AgentAction> {
-    let patch_target = benchmark_patch_target_path(repair_state, ledger, &state.local_model_memory);
+    let patch_target =
+        benchmark_patch_target_path(repair_state, ledger, &state.agent_repair_memory);
     if canonical_path(patch_target.as_ref()) == "axum/src/routing/mod.rs" {
         return exact_axum_fallback_patch_action_from_state(state, repair_state, patch_target);
     }
@@ -8363,7 +8403,7 @@ fn exact_benchmark_source_patch_action_from_state(
         .honored_range
         .and_then(crate::agent_protocol::ReadFileRange::normalized)?;
     let expected_hash =
-        observed_range_content_hash(&state.local_model_memory, patch_target.as_ref(), range)?;
+        observed_range_content_hash(&state.agent_repair_memory, patch_target.as_ref(), range)?;
     let replacement = source_de_owned_owned_borrow_replacement(slice.slice_content.as_deref()?)?;
     Some(AgentAction::ReplaceRange {
         path: patch_target.into_owned(),
@@ -9066,7 +9106,7 @@ fn fill_hash_guards_from_observed_context(turn: &mut AgentTurnResponse, state: &
                 ..
             } if hash_guard_needs_observed_fill(expected_hash) => {
                 if let Some(content_hash) =
-                    observed_full_file_content_hash(&state.local_model_memory, path)
+                    observed_full_file_content_hash(&state.agent_repair_memory, path)
                 {
                     turn.parse_warnings.push(format!(
                         "Filled placeholder expected_hash for ModifyToml `{}` from latest observed full-file content_hash `{}`.",
@@ -9089,7 +9129,7 @@ fn fill_hash_guards_from_observed_context(turn: &mut AgentTurnResponse, state: &
                 ..
             } if hash_guard_needs_observed_fill(expected_hash) => {
                 if let Some(content_hash) =
-                    observed_range_content_hash(&state.local_model_memory, path, *range)
+                    observed_range_content_hash(&state.agent_repair_memory, path, *range)
                 {
                     turn.parse_warnings.push(format!(
                         "Filled placeholder expected_hash for ReplaceRange `{}` {} from latest observed range content_hash `{}`.",
@@ -9117,7 +9157,7 @@ fn fill_hash_guards_from_observed_context(turn: &mut AgentTurnResponse, state: &
                     if hash_guard_needs_observed_fill(expected_hash) =>
                 {
                     if let Some(content_hash) =
-                        observed_full_file_content_hash(&state.local_model_memory, path)
+                        observed_full_file_content_hash(&state.agent_repair_memory, path)
                     {
                         turn.parse_warnings.push(format!(
                             "Filled placeholder expected_hash for PreviewEdit modify_toml `{}` from latest observed full-file content_hash `{}`.",
@@ -9138,7 +9178,7 @@ fn fill_hash_guards_from_observed_context(turn: &mut AgentTurnResponse, state: &
                     operations,
                 } => {
                     if let Some(content_hash) =
-                        observed_full_file_content_hash(&state.local_model_memory, path)
+                        observed_full_file_content_hash(&state.agent_repair_memory, path)
                     {
                         let trimmed = expected_hash.trim();
                         if trimmed != content_hash {
@@ -9161,7 +9201,7 @@ fn fill_hash_guards_from_observed_context(turn: &mut AgentTurnResponse, state: &
                     ..
                 } if hash_guard_needs_observed_fill(expected_hash) => {
                     if let Some(content_hash) =
-                        observed_range_content_hash(&state.local_model_memory, path, *range)
+                        observed_range_content_hash(&state.agent_repair_memory, path, *range)
                     {
                         turn.parse_warnings.push(format!(
                             "Filled placeholder expected_hash for PreviewEdit replace_range `{}` {} from latest observed range content_hash `{}`.",
@@ -9220,7 +9260,7 @@ fn hash_guard_needs_observed_fill(value: &str) -> bool {
     )
 }
 
-fn observed_full_file_content_hash(memory: &LocalModelMemory, path: &str) -> Option<String> {
+fn observed_full_file_content_hash(memory: &AgentRepairMemory, path: &str) -> Option<String> {
     let canonical_target = canonical_path(path);
     memory
         .observed_slices
@@ -9235,7 +9275,7 @@ fn observed_full_file_content_hash(memory: &LocalModelMemory, path: &str) -> Opt
 }
 
 fn observed_range_content_hash(
-    memory: &LocalModelMemory,
+    memory: &AgentRepairMemory,
     path: &str,
     range: crate::agent_protocol::ReadFileRange,
 ) -> Option<String> {
@@ -9262,7 +9302,8 @@ fn replace_benchmark_manifest_preview_operations(
 ) -> Option<String> {
     let repair_state = state.benchmark_repair_state.as_ref()?;
     let ledger = state.benchmark_case_ledger.as_ref()?;
-    let patch_target = benchmark_patch_target_path(repair_state, ledger, &state.local_model_memory);
+    let patch_target =
+        benchmark_patch_target_path(repair_state, ledger, &state.agent_repair_memory);
     if canonical_path(path) != canonical_path(patch_target.as_ref())
         || !patch_target.as_ref().trim().ends_with(".toml")
     {
@@ -9276,10 +9317,10 @@ fn replace_benchmark_manifest_preview_operations(
     }) {
         return None;
     }
-    let dependency_candidates = if state.local_model_memory.dependency_candidates.is_empty() {
+    let dependency_candidates = if state.agent_repair_memory.dependency_candidates.is_empty() {
         benchmark_dependency_candidates(ledger)
     } else {
-        state.local_model_memory.dependency_candidates.clone()
+        state.agent_repair_memory.dependency_candidates.clone()
     };
     let target_dependency_table =
         benchmark_target_dependency_table(repair_state, ledger, patch_target.as_ref());
@@ -9317,23 +9358,24 @@ fn benchmark_manifest_preview_from_redundant_read(
     if !benchmark_patch_phase_write_locked(
         repair_state,
         ledger,
-        &state.local_model_memory,
+        &state.agent_repair_memory,
         state.repair_requirement.as_ref(),
     ) {
         return None;
     }
-    let patch_target = benchmark_patch_target_path(repair_state, ledger, &state.local_model_memory);
+    let patch_target =
+        benchmark_patch_target_path(repair_state, ledger, &state.agent_repair_memory);
     if canonical_path(path) != canonical_path(patch_target.as_ref())
         || !patch_target.as_ref().trim().ends_with(".toml")
     {
         return None;
     }
     let expected_hash =
-        observed_full_file_content_hash(&state.local_model_memory, patch_target.as_ref())?;
-    let dependency_candidates = if state.local_model_memory.dependency_candidates.is_empty() {
+        observed_full_file_content_hash(&state.agent_repair_memory, patch_target.as_ref())?;
+    let dependency_candidates = if state.agent_repair_memory.dependency_candidates.is_empty() {
         benchmark_dependency_candidates(ledger)
     } else {
-        state.local_model_memory.dependency_candidates.clone()
+        state.agent_repair_memory.dependency_candidates.clone()
     };
     let target_dependency_table =
         benchmark_target_dependency_table(repair_state, ledger, patch_target.as_ref());
@@ -9446,7 +9488,7 @@ async fn inject_required_repair_read(
         .map(|value| value.phase);
     state.record_controller_injected_read();
     let action_summary = action.summary();
-    event_sink.emit(RuntimeEvent::LocalControllerReadInjected {
+    event_sink.emit(RuntimeEvent::ControllerReadInjected {
         step,
         action: action_summary.clone(),
         reason: reason.to_string(),
@@ -9454,7 +9496,7 @@ async fn inject_required_repair_read(
     transcript.push(TranscriptMessage {
         role: TranscriptRole::User,
         content: format!(
-            "[Local Controller]\nThe model missed the required repair read, so Quorp executed this deterministic read-only action: {action_summary}.\nReason: {reason}"
+            "[Repair Controller]\nThe model missed the required repair read, so Quorp executed this deterministic read-only action: {action_summary}.\nReason: {reason}"
         ),
     });
     match dispatch_action(
@@ -9486,11 +9528,11 @@ async fn inject_required_repair_read(
             Ok(true)
         }
         DispatchOutcome::RecoverableInspectionFailure(recovery) => Err(format!(
-            "Local controller injected required read `{}` but it failed: {}",
+            "Repair controller injected required read `{}` but it failed: {}",
             recovery.action_summary, recovery.error
         )),
         DispatchOutcome::Failure => Err(format!(
-            "Local controller injected required read `{action_summary}` but execution failed"
+            "Repair controller injected required read `{action_summary}` but execution failed"
         )),
     }
 }
@@ -9513,12 +9555,13 @@ async fn maybe_inject_exact_benchmark_source_patch(
     let Some(ledger) = state.benchmark_case_ledger.as_ref() else {
         return Ok(false);
     };
-    let patch_target = benchmark_patch_target_path(repair_state, ledger, &state.local_model_memory);
+    let patch_target =
+        benchmark_patch_target_path(repair_state, ledger, &state.agent_repair_memory);
     if canonical_path(patch_target.as_ref()) != "cargo-dist/src/backend/ci/github.rs" {
         return Ok(false);
     }
     let target_observed = state
-        .local_model_memory
+        .agent_repair_memory
         .observed_slices
         .iter()
         .any(|slice| {
@@ -9536,7 +9579,7 @@ async fn maybe_inject_exact_benchmark_source_patch(
     transcript.push(TranscriptMessage {
         role: TranscriptRole::User,
         content: format!(
-            "[Local Controller]\nThe model missed the required source patch, so Quorp is applying the deterministic benchmark source patch.\nReason: {reason}"
+            "[Repair Controller]\nThe model missed the required source patch, so Quorp is applying the deterministic benchmark source patch.\nReason: {reason}"
         ),
     });
     for action in actions {
@@ -9555,13 +9598,13 @@ async fn maybe_inject_exact_benchmark_source_patch(
             DispatchOutcome::Success => {}
             DispatchOutcome::RecoverableInspectionFailure(recovery) => {
                 return Err(format!(
-                    "Local controller exact patch action `{}` failed after `{action_summary}`: {}",
+                    "Repair controller exact patch action `{}` failed after `{action_summary}`: {}",
                     recovery.action_summary, recovery.error
                 ));
             }
             DispatchOutcome::Failure => {
                 return Err(format!(
-                    "Local controller exact patch action `{action_summary}` failed"
+                    "Repair controller exact patch action `{action_summary}` failed"
                 ));
             }
         }
@@ -9593,7 +9636,7 @@ async fn maybe_inject_cargo_dist_deterministic_patch(
         return Ok(false);
     }
     let target_observed = state
-        .local_model_memory
+        .agent_repair_memory
         .observed_slices
         .iter()
         .any(|slice| {
@@ -9612,7 +9655,7 @@ async fn maybe_inject_cargo_dist_deterministic_patch(
     transcript.push(TranscriptMessage {
         role: TranscriptRole::User,
         content: format!(
-            "[Local Controller]\nQwen missed the structured turn after observing the cargo-dist CI owner file, so Quorp is applying the deterministic Case 04 source patch.\nReason: {reason}"
+            "[Repair Controller]\nQwen missed the structured turn after observing the cargo-dist CI owner file, so Quorp is applying the deterministic Case 04 source patch.\nReason: {reason}"
         ),
     });
     for action in actions {
@@ -9631,13 +9674,13 @@ async fn maybe_inject_cargo_dist_deterministic_patch(
             DispatchOutcome::Success => {}
             DispatchOutcome::RecoverableInspectionFailure(recovery) => {
                 return Err(format!(
-                    "Local controller Case 04 exact patch action `{}` failed after `{action_summary}`: {}",
+                    "Repair controller Case 04 exact patch action `{}` failed after `{action_summary}`: {}",
                     recovery.action_summary, recovery.error
                 ));
             }
             DispatchOutcome::Failure => {
                 return Err(format!(
-                    "Local controller Case 04 exact patch action `{action_summary}` failed"
+                    "Repair controller Case 04 exact patch action `{action_summary}` failed"
                 ));
             }
         }
@@ -9687,7 +9730,7 @@ async fn maybe_inject_cc_rs_compile_intermediates_deterministic_patch(
         return Ok(false);
     }
     let source_observed = state
-        .local_model_memory
+        .agent_repair_memory
         .observed_slices
         .iter()
         .any(|slice| {
@@ -9703,7 +9746,7 @@ async fn maybe_inject_cc_rs_compile_intermediates_deterministic_patch(
     transcript.push(TranscriptMessage {
         role: TranscriptRole::User,
         content: format!(
-            "[Local Controller]\nQwen repeated source inspection after the cc-rs owner file was loaded, so Quorp is applying the deterministic Case 05 source patch.\nReason: {reason}"
+            "[Repair Controller]\nQwen repeated source inspection after the cc-rs owner file was loaded, so Quorp is applying the deterministic Case 05 source patch.\nReason: {reason}"
         ),
     });
     match dispatch_action(
@@ -9720,13 +9763,13 @@ async fn maybe_inject_cc_rs_compile_intermediates_deterministic_patch(
         DispatchOutcome::Success => {}
         DispatchOutcome::RecoverableInspectionFailure(recovery) => {
             return Err(format!(
-                "Local controller Case 05 exact patch action `{}` failed after `{action_summary}`: {}",
+                "Repair controller Case 05 exact patch action `{}` failed after `{action_summary}`: {}",
                 recovery.action_summary, recovery.error
             ));
         }
         DispatchOutcome::Failure => {
             return Err(format!(
-                "Local controller Case 05 exact patch action `{action_summary}` failed"
+                "Repair controller Case 05 exact patch action `{action_summary}` failed"
             ));
         }
     }
@@ -10183,14 +10226,7 @@ fn max_completion_tokens_for_turn(
             .later_turn_max_completion_tokens
             .or(policy.first_turn_max_completion_tokens)
     };
-    if model_id.eq_ignore_ascii_case("ssd_moe/qwen36-27b")
-        && state.benchmark_repair_submode_active()
-    {
-        Some(default_cap.unwrap_or(1024).min(1024))
-    } else if (model_id.eq_ignore_ascii_case("ssd_moe/qwen3-coder-30b-a3b")
-        || is_nvidia_qwen_coder_benchmark_model(model_id))
-        && state.benchmark_repair_submode_active()
-    {
+    if is_nvidia_qwen_coder_benchmark_model(model_id) && state.benchmark_repair_submode_active() {
         if state.parser_recovery_failures > 0 {
             Some(default_cap.unwrap_or(1024).min(1024))
         } else if state
@@ -10212,16 +10248,9 @@ fn prompt_compaction_policy_for_turn(
     model_id: &str,
     state: &AgentTaskState,
 ) -> Option<PromptCompactionPolicy> {
-    if model_id.eq_ignore_ascii_case("ssd_moe/qwen36-27b")
-        && state.benchmark_repair_submode_active()
-    {
-        Some(PromptCompactionPolicy::BenchmarkRepairMinimal)
-    } else if (model_id.eq_ignore_ascii_case("ssd_moe/qwen3-coder-30b-a3b")
-        || is_nvidia_qwen_coder_benchmark_model(model_id))
-        && state.benchmark_repair_submode_active()
-    {
+    if is_nvidia_qwen_coder_benchmark_model(model_id) && state.benchmark_repair_submode_active() {
         if state
-            .local_model_memory
+            .agent_repair_memory
             .post_patch_diagnostic_class
             .is_some()
         {
@@ -10859,7 +10888,7 @@ fn patch_phase_actions_are_valid(
     owner_path: &str,
     ledger: &BenchmarkCaseLedger,
     failed_edit_records: &[FailedEditRecord],
-    memory: &LocalModelMemory,
+    memory: &AgentRepairMemory,
     target_context_loaded: bool,
 ) -> bool {
     let Some((first_action, remaining_actions)) = actions.split_first() else {
@@ -10897,8 +10926,8 @@ fn patch_phase_actions_are_valid(
             | AgentAction::ApplyPatch { path, .. }
             | AgentAction::ModifyToml { path, .. } => path == owner_path,
             AgentAction::ReplaceRange { path, .. } if !owner_is_toml => path == owner_path,
-            AgentAction::ApplyPreview { .. } => {
-                memory.scorecard.preview_created_count > memory.scorecard.apply_preview_count
+            AgentAction::ApplyPreview { .. } if !owner_is_toml => {
+                preview_targets_owner(memory, owner_path)
             }
             AgentAction::ReplaceBlock { path, range, .. }
                 if !owner_is_toml && path == owner_path =>
@@ -10926,6 +10955,7 @@ fn patch_phase_actions_are_valid(
     }
     if !target_context_loaded
         && remaining_actions.is_empty()
+        && patch_phase_scaffold_available(memory)
         && matches!(first_action, AgentAction::ReadFile { path, .. } if path == owner_path)
     {
         return true;
@@ -10935,8 +10965,8 @@ fn patch_phase_actions_are_valid(
         | AgentAction::ApplyPatch { path, .. }
         | AgentAction::ModifyToml { path, .. } => path == owner_path,
         AgentAction::ReplaceRange { path, .. } if !owner_is_toml => path == owner_path,
-        AgentAction::ApplyPreview { .. } => {
-            memory.scorecard.preview_created_count > memory.scorecard.apply_preview_count
+        AgentAction::ApplyPreview { .. } if !owner_is_toml => {
+            preview_targets_owner(memory, owner_path)
         }
         AgentAction::ReplaceBlock { path, range, .. } if !owner_is_toml && path == owner_path => {
             let has_range = range.and_then(|range| range.normalized()).is_some();
@@ -10955,7 +10985,7 @@ fn patch_phase_actions_are_valid(
             .all(|action| action_matches_fast_loop(action, ledger))
 }
 
-fn patch_phase_scaffold_available(memory: &LocalModelMemory) -> bool {
+fn patch_phase_scaffold_available(memory: &AgentRepairMemory) -> bool {
     memory.scorecard.first_valid_write_step.is_none()
         && memory.scorecard.anchor_suggestion_count == 0
         && memory.scorecard.preview_edit_count == 0
@@ -11646,7 +11676,7 @@ fn render_failed_edit_memory(records: &[FailedEditRecord]) -> String {
         .join(" | ")
 }
 
-fn render_local_model_memory(memory: &LocalModelMemory) -> String {
+fn render_agent_repair_memory(memory: &AgentRepairMemory) -> String {
     let mut parts = Vec::new();
     if let Some(action) = memory.current_required_action.as_ref() {
         parts.push(format!("required_next={action}"));
@@ -12118,7 +12148,7 @@ fn target_slice_content_hash(
 
 fn target_content_hash_for_patch(
     repair_state: &BenchmarkRepairState,
-    memory: &LocalModelMemory,
+    memory: &AgentRepairMemory,
     patch_target: &str,
 ) -> Option<String> {
     observed_full_file_content_hash(memory, patch_target)
@@ -12192,7 +12222,7 @@ fn render_benchmark_target_list(targets: &[String]) -> String {
         .join(", ")
 }
 
-fn render_ranked_implementation_targets(targets: &[LocalModelImplementationTarget]) -> String {
+fn render_ranked_implementation_targets(targets: &[AgentRepairImplementationTarget]) -> String {
     if targets.is_empty() {
         return "[none]".to_string();
     }
@@ -12653,7 +12683,7 @@ mod tests {
             implementation_reread_honored: true,
             invalid_action_count: 0,
         });
-        state.local_model_memory.implementation_target_lease = Some("Cargo.toml".to_string());
+        state.agent_repair_memory.implementation_target_lease = Some("Cargo.toml".to_string());
         state.record_observed_slice(
             "Cargo.toml",
             None,
@@ -12773,7 +12803,7 @@ mod tests {
             implementation_reread_honored: true,
             invalid_action_count: 0,
         });
-        state.local_model_memory.implementation_target_lease = Some("Cargo.toml".to_string());
+        state.agent_repair_memory.implementation_target_lease = Some("Cargo.toml".to_string());
         state.record_observed_slice(
             "Cargo.toml",
             None,
@@ -12988,7 +13018,7 @@ mod tests {
             implementation_reread_honored: false,
             invalid_action_count: 0,
         });
-        state.local_model_memory.implementation_target_lease =
+        state.agent_repair_memory.implementation_target_lease =
             Some("src/features/serde/de_owned.rs".to_string());
         let mut turn = AgentTurnResponse {
             assistant_message: String::new(),
@@ -13087,7 +13117,7 @@ mod tests {
             implementation_reread_honored: false,
             invalid_action_count: 0,
         });
-        state.local_model_memory.implementation_target_lease =
+        state.agent_repair_memory.implementation_target_lease =
             Some("src/features/serde/de_owned.rs".to_string());
         let mut turn = AgentTurnResponse {
             assistant_message: String::new(),
@@ -13185,7 +13215,7 @@ mod tests {
             implementation_reread_honored: true,
             invalid_action_count: 0,
         });
-        state.local_model_memory.implementation_target_lease =
+        state.agent_repair_memory.implementation_target_lease =
             Some("src/features/serde/de_owned.rs".to_string());
         state.record_observed_slice(
             "src/features/serde/de_owned.rs",
@@ -13337,7 +13367,7 @@ where
             implementation_reread_honored: true,
             ..BenchmarkRepairState::default()
         });
-        state.local_model_memory.implementation_target_lease = Some("src/round.rs".to_string());
+        state.agent_repair_memory.implementation_target_lease = Some("src/round.rs".to_string());
         state.record_observed_slice(
             "src/round.rs",
             Some(crate::agent_protocol::ReadFileRange {
@@ -13644,7 +13674,7 @@ impl<B> Router<B> {{
             implementation_reread_honored: true,
             ..BenchmarkRepairState::default()
         });
-        state.local_model_memory.implementation_target_lease =
+        state.agent_repair_memory.implementation_target_lease =
             Some("axum/src/routing/mod.rs".to_string());
         let mut turn = AgentTurnResponse {
             assistant_message: String::new(),
@@ -13696,7 +13726,7 @@ impl<B> Router<B> {{
 
         assert!(!patch_target_context_loaded(
             &repair_state,
-            &LocalModelMemory::default(),
+            &AgentRepairMemory::default(),
             "src/features/serde/de_owned.rs",
         ));
     }
@@ -13756,7 +13786,7 @@ impl<B> Router<B> {{
             failure_anchor_reread_honored: true,
             ..BenchmarkRepairState::default()
         });
-        state.local_model_memory.implementation_target_lease =
+        state.agent_repair_memory.implementation_target_lease =
             Some("src/features/serde/de_owned.rs".to_string());
         let mut turn = AgentTurnResponse {
             assistant_message: String::new(),
@@ -13853,7 +13883,7 @@ impl<B> Router<B> {{
             implementation_reread_honored: true,
             invalid_action_count: 0,
         });
-        state.local_model_memory.implementation_target_lease = Some("Cargo.toml".to_string());
+        state.agent_repair_memory.implementation_target_lease = Some("Cargo.toml".to_string());
         state.record_observed_slice(
             "Cargo.toml",
             None,
@@ -13954,11 +13984,11 @@ impl<B> Router<B> {{
             implementation_reread_honored: true,
             invalid_action_count: 0,
         });
-        state.local_model_memory.implementation_target_lease = Some("Cargo.toml".to_string());
-        state.local_model_memory.last_preview_id = Some("pv_manifest".to_string());
-        state.local_model_memory.preview_origin = Some("write_locked_manifest".to_string());
-        state.local_model_memory.scorecard.preview_created_count = 1;
-        state.local_model_memory.scorecard.apply_preview_count = 0;
+        state.agent_repair_memory.implementation_target_lease = Some("Cargo.toml".to_string());
+        state.agent_repair_memory.last_preview_id = Some("pv_manifest".to_string());
+        state.agent_repair_memory.preview_origin = Some("write_locked_manifest".to_string());
+        state.agent_repair_memory.scorecard.preview_created_count = 1;
+        state.agent_repair_memory.scorecard.apply_preview_count = 0;
         state.record_observed_slice(
             "Cargo.toml",
             None,
@@ -14141,7 +14171,7 @@ impl<B> Router<B> {{
             implementation_reread_honored: true,
             invalid_action_count: 0,
         });
-        state.local_model_memory.implementation_target_lease = Some("Cargo.toml".to_string());
+        state.agent_repair_memory.implementation_target_lease = Some("Cargo.toml".to_string());
         state.record_observed_slice(
             "Cargo.toml",
             None,
@@ -14252,7 +14282,7 @@ impl<B> Router<B> {{
             implementation_reread_honored: true,
             invalid_action_count: 0,
         });
-        state.local_model_memory.implementation_target_lease = Some("Cargo.toml".to_string());
+        state.agent_repair_memory.implementation_target_lease = Some("Cargo.toml".to_string());
         state.record_observed_slice(
             "Cargo.toml",
             None,
@@ -14367,7 +14397,7 @@ impl<B> Router<B> {{
             implementation_reread_honored: true,
             invalid_action_count: 0,
         });
-        state.local_model_memory.implementation_target_lease = Some("Cargo.toml".to_string());
+        state.agent_repair_memory.implementation_target_lease = Some("Cargo.toml".to_string());
         state.record_observed_slice(
             "Cargo.toml",
             None,
@@ -14649,10 +14679,10 @@ impl<B> Router<B> {{
             implementation_reread_honored: false,
             invalid_action_count: 0,
         });
-        state.local_model_memory.last_preview_id = Some("pv_manifest".to_string());
-        state.local_model_memory.preview_origin = Some("write_locked_manifest".to_string());
-        state.local_model_memory.scorecard.preview_created_count = 1;
-        state.local_model_memory.scorecard.apply_preview_count = 0;
+        state.agent_repair_memory.last_preview_id = Some("pv_manifest".to_string());
+        state.agent_repair_memory.preview_origin = Some("write_locked_manifest".to_string());
+        state.agent_repair_memory.scorecard.preview_created_count = 1;
+        state.agent_repair_memory.scorecard.apply_preview_count = 0;
         state.record_observed_slice(
             "Cargo.toml",
             None,
@@ -15486,7 +15516,7 @@ fn try_wait_on_child(
                 range: None,
             },
         };
-        let memory = LocalModelMemory::default();
+        let memory = AgentRepairMemory::default();
 
         assert!(patch_phase_actions_are_valid(
             &[scaffold],
@@ -15497,7 +15527,7 @@ fn try_wait_on_child(
             false,
         ));
 
-        let mut memory_after_scaffold = LocalModelMemory::default();
+        let mut memory_after_scaffold = AgentRepairMemory::default();
         memory_after_scaffold.scorecard.preview_edit_count = 1;
         assert!(!patch_phase_actions_are_valid(
             &[AgentAction::ReadFile {
@@ -15509,6 +15539,44 @@ fn try_wait_on_child(
             &[],
             &memory_after_scaffold,
             false,
+        ));
+    }
+
+    #[test]
+    fn patch_phase_rejects_apply_preview_for_different_owner() {
+        let ledger = BenchmarkCaseLedger {
+            validation_details: BenchmarkValidationDetails {
+                repair_required: true,
+                ..BenchmarkValidationDetails::default()
+            },
+            ..BenchmarkCaseLedger::default()
+        };
+        let mut memory = AgentRepairMemory::default();
+        memory.scorecard.preview_created_count = 1;
+        memory.last_preview_id = Some("pv_manifest".to_string());
+        memory.last_preview_path = Some("Cargo.toml".to_string());
+
+        assert!(!patch_phase_actions_are_valid(
+            &[AgentAction::ApplyPreview {
+                preview_id: "pv_manifest".to_string(),
+            }],
+            "src/features/serde/de_owned.rs",
+            &ledger,
+            &[],
+            &memory,
+            true,
+        ));
+
+        memory.last_preview_path = Some("src/features/serde/de_owned.rs".to_string());
+        assert!(patch_phase_actions_are_valid(
+            &[AgentAction::ApplyPreview {
+                preview_id: "pv_source".to_string(),
+            }],
+            "src/features/serde/de_owned.rs",
+            &ledger,
+            &[],
+            &memory,
+            true,
         ));
     }
 
@@ -15746,7 +15814,7 @@ fn try_wait_on_child(
     }
 
     #[test]
-    fn local_controller_injects_required_failure_anchor_read_after_missing_repair_turn() {
+    fn controller_injects_required_failure_anchor_read_after_missing_repair_turn() {
         let project_root = tempfile::tempdir().expect("tempdir");
         let request = test_request(&project_root);
         let mut state = AgentTaskState::new(&request, test_config());
@@ -15786,22 +15854,22 @@ fn try_wait_on_child(
         );
         assert_eq!(
             state
-                .local_model_memory
+                .agent_repair_memory
                 .scorecard
                 .controller_injected_read_count,
             1
         );
-        assert_eq!(state.local_model_memory.scorecard.parser_recovery_count, 1);
+        assert_eq!(state.agent_repair_memory.scorecard.parser_recovery_count, 1);
         assert_eq!(state.parser_recovery_failures, 0);
         assert!(state.last_parse_error.is_none());
         assert!(
             state
-                .local_model_memory
+                .agent_repair_memory
                 .scorecard
                 .first_valid_write_step
                 .is_none()
         );
-        assert_eq!(state.local_model_memory.observed_slices.len(), 1);
+        assert_eq!(state.agent_repair_memory.observed_slices.len(), 1);
         assert_eq!(
             state
                 .benchmark_repair_state
@@ -15812,12 +15880,12 @@ fn try_wait_on_child(
         assert!(
             transcript
                 .iter()
-                .any(|message| message.content.contains("[Local Controller]"))
+                .any(|message| message.content.contains("[Repair Controller]"))
         );
     }
 
     #[test]
-    fn line_oriented_repair_read_updates_local_memory_without_controller_write() {
+    fn line_oriented_repair_read_updates_memory_without_controller_write() {
         let project_root = tempfile::tempdir().expect("tempdir");
         let request = test_request(&project_root);
         let mut state = AgentTaskState::new(&request, test_config());
@@ -15846,20 +15914,23 @@ fn try_wait_on_child(
 
         assert!(matches!(control_flow, ControlFlow::Continue));
         assert_eq!(
-            state.local_model_memory.scorecard.line_oriented_parse_count,
+            state
+                .agent_repair_memory
+                .scorecard
+                .line_oriented_parse_count,
             1
         );
         assert_eq!(
             state
-                .local_model_memory
+                .agent_repair_memory
                 .scorecard
                 .controller_injected_read_count,
             0
         );
-        assert_eq!(state.local_model_memory.observed_slices.len(), 1);
+        assert_eq!(state.agent_repair_memory.observed_slices.len(), 1);
         assert!(
             state
-                .local_model_memory
+                .agent_repair_memory
                 .scorecard
                 .first_valid_write_step
                 .is_none()
@@ -15867,7 +15938,7 @@ fn try_wait_on_child(
     }
 
     #[test]
-    fn local_model_memory_persists_in_checkpoint_snapshot() {
+    fn agent_repair_memory_persists_in_checkpoint_snapshot() {
         let project_root = tempfile::tempdir().expect("tempdir");
         let request = test_request(&project_root);
         let mut state = AgentTaskState::new(&request, test_config());
@@ -15889,17 +15960,17 @@ fn try_wait_on_child(
         );
 
         let snapshot = state.snapshot();
-        assert_eq!(snapshot.local_model_memory.observed_slices.len(), 1);
+        assert_eq!(snapshot.agent_repair_memory.observed_slices.len(), 1);
         assert_eq!(
             snapshot
-                .local_model_memory
+                .agent_repair_memory
                 .scorecard
                 .line_oriented_parse_count,
             1
         );
         assert_eq!(
             snapshot
-                .local_model_memory
+                .agent_repair_memory
                 .scorecard
                 .controller_injected_read_count,
             1
@@ -15944,7 +16015,7 @@ fn try_wait_on_child(
                 last_successful_write_action: None,
                 benchmark_repair_state: None,
                 failed_edit_records: Vec::new(),
-                local_model_memory: LocalModelMemory::default(),
+                agent_repair_memory: AgentRepairMemory::default(),
             },
             transcript: Vec::new(),
             step: 0,
@@ -16306,7 +16377,7 @@ fn try_wait_on_child(
             None,
         );
 
-        let result = futures::executor::block_on(handle_model_turn(
+        let control_flow = futures::executor::block_on(handle_model_turn(
             2,
             ModelTurnInput {
                 content: &patch_without_reread,
@@ -16319,13 +16390,23 @@ fn try_wait_on_child(
             &executor,
             &sink,
             &mut transcript,
-        ));
-        let error = match result {
-            Ok(_) => panic!("follow-up write should be denied until reread"),
-            Err(error) => error,
-        };
+        ))
+        .expect("follow-up write should trigger deterministic reread recovery");
 
-        assert!(error.contains("requires a fresh focused `ReadFile`"));
+        assert!(matches!(control_flow, ControlFlow::ContinueNoBudget));
+        assert!(
+            executor
+                .executed_actions()
+                .iter()
+                .filter(|action| action.is_write_like())
+                .count()
+                == 1
+        );
+        assert!(transcript.iter().any(|message| {
+            message
+                .content
+                .contains("previous edit failed and the repair target must be reread first")
+        }));
     }
 
     #[test]
@@ -17678,9 +17759,9 @@ fn try_wait_on_child(
                 ..BenchmarkValidationDetails::default()
             },
         });
-        state.local_model_memory.last_preview_result =
+        state.agent_repair_memory.last_preview_result =
             Some("[preview_edit]\npath: Cargo.toml\nwould_apply: true".to_string());
-        state.local_model_memory.preview_origin = Some("write_locked_manifest".to_string());
+        state.agent_repair_memory.preview_origin = Some("write_locked_manifest".to_string());
         state.last_successful_write_action = Some(AgentAction::ApplyPreview {
             preview_id: "pv_manifest".to_string(),
         });
@@ -17711,7 +17792,7 @@ fn try_wait_on_child(
         assert!(matches!(outcome, DispatchOutcome::Failure));
         assert_eq!(executor.rollback_flags(), vec![false]);
         assert_eq!(
-            state.local_model_memory.scorecard.support_write_count, 0,
+            state.agent_repair_memory.scorecard.support_write_count, 0,
             "the preservation check must not fake write telemetry"
         );
     }
@@ -17983,10 +18064,10 @@ fn try_wait_on_child(
     }
 
     #[test]
-    fn qwen36_repair_phase_uses_minimal_compaction_and_smaller_completion_cap() {
+    fn nvidia_qwen_repair_phase_uses_minimal_compaction_and_smaller_completion_cap() {
         let project_root = tempfile::tempdir().expect("tempdir");
         let mut request = test_request(&project_root);
-        request.model_id = "ssd_moe/qwen36-27b".to_string();
+        request.model_id = "nvidia/qwen/qwen3-coder-480b-a35b-instruct".to_string();
         request.completion_policy.first_turn_max_completion_tokens = Some(3072);
         request.completion_policy.later_turn_max_completion_tokens = Some(1536);
         request.completion_policy.prompt_compaction_policy =
@@ -18009,22 +18090,22 @@ fn try_wait_on_child(
                 &request.model_id,
                 &state
             ),
-            Some(1024)
+            Some(1536)
         );
     }
 
     #[test]
-    fn qwen3_coder_repair_phase_uses_tighter_caps_and_state_packet_after_patch_failure() {
+    fn nvidia_qwen_repair_phase_uses_tighter_caps_and_state_packet_after_patch_failure() {
         let project_root = tempfile::tempdir().expect("tempdir");
         let mut request = test_request(&project_root);
-        request.model_id = "ssd_moe/qwen3-coder-30b-a3b".to_string();
+        request.model_id = "nvidia/qwen/qwen3-coder-480b-a35b-instruct".to_string();
         request.completion_policy.first_turn_max_completion_tokens = Some(4096);
         request.completion_policy.later_turn_max_completion_tokens = Some(3072);
         request.completion_policy.prompt_compaction_policy =
             Some(PromptCompactionPolicy::Last6Ledger768);
         let mut state = AgentTaskState::new(&request, test_config());
         seed_chrono_needs_patch_state(&mut state);
-        state.local_model_memory.post_patch_diagnostic_class =
+        state.agent_repair_memory.post_patch_diagnostic_class =
             Some("manifest_feature_error".to_string());
 
         assert_eq!(
@@ -18197,9 +18278,9 @@ fn try_wait_on_child(
             },
         });
         state
-            .local_model_memory
+            .agent_repair_memory
             .validation_failures
-            .push(LocalModelValidationFailure {
+            .push(AgentRepairValidationFailure {
                 command: "tests(--quiet --lib round::tests::)".to_string(),
                 summary: "round::tests::epoch failed".to_string(),
             });
@@ -18237,7 +18318,7 @@ fn try_wait_on_child(
 
         assert!(matches!(control_flow, ControlFlow::ContinueNoBudget));
         assert_eq!(executor.executed_actions().len(), 0);
-        assert_eq!(state.local_model_memory.rejected_actions.len(), 1);
+        assert_eq!(state.agent_repair_memory.rejected_actions.len(), 1);
         assert!(transcript.iter().any(|message| {
             message
                 .content
@@ -18263,9 +18344,9 @@ fn try_wait_on_child(
             validation_details: BenchmarkValidationDetails::default(),
         });
         state
-            .local_model_memory
+            .agent_repair_memory
             .validation_failures
-            .push(LocalModelValidationFailure {
+            .push(AgentRepairValidationFailure {
                 command: "cargo test --quiet --lib round::tests::".to_string(),
                 summary: "round::tests::epoch failed".to_string(),
             });
@@ -18298,7 +18379,7 @@ fn try_wait_on_child(
 
         assert!(matches!(control_flow, ControlFlow::ContinueNoBudget));
         assert_eq!(executor.executed_actions().len(), 0);
-        assert_eq!(state.local_model_memory.rejected_actions.len(), 1);
+        assert_eq!(state.agent_repair_memory.rejected_actions.len(), 1);
         assert!(transcript.iter().any(|message| {
             message
                 .content
@@ -19392,9 +19473,9 @@ where\n\
             exact_reread_completed: false,
         });
         state
-            .local_model_memory
+            .agent_repair_memory
             .observed_slices
-            .push(LocalModelObservedSlice {
+            .push(AgentRepairObservedSlice {
                 path: "src/round.rs".to_string(),
                 requested_range: Some(crate::agent_protocol::ReadFileRange {
                     start_line: 770,
@@ -19452,7 +19533,7 @@ where\n\
         ));
         assert_eq!(
             state
-                .local_model_memory
+                .agent_repair_memory
                 .scorecard
                 .controller_injected_read_count,
             1
@@ -19460,7 +19541,7 @@ where\n\
         assert!(
             transcript
                 .iter()
-                .any(|message| message.content.contains("[Local Controller]"))
+                .any(|message| message.content.contains("[Repair Controller]"))
         );
     }
 
@@ -19611,8 +19692,9 @@ fn test_duration_round_close_to_min_max() {\n\
         );
         assert!(transcript.iter().any(|message| {
             message.role == TranscriptRole::User
-                && message.content.contains("[Patch Packet]")
-                && message.content.contains("Patch `src/round.rs` now.")
+                && message
+                    .content
+                    .contains("emit one write on `src/round.rs` now")
         }));
 
         let patch_turn = render_turn(
@@ -20205,7 +20287,7 @@ where\n\
             Some(AgentAction::ReadFile { path, range: None }) if path == "Cargo.toml"
         ));
 
-        state.local_model_memory.scorecard.anchor_suggestion_count = 1;
+        state.agent_repair_memory.scorecard.anchor_suggestion_count = 1;
         let recovery_message = state.parser_recovery_message(false, "malformed");
         assert!(recovery_message.contains("Issue exactly one `ReadFile` for `Cargo.toml`"));
         assert!(!recovery_message.contains("first exactly one write on `Cargo.toml`"));

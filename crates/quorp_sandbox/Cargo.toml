@@ -1,0 +1,20 @@
+[package]
+name = "quorp_sandbox"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+authors = ["Quorp Team <hi@quorp.dev>"]
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+quorp_core.workspace = true
+serde = { workspace = true, features = ["derive"] }
+tempfile.workspace = true
+walkdir.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

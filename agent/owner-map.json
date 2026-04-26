@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "owners": [
+    {
+      "id": "agent-core",
+      "paths": [
+        "crates/quorp_core/**",
+        "crates/quorp_benchmark/**",
+        "crates/quorp_config/**",
+        "crates/quorp_provider/**",
+        "crates/quorp_sandbox/**",
+        "crates/quorp_term/**",
+        "crates/quorp_tools/**"
+      ],
+      "responsibility": "Agent-first shared types, settings, provider profiles, tmp-copy sandboxing, and terminal command surfaces."
+    },
+    {
+      "id": "cli-binary",
+      "paths": [
+        "crates/quorp/src/main.rs",
+        "crates/quorp/src/quorp/run_support.rs"
+      ],
+      "responsibility": "Command-line routing, doctor, exec/run launch, diagnostics, and run receipts."
+    },
+    {
+      "id": "benchmark",
+      "paths": [
+        "crates/quorp/src/quorp/benchmark.rs",
+        "benchmark/**"
+      ],
+      "responsibility": "Benchmark manifests, attempts, evaluators, reports, proof receipts, and batch orchestration."
+    },
+    {
+      "id": "legacy-tui",
+      "paths": [
+        "crates/quorp/src/quorp/tui/**"
+      ],
+      "responsibility": "Existing Ratatui/chat interface retained during migration; avoid expanding this surface unless needed for compatibility."
+    }
+  ]
+}

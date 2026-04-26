@@ -2,10 +2,16 @@
 resolver = "2"
 members = [
     "crates/collections",
-    "crates/flash_moe_defaults",
     "crates/paths",
     "crates/perf",
     "crates/quorp",
+    "crates/quorp_benchmark",
+    "crates/quorp_config",
+    "crates/quorp_core",
+    "crates/quorp_provider",
+    "crates/quorp_sandbox",
+    "crates/quorp_term",
+    "crates/quorp_tools",
     "crates/quorp_agent_core",
     "crates/zlog-compat",
     "crates/util",
@@ -41,7 +47,6 @@ clap = "=4.5.49"
 collections = { path = "crates/collections" }
 dirs = "=6.0.0"
 dunce = "=1.0.5"
-flash_moe_defaults = { path = "crates/flash_moe_defaults" }
 futures = "=0.3.31"
 futures-lite = "=2.6.1"
 globset = "=0.4.17"
@@ -58,6 +63,13 @@ percent-encoding = "=2.3.2"
 perf = { path = "crates/perf" }
 portable-pty = "=0.9.0"
 pretty_assertions = "=1.4.1"
+quorp_benchmark = { path = "crates/quorp_benchmark" }
+quorp_config = { path = "crates/quorp_config" }
+quorp_core = { path = "crates/quorp_core" }
+quorp_provider = { path = "crates/quorp_provider" }
+quorp_sandbox = { path = "crates/quorp_sandbox" }
+quorp_term = { path = "crates/quorp_term" }
+quorp_tools = { path = "crates/quorp_tools" }
 quote = "=1.0.41"
 rand = "=0.9.2"
 regex = "=1.12.2"
@@ -69,6 +81,7 @@ serde = "=1.0.228"
 serde_json = "=1.0.145"
 serde_json_lenient = "=0.2.4"
 shlex = "=1.3.0"
+sha2 = "=0.10.9"
 smol = "=2.0.2"
 syn = "=2.0.117"
 take-until = "=0.2.0"

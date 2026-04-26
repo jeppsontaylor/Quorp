@@ -1,0 +1,41 @@
+{
+  "version": 1,
+  "lanes": [
+    {
+      "id": "agent-core",
+      "paths": [
+        "crates/quorp_core/**",
+        "crates/quorp_benchmark/**",
+        "crates/quorp_config/**",
+        "crates/quorp_provider/**",
+        "crates/quorp_sandbox/**",
+        "crates/quorp_term/**",
+        "crates/quorp_tools/**"
+      ],
+      "commands": [
+        "cargo test -p quorp_core -p quorp_config -p quorp_provider -p quorp_sandbox -p quorp_term -p quorp_tools -p quorp_benchmark"
+      ]
+    },
+    {
+      "id": "cli",
+      "paths": [
+        "crates/quorp/src/main.rs",
+        "crates/quorp/src/quorp/run_support.rs"
+      ],
+      "commands": [
+        "cargo check -p quorp --bin quorp"
+      ]
+    },
+    {
+      "id": "benchmark",
+      "paths": [
+        "crates/quorp/src/quorp/benchmark.rs",
+        "benchmark/**"
+      ],
+      "commands": [
+        "cargo check -p quorp --bin quorp",
+        "./script/quorp-benchmark-smoke"
+      ]
+    }
+  ]
+}

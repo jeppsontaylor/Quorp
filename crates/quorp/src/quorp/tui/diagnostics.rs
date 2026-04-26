@@ -76,6 +76,7 @@ pub fn log_event(event: &str, fields: Value) {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub fn take_events_for_test() -> Vec<Value> {
     let sink = TEST_LOG_EVENTS.get_or_init(|| Mutex::new(Vec::new()));
     sink.lock()
@@ -84,6 +85,7 @@ pub fn take_events_for_test() -> Vec<Value> {
 }
 
 #[cfg(test)]
+#[allow(dead_code)]
 pub fn clear_events_for_test() {
     let sink = TEST_LOG_EVENTS.get_or_init(|| Mutex::new(Vec::new()));
     if let Ok(mut entries) = sink.lock() {

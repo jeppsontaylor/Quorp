@@ -1,0 +1,1337 @@
+Absolutely. The right move for **QUORP** is:
+
+> **Do not build a traditional boxed Rust TUI first.**
+> Build a **Rust-native terminal IDE / agent shell** that uses **direct terminal rendering**, **truecolor ANSI**, **streaming event cards**, **clean typography**, **beautiful diffs**, and **fast incremental redraws**.
+
+That gives you the **Claude CLI / Codex CLI energy**, while still letting you keep the entire product in Rust.
+
+---
+
+# 1. Brand + mascot study
+
+Your mascot already gives you a very strong visual language.
+
+## What the mascot communicates
+
+From the image, the QUORP mascot reads as:
+
+* **dark / glossy / stealthy**
+* **cute but dangerous-smart**
+* **terminal-native**
+* **slightly mischievous**
+* **high-contrast neon edge-lighting**
+* **orange heat / ember glow**
+* **floating / lightweight / fast**
+* **not childish — more “elite cute cyber familiar”**
+
+## Core visual elements we should preserve
+
+### A. Color language
+
+* **black / near-black body**
+* **hot orange eyes**
+* **orange neon edge glow**
+* **black background**
+* **glowing prompt glyph `>_`**
+* **subtle charcoal / navy body shading**
+
+### B. Shape language
+
+* rounded blob body
+* short paws
+* rabbit/cat hybrid ears
+* narrow glowing eyes
+* tiny mischievous mouth
+* long tail ending in multiple glowing tips
+
+### C. Product implication
+
+This mascot says:
+
+* the product is **fast**
+* the product is **terminal-native**
+* the product is **smart and active**
+* the product should feel **premium**
+* the UI should feel **luminous, dark, sharp, and “alive”**
+
+So QUORP should not look like:
+
+* ncurses dashboard
+* enterprise admin panel
+* generic chatbot
+* beige devtool
+
+It should look like:
+
+* **cyber assistant cockpit**
+* **high-end terminal agent**
+* **crisp black glass + hot accent glow**
+* **beautiful diffs + delightful motion**
+
+---
+
+# 2. Product recommendation: what QUORP should be
+
+## Primary product surface
+
+### `quorp` terminal IDE / agent shell
+
+This is the main experience.
+
+```bash
+quorp
+quorp "fix failing tests"
+quorp --plan "migrate to async"
+quorp --review
+quorp --diff
+quorp --theme ember-night
+```
+
+## UX thesis
+
+QUORP should be:
+
+* **transcript-first**
+* **streaming**
+* **beautiful**
+* **reviewable**
+* **tool-safe**
+* **diff-centric**
+* **permission-aware**
+* **emoji-enhanced**
+* **not a grid prison**
+
+---
+
+# 3. The most important architecture decision
+
+## Do NOT start with classic Ratatui-style boxes everywhere
+
+The issue users often call “pixelated Rust TUI” is usually not Rust itself.
+
+It is usually a combination of:
+
+* terminal emulator quality
+* font choice
+* font fallback
+* DPI / Retina handling
+* too much box drawing
+* poor redraw strategy
+* low-contrast layout
+* too much dense screen furniture
+
+## Best rendering model
+
+Build QUORP as a **hybrid terminal renderer**:
+
+### Mode A — transcript mode
+
+Normal terminal scrollback, streaming cards, no “full dashboard” feel.
+
+Use this for:
+
+* reasoning summaries
+* tool calls
+* shell logs
+* diffs
+* tests
+* plans
+* approvals
+
+### Mode B — focused full-screen mode
+
+Alternate-screen only when needed.
+
+Use this for:
+
+* diff review
+* file picker
+* approval queue
+* agent board
+* command palette
+* settings / theme preview
+
+This gives you the sharp feel of Claude/Codex-style UX without becoming a boxy TUI.
+
+---
+
+# 4. Best Rust technology stack
+
+Here is the stack I would recommend.
+
+---
+
+## 4.1 Core CLI / app runtime
+
+| Area           | Stack                            | Why                                                |
+| -------------- | -------------------------------- | -------------------------------------------------- |
+| Language       | **Rust**                         | Performance, portability, strong tooling           |
+| Async runtime  | **tokio**                        | model streaming, subprocess management, tool calls |
+| CLI parsing    | **clap**                         | mature, ergonomic                                  |
+| Config         | **serde + toml + directories**   | typed config and themes                            |
+| Logging        | **tracing + tracing-subscriber** | observability and replay                           |
+| Error handling | **anyhow + thiserror**           | clean failures                                     |
+
+---
+
+## 4.2 Terminal rendering
+
+This is the critical part.
+
+| Area                       | Stack                                      | Why                                          |
+| -------------------------- | ------------------------------------------ | -------------------------------------------- |
+| Terminal control           | **crossterm**                              | cross-platform terminal IO, cursor, raw mode |
+| Advanced terminal features | **termwiz** (optional)                     | richer terminal protocol support             |
+| Direct rendering           | **custom ANSI compositor**                 | avoids the boxed TUI feeling                 |
+| Optional layout help       | **ratatui only for some internal widgets** | but not as the primary mental model          |
+
+### Recommendation
+
+Use:
+
+* **Crossterm**
+* **direct ANSI / cursor placement**
+* **your own scene renderer**
+* **minimal Ratatui usage, if any**
+
+So the rendering architecture should be:
+
+```text
+App Events
+  -> State Reducer
+  -> UI Model
+  -> Layout Pass
+  -> Terminal Frame
+  -> Dirty Region Diff
+  -> ANSI Output
+```
+
+---
+
+## 4.3 Text / Unicode / emoji support
+
+| Area              | Stack                                              | Why                                 |
+| ----------------- | -------------------------------------------------- | ----------------------------------- |
+| Grapheme handling | **unicode-segmentation**                           | correct cursor movement / slicing   |
+| Width calculation | **unicode-width**                                  | correct layout with emoji / symbols |
+| Text buffer       | **ropey**                                          | scalable text editing and streaming |
+| Emoji support     | terminal font fallback + runtime feature detection | essential for QUORP personality     |
+
+### Important
+
+You specifically want **less-common emoji**. That is fine, but you need:
+
+* width-aware layout
+* emoji fallback behavior
+* monochrome fallback mode
+* terminal capability detection
+
+---
+
+## 4.4 Code intelligence
+
+| Area             | Stack                                  | Why                                  |
+| ---------------- | -------------------------------------- | ------------------------------------ |
+| Syntax trees     | **tree-sitter**                        | fast incremental parsing             |
+| Syntax highlight | **tree-sitter queries** or **syntect** | semantic or theme-based coloring     |
+| LSP              | **lsp-types + stdio client**           | diagnostics, go-to-definition, hover |
+| Rust awareness   | **rust-analyzer integration**          | top-tier Rust coding experience      |
+
+---
+
+## 4.5 Diff engine
+
+This is one of the most important subsystems for your product identity.
+
+| Area                  | Stack                        | Why                          |
+| --------------------- | ---------------------------- | ---------------------------- |
+| Line diff             | **similar**                  | robust and ergonomic         |
+| Fast diff alternative | **imara-diff**               | performance                  |
+| Semantic labeling     | **tree-sitter**              | function / block aware diffs |
+| Git integration       | **gix** or shelling to `git` | snapshots, hunks, restore    |
+
+### QUORP diff UX requirements
+
+* full-line add/delete backgrounds
+* word-level highlight within changed lines
+* green/red backgrounds
+* hunk folding
+* per-hunk accept / reject
+* semantic labels
+* risk badges
+* checkpoint before apply
+
+---
+
+## 4.6 Tool calling / agent loop
+
+| Area           | Stack                    | Why                              |
+| -------------- | ------------------------ | -------------------------------- |
+| Model adapters | **reqwest + serde_json** | provider-agnostic client         |
+| Streaming      | **tokio-stream**         | token streaming and tool events  |
+| Tool schemas   | **schemars + serde**     | typed tool definitions           |
+| MCP            | **rmcp**                 | model context protocol support   |
+| Local tools    | custom Rust trait layer  | file/shell/git/search/test tools |
+
+### Tool design
+
+QUORP should normalize all providers into one internal event model:
+
+```rust
+enum UiEvent {
+    AssistantDelta(String),
+    ToolCall(ToolInvocation),
+    ToolResult(ToolResultSummary),
+    PatchProposed(PatchSummary),
+    ApprovalNeeded(ApprovalRequest),
+    TestStarted(String),
+    TestFinished(TestSummary),
+    FinalAnswer(String),
+}
+```
+
+---
+
+## 4.7 Search / repo indexing
+
+| Area            | Stack                                     | Why                                 |
+| --------------- | ----------------------------------------- | ----------------------------------- |
+| File walking    | **ignore + walkdir**                      | respects `.gitignore`               |
+| Search          | **grep crates / regex-automata / memchr** | fast repo search                    |
+| Full-text index | **tantivy**                               | offline local search                |
+| Metadata store  | **SQLite**                                | session memory and project metadata |
+| Cache           | **redb** (optional)                       | very fast local KV                  |
+
+---
+
+## 4.8 Shell / subprocess execution
+
+| Area             | Stack                              | Why                               |
+| ---------------- | ---------------------------------- | --------------------------------- |
+| Process spawning | **tokio::process**                 | async process control             |
+| PTY              | **portable-pty**                   | live shell-like command rendering |
+| Cancellation     | **tokio-util / CancellationToken** | stop long jobs cleanly            |
+
+---
+
+## 4.9 Security / sandbox
+
+This is extremely important if QUORP will edit code and run commands.
+
+| OS      | Suggested mechanism                                                     |
+| ------- | ----------------------------------------------------------------------- |
+| Linux   | **bubblewrap**                                                          |
+| macOS   | **Seatbelt / sandbox-exec style wrapper or custom policy wrapper**      |
+| Windows | **Job objects / low-privilege execution / AppContainer-like isolation** |
+
+QUORP should separate:
+
+* **sandbox boundary**
+* **approval policy**
+
+Those are not the same thing.
+
+---
+
+# 5. Best terminal targets for a sharp experience
+
+If you want QUORP to look gorgeous, recommend these terminals first:
+
+## Tier 1
+
+* **Ghostty**
+* **WezTerm**
+* **Kitty**
+
+## Tier 2
+
+* iTerm2
+* Windows Terminal
+
+## Fonts to recommend
+
+### Primary monospace
+
+* JetBrains Mono
+* Iosevka
+* Berkeley Mono
+* Geist Mono
+* Maple Mono
+
+### Fallback / symbols
+
+* Symbols Nerd Font
+* Noto Color Emoji
+* Apple Color Emoji
+* Segoe UI Emoji
+
+---
+
+# 6. QUORP UI design system
+
+---
+
+## 6.1 Product mood
+
+### Keywords
+
+* black glass
+* ember glow
+* crisp text
+* neon accents
+* surgical diff review
+* polished terminal
+* cyber familiar
+* premium
+* alive
+* fast
+
+---
+
+## 6.2 Color palette
+
+## Primary palette — **Ember Night**
+
+| Token               |       Hex | Use                            |
+| ------------------- | --------: | ------------------------------ |
+| `bg.deep`           | `#05050A` | main background                |
+| `bg.panel`          | `#0B1020` | cards                          |
+| `bg.elevated`       | `#121827` | selected panel                 |
+| `bg.float`          | `#161B2E` | modal                          |
+| `text.primary`      | `#F8FAFC` | main text                      |
+| `text.secondary`    | `#CBD5E1` | secondary text                 |
+| `text.muted`        | `#64748B` | quiet text                     |
+| `accent.orange`     | `#FF7A1A` | primary brand accent           |
+| `accent.orange.hot` | `#FF9B3D` | hover / highlight              |
+| `accent.amber`      | `#FFB347` | warm glow                      |
+| `accent.red`        | `#FF4D5A` | deletion / danger              |
+| `accent.green`      | `#39FF14` | success / apply                |
+| `accent.lime`       | `#A3E635` | success accent                 |
+| `accent.cyan`       | `#22D3EE` | tool / network / active status |
+| `accent.blue`       | `#60A5FA` | tests / compile                |
+| `accent.violet`     | `#A78BFA` | reasoning / planning           |
+| `accent.magenta`    | `#FF4FD8` | premium pop accent             |
+| `accent.whitehot`   | `#FFFFFF` | sharp highlight                |
+
+---
+
+## 6.3 Diff colors
+
+This is one of your most important requests.
+
+| Token             |       Hex | Use                     |
+| ----------------- | --------: | ----------------------- |
+| `diff.add.bg`     | `#052E1A` | added lines             |
+| `diff.add.hot`    | `#0A4D2B` | added changed words     |
+| `diff.add.fg`     | `#B8FFC8` | added text              |
+| `diff.add.marker` | `#39FF14` | plus marker             |
+| `diff.del.bg`     | `#3A0A12` | removed lines           |
+| `diff.del.hot`    | `#6E1622` | removed changed words   |
+| `diff.del.fg`     | `#FFC5CF` | removed text            |
+| `diff.del.marker` | `#FF4D5A` | minus marker            |
+| `diff.mod.bg`     | `#332705` | modified / warning zone |
+| `diff.mod.hot`    | `#6B4A0A` | inline changed word     |
+| `diff.mod.fg`     | `#FFE08A` | modified text           |
+| `diff.hunk.bg`    | `#0B1D3A` | hunk header             |
+| `diff.hunk.fg`    | `#93C5FD` | hunk header text        |
+
+---
+
+## 6.4 Less-common emoji set for QUORP
+
+These are perfect for your terminal experience.
+
+| Emoji | Meaning               |
+| ----- | --------------------- |
+| `🪐`  | thinking / reasoning  |
+| `🧲`  | context pulled in     |
+| `🪄`  | editing / patching    |
+| `🧪`  | tests                 |
+| `🧬`  | code structure / git  |
+| `🪬`  | approval gate         |
+| `🧿`  | review / watchfulness |
+| `🪤`  | blocked / trap        |
+| `🧯`  | failure safety        |
+| `🪙`  | token / cost          |
+| `🗜️` | compaction            |
+| `🪡`  | precise patch         |
+| `🪵`  | logs                  |
+| `🧵`  | thread                |
+| `🪆`  | nested agent          |
+| `🛸`  | experimental tool     |
+| `🫧`  | success               |
+| `🪩`  | wow mode / showcase   |
+| `🪶`  | lightweight mode      |
+| `🧰`  | tools                 |
+| `🐚`  | shell                 |
+
+---
+
+# 7. QUORP UX model
+
+QUORP should be built from **cards**, not panels.
+
+## Core UI objects
+
+* reasoning card
+* tool call card
+* diff card
+* test card
+* approval card
+* git card
+* context card
+* result card
+
+## Example transcript feel
+
+```text
+🪐 plan
+   Reproduce the failing test, inspect timeout handling, patch the client, rerun focused tests.
+
+🧲 context
+   src/client.rs
+   tests/timeout.rs
+   Cargo.toml
+
+🪄 patch
+   src/client.rs
+   +12  -4
+
+🧪 tests
+   cargo test -p net-client timeout
+   ✅ passed
+
+🧿 review
+   Low risk. Async conversion is localized and covered by tests.
+```
+
+This is the feel you want.
+
+---
+
+# 8. QUORP loader / splash concept
+
+Now the fun part.
+
+You asked for a **brilliant load screen** using:
+
+* QUORP mascot
+* QUORP branding
+* version
+* brilliant colors
+* text-mode only
+* not classic Rust TUI
+* full code
+
+## Design goals
+
+The splash should feel:
+
+* premium
+* fast
+* sharp
+* dark
+* branded
+* alive
+* not gimmicky
+
+## Loader layout
+
+### Top
+
+* small branded header
+* version
+* environment / mode
+
+### Center hero
+
+* glowing `>_` prompt
+* text-rendered QUORP mascot
+* luminous accent colors
+* large negative space
+
+### Bottom
+
+* animated loading steps
+* progress bar
+* uncommon emoji status icons
+* tagline
+
+## Suggested loading stages
+
+1. `🪐 booting agent core`
+2. `🧲 indexing project context`
+3. `🧰 wiring toolchain`
+4. `🧪 warming test runner`
+5. `🪄 priming diff engine`
+6. `🧿 safety systems online`
+
+---
+
+# 9. Full code: pure text QUORP load screen in Rust
+
+This version is:
+
+* **not a TUI framework**
+* **not Ratatui**
+* **direct terminal rendering**
+* **truecolor ANSI**
+* **Unicode mascot art**
+* **animated**
+* **centered**
+* **terminal-friendly**
+
+---
+
+## `Cargo.toml`
+
+```toml
+[package]
+name = "quorp-loader"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crossterm = "0.28"
+unicode-width = "0.1"
+```
+
+---
+
+## `src/main.rs`
+
+```rust
+use crossterm::{
+    cursor::{Hide, MoveTo, Show},
+    execute, queue,
+    style::Print,
+    terminal::{
+        self, disable_raw_mode, enable_raw_mode, Clear, ClearType, EnterAlternateScreen,
+        LeaveAlternateScreen,
+    },
+};
+use std::{
+    io::{self, stdout, Stdout, Write},
+    thread,
+    time::Duration,
+};
+use unicode_width::UnicodeWidthStr;
+
+const RESET: &str = "\x1b[0m";
+const BOLD: &str = "\x1b[1m";
+const DIM: &str = "\x1b[2m";
+
+#[derive(Copy, Clone)]
+struct Rgb(u8, u8, u8);
+
+const BG_DEEP: Rgb = Rgb(5, 5, 10);
+const TEXT_PRIMARY: Rgb = Rgb(248, 250, 252);
+const TEXT_SECONDARY: Rgb = Rgb(203, 213, 225);
+const TEXT_MUTED: Rgb = Rgb(100, 116, 139);
+
+const ORANGE: Rgb = Rgb(255, 122, 26);
+const ORANGE_HOT: Rgb = Rgb(255, 155, 61);
+const AMBER: Rgb = Rgb(255, 179, 71);
+const RED: Rgb = Rgb(255, 77, 90);
+const GREEN: Rgb = Rgb(57, 255, 20);
+const CYAN: Rgb = Rgb(34, 211, 238);
+const BLUE: Rgb = Rgb(96, 165, 250);
+const VIOLET: Rgb = Rgb(167, 139, 250);
+const MAGENTA: Rgb = Rgb(255, 79, 216);
+const BODY: Rgb = Rgb(22, 24, 39);
+const BODY_EDGE: Rgb = Rgb(38, 43, 66);
+const SHADOW: Rgb = Rgb(11, 16, 32);
+
+const VERSION: &str = "v0.1.0-alpha";
+
+const SPINNER: &[&str] = &["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+
+const STEPS: &[(&str, &str, Rgb)] = &[
+    ("🪐", "booting agent core", VIOLET),
+    ("🧲", "indexing project context", CYAN),
+    ("🧰", "wiring toolchain", BLUE),
+    ("🧪", "warming test runner", BLUE),
+    ("🪄", "priming diff engine", MAGENTA),
+    ("🧿", "safety systems online", GREEN),
+];
+
+const PROMPT_ART: &[&str] = &[
+    "     ▄▄▄▄▄              ",
+    "          ▜██           ",
+    "             ▜██        ",
+    "                ▜██     ",
+    "             ▟██▀       ",
+    "          ▟██▀          ",
+    "     ▀▀▀▀▀              ",
+    "                        ",
+    "     ▄▄▄▄▄▄▄▄▄▄▄        ",
+];
+
+const MASCOT_ART: &[&str] = &[
+    "             ╭──╮      ╭──╮           ",
+    "          ╭──╯  ╰──────╯  ╰──╮        ",
+    "        ╭─╯                    ╰─╮    ",
+    "       ╱                          ╲   ",
+    "      │                            │  ",
+    "      │                            │  ",
+    "      │                            │  ",
+    "       ╲                          ╱   ",
+    "        ╰╮      ╭────────╮     ╭─╯    ",
+    "          ╰─────╯        ╰─────╯      ",
+    "                                 ╲    ",
+    "                                  ╲___",
+    "                                     ●─●─●",
+];
+
+fn fg(c: Rgb) -> String {
+    format!("\x1b[38;2;{};{};{}m", c.0, c.1, c.2)
+}
+
+fn bg(c: Rgb) -> String {
+    format!("\x1b[48;2;{};{};{}m", c.0, c.1, c.2)
+}
+
+fn style(text: &str, color: Rgb) -> String {
+    format!("{}{}{}", fg(color), text, RESET)
+}
+
+fn style_bold(text: &str, color: Rgb) -> String {
+    format!("{}{}{}{}", BOLD, fg(color), text, RESET)
+}
+
+fn style_dim(text: &str, color: Rgb) -> String {
+    format!("{}{}{}{}", DIM, fg(color), text, RESET)
+}
+
+fn lerp(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t).round() as u8
+}
+
+fn blend(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    Rgb(lerp(a.0, b.0, t), lerp(a.1, b.1, t), lerp(a.2, b.2, t))
+}
+
+fn width(s: &str) -> usize {
+    UnicodeWidthStr::width(s)
+}
+
+fn center_x(cols: u16, content_width: usize) -> u16 {
+    if cols as usize > content_width {
+        ((cols as usize - content_width) / 2) as u16
+    } else {
+        0
+    }
+}
+
+fn write_at(out: &mut Stdout, x: u16, y: u16, s: &str) -> io::Result<()> {
+    queue!(out, MoveTo(x, y), Print(s))
+}
+
+fn progress_bar(progress: f32, width: usize) -> String {
+    let filled = ((progress * width as f32).round() as usize).min(width);
+    let mut out = String::new();
+
+    for i in 0..width {
+        if i < filled {
+            let t = i as f32 / (width.max(1) as f32);
+            let c = blend(ORANGE, AMBER, t);
+            out.push_str(&format!("{}█{}", fg(c), RESET));
+        } else {
+            out.push_str(&format!("{}░{}", fg(SHADOW), RESET));
+        }
+    }
+
+    out
+}
+
+fn render_prompt(out: &mut Stdout, x: u16, y: u16, pulse: f32) -> io::Result<()> {
+    for (i, line) in PROMPT_ART.iter().enumerate() {
+        let t = i as f32 / (PROMPT_ART.len() as f32);
+        let hotness = 0.35 + pulse * 0.55;
+        let c = blend(ORANGE, ORANGE_HOT, (t * hotness).min(1.0));
+        write_at(out, x, y + i as u16, &format!("{}{}{}", fg(c), line, RESET))?;
+    }
+    Ok(())
+}
+
+fn render_mascot(out: &mut Stdout, x: u16, y: u16, pulse: f32) -> io::Result<()> {
+    for (i, line) in MASCOT_ART.iter().enumerate() {
+        let c = if i < 2 {
+            blend(BODY_EDGE, BODY, 0.45)
+        } else {
+            BODY
+        };
+        write_at(out, x, y + i as u16, &format!("{}{}{}", fg(c), line, RESET))?;
+    }
+
+    let eye = if pulse > 0.5 { ORANGE_HOT } else { AMBER };
+    let cheek = blend(ORANGE, AMBER, pulse);
+    let tail = blend(AMBER, ORANGE_HOT, pulse);
+
+    // Eyes
+    write_at(out, x + 8, y + 4, &format!("{}◉{}", fg(eye), RESET))?;
+    write_at(out, x + 27, y + 4, &format!("{}◉{}", fg(eye), RESET))?;
+
+    // Mouth
+    write_at(out, x + 16, y + 5, &format!("{}◜ω◝{}", fg(TEXT_PRIMARY), RESET))?;
+
+    // Tiny cheek glow
+    write_at(out, x + 30, y + 5, &format!("{}•{}", fg(cheek), RESET))?;
+
+    // Tail glow
+    write_at(out, x + 37, y + 12, &format!("{}●─●─●{}", fg(tail), RESET))?;
+
+    Ok(())
+}
+
+fn render_header(out: &mut Stdout, cols: u16, y: u16) -> io::Result<()> {
+    let title = format!("{}QUORP{}", style_bold("", ORANGE), RESET);
+    let line = format!(
+        "{}QUORP{}  {}//{}  {}agent shell{}  {}{}{}",
+        BOLD,
+        RESET,
+        style_dim("", TEXT_MUTED),
+        RESET,
+        style("", TEXT_SECONDARY),
+        RESET,
+        style_dim("", TEXT_MUTED),
+        VERSION,
+        RESET,
+    );
+
+    let text = format!(
+        "{}QUORP{}  {}//{}  {}brilliant terminal IDE{}  {}{}{}",
+        BOLD,
+        RESET,
+        fg(TEXT_MUTED),
+        RESET,
+        fg(TEXT_SECONDARY),
+        RESET,
+        fg(TEXT_MUTED),
+        VERSION,
+        RESET
+    );
+
+    let x = center_x(cols, width("QUORP  //  brilliant terminal IDE  v0.1.0-alpha"));
+    let _ = title; // keep brand concept explicit
+    let _ = line;
+    write_at(out, x, y, &text)
+}
+
+fn render_footer(out: &mut Stdout, cols: u16, rows: u16) -> io::Result<()> {
+    let footer = format!(
+        "{}Ghostty{}  {}•{}  {}WezTerm{}  {}•{}  {}Kitty{}  {}recommended for crisp output{}",
+        fg(TEXT_MUTED),
+        RESET,
+        fg(TEXT_MUTED),
+        RESET,
+        fg(TEXT_MUTED),
+        RESET,
+        fg(TEXT_MUTED),
+        RESET,
+        fg(TEXT_MUTED),
+        RESET,
+        fg(TEXT_MUTED),
+        RESET
+    );
+
+    let x = center_x(cols, width("Ghostty • WezTerm • Kitty recommended for crisp output"));
+    write_at(out, x, rows.saturating_sub(2), &footer)
+}
+
+fn render_compact(
+    out: &mut Stdout,
+    cols: u16,
+    rows: u16,
+    spinner_idx: usize,
+    step_idx: usize,
+    pulse: f32,
+) -> io::Result<()> {
+    let (emoji, label, color) = STEPS[step_idx];
+    queue!(out, Clear(ClearType::All))?;
+
+    let title = format!(
+        "{}QUORP{}  {}{}{}",
+        style_bold("", ORANGE),
+        RESET,
+        fg(TEXT_MUTED),
+        VERSION,
+        RESET
+    );
+
+    let line1 = format!(
+        "{}QUORP{} {}{}{}",
+        BOLD,
+        RESET,
+        fg(TEXT_MUTED),
+        VERSION,
+        RESET
+    );
+
+    let mascot = format!(
+        "{}>_{}   {}(◉ᵕ◉)~~~{}",
+        fg(blend(ORANGE, ORANGE_HOT, pulse)),
+        RESET,
+        fg(BODY_EDGE),
+        RESET
+    );
+
+    let status = format!(
+        "{} {}{}{}  {}{}{}",
+        SPINNER[spinner_idx % SPINNER.len()],
+        fg(color),
+        emoji,
+        RESET,
+        fg(TEXT_PRIMARY),
+        label,
+        RESET
+    );
+
+    let x1 = center_x(cols, width("QUORP v0.1.0-alpha"));
+    let x2 = center_x(cols, width(">_   (◉ᵕ◉)~~~"));
+    let x3 = center_x(cols, width("⠋ 🪐 booting agent core"));
+
+    write_at(out, x1, rows / 2 - 1, &line1)?;
+    let _ = title;
+    write_at(out, x2, rows / 2 + 1, &mascot)?;
+    write_at(out, x3, rows / 2 + 3, &status)?;
+    out.flush()?;
+    Ok(())
+}
+
+fn render_frame(
+    out: &mut Stdout,
+    spinner_idx: usize,
+    step_idx: usize,
+    inner_tick: usize,
+) -> io::Result<()> {
+    let (cols, rows) = terminal::size().unwrap_or((120, 40));
+    let pulse = ((inner_tick as f32 / 18.0) * std::f32::consts::PI).sin().abs();
+
+    if cols < 96 || rows < 28 {
+        return render_compact(out, cols, rows, spinner_idx, step_idx, pulse);
+    }
+
+    queue!(out, Clear(ClearType::All))?;
+
+    // subtle background wash line
+    let top_band = format!("{}{}{}", bg(BG_DEEP), " ".repeat(cols as usize), RESET);
+    write_at(out, 0, 0, &top_band)?;
+
+    let hero_width = 88usize;
+    let hero_x = center_x(cols, hero_width);
+    let hero_y = rows.saturating_sub(24) / 2;
+
+    render_header(out, cols, hero_y.saturating_sub(2))?;
+
+    // left prompt
+    let prompt_x = hero_x;
+    let prompt_y = hero_y + 4;
+    render_prompt(out, prompt_x, prompt_y, pulse)?;
+
+    // right mascot
+    let mascot_x = hero_x + 24;
+    let mascot_y = hero_y + 1;
+    render_mascot(out, mascot_x, mascot_y, pulse)?;
+
+    // Brand line under hero
+    let brand = format!(
+        "{}QUORP{}  {}•{}  {}sharp terminal IDE{}  {}•{}  {}agentic coding cockpit{}",
+        BOLD,
+        RESET,
+        fg(TEXT_MUTED),
+        RESET,
+        fg(TEXT_PRIMARY),
+        RESET,
+        fg(TEXT_MUTED),
+        RESET,
+        fg(TEXT_SECONDARY),
+        RESET
+    );
+    let brand_x = center_x(cols, width("QUORP • sharp terminal IDE • agentic coding cockpit"));
+    write_at(out, brand_x, hero_y + 16, &brand)?;
+
+    // Progress
+    let total_steps = STEPS.len() as f32;
+    let progress = (step_idx as f32 + (inner_tick as f32 / 18.0)) / total_steps;
+    let bar = progress_bar(progress.min(1.0), 38);
+    let bar_label = format!(
+        "{}loading{}  {}{:>3}%{}",
+        fg(TEXT_MUTED),
+        RESET,
+        fg(TEXT_PRIMARY),
+        (progress * 100.0).round() as u8,
+        RESET
+    );
+    let bar_line = format!("{}  {}", bar, bar_label);
+    let bar_x = center_x(cols, 38 + 2 + width("loading 100%"));
+    write_at(out, bar_x, hero_y + 18, &bar_line)?;
+
+    // Active step
+    let (emoji, label, color) = STEPS[step_idx];
+    let status = format!(
+        "{} {}{}{}  {}{}{}",
+        SPINNER[spinner_idx % SPINNER.len()],
+        fg(color),
+        emoji,
+        RESET,
+        fg(TEXT_PRIMARY),
+        label,
+        RESET
+    );
+    let status_x = center_x(cols, width("⠋ 🪐 booting agent core"));
+    write_at(out, status_x, hero_y + 20, &status)?;
+
+    // Capability chips
+    let chips = format!(
+        "{}🧲 context{}   {}🪄 patch{}   {}🧪 tests{}   {}🪬 safe tools{}",
+        fg(CYAN),
+        RESET,
+        fg(MAGENTA),
+        RESET,
+        fg(BLUE),
+        RESET,
+        fg(AMBER),
+        RESET
+    );
+    let chips_x = center_x(cols, width("🧲 context   🪄 patch   🧪 tests   🪬 safe tools"));
+    write_at(out, chips_x, hero_y + 22, &chips)?;
+
+    render_footer(out, cols, rows)?;
+
+    out.flush()?;
+    Ok(())
+}
+
+fn render_ready(out: &mut Stdout) -> io::Result<()> {
+    let (cols, rows) = terminal::size().unwrap_or((120, 40));
+    queue!(out, Clear(ClearType::All))?;
+
+    let hero = format!(
+        "{}QUORP{}  {}ready{}",
+        style_bold("", ORANGE),
+        RESET,
+        fg(GREEN),
+        RESET
+    );
+
+    let line1 = format!("{}QUORP{}  {}", BOLD, RESET, VERSION);
+    let line2 = format!(
+        "{}>_{}   {}🫧 ready to ship code{}",
+        fg(ORANGE_HOT),
+        RESET,
+        fg(GREEN),
+        RESET
+    );
+    let line3 = format!(
+        "{}type a task or press / for commands{}",
+        fg(TEXT_SECONDARY),
+        RESET
+    );
+
+    let x1 = center_x(cols, width("QUORP v0.1.0-alpha"));
+    let x2 = center_x(cols, width(">_ 🫧 ready to ship code"));
+    let x3 = center_x(cols, width("type a task or press / for commands"));
+
+    write_at(out, x1, rows / 2 - 1, &line1)?;
+    let _ = hero;
+    write_at(out, x2, rows / 2 + 1, &line2)?;
+    write_at(out, x3, rows / 2 + 3, &line3)?;
+    out.flush()?;
+    Ok(())
+}
+
+fn main() -> io::Result<()> {
+    let mut out = stdout();
+
+    enable_raw_mode()?;
+    execute!(out, EnterAlternateScreen, Hide)?;
+
+    for step_idx in 0..STEPS.len() {
+        for inner_tick in 0..18 {
+            let spinner_idx = step_idx * 18 + inner_tick;
+            render_frame(&mut out, spinner_idx, step_idx, inner_tick)?;
+            thread::sleep(Duration::from_millis(70));
+        }
+    }
+
+    render_ready(&mut out)?;
+    thread::sleep(Duration::from_millis(1100));
+
+    execute!(out, Show, LeaveAlternateScreen)?;
+    disable_raw_mode()?;
+
+    println!(
+        "{}QUORP{} {}{}{}",
+        BOLD,
+        RESET,
+        fg(TEXT_MUTED),
+        VERSION,
+        RESET
+    );
+    println!(
+        "{}>_{} {}ready.{}",
+        fg(ORANGE_HOT),
+        RESET,
+        fg(GREEN),
+        RESET
+    );
+
+    Ok(())
+}
+```
+
+---
+
+# 10. What this code does well
+
+This splash implementation gives you:
+
+* direct terminal rendering
+* no Ratatui dependency
+* crisp text-first layout
+* truecolor glow feel
+* centered layout
+* animated progress
+* uncommon emoji
+* QUORP mascot in text form
+* branded startup experience
+* alternate-screen splash, then clean handoff back to the shell
+
+---
+
+# 11. How to integrate this into the real QUORP app
+
+In your real application, I would structure it like this:
+
+```text
+crates/
+  quorp-cli/
+  quorp-ui/
+    src/
+      splash.rs
+      theme.rs
+      render.rs
+      cards.rs
+      diff.rs
+  quorp-agent/
+  quorp-tools/
+  quorp-git/
+  quorp-index/
+  quorp-lsp/
+  quorp-store/
+```
+
+## Recommended production API
+
+```rust
+pub fn show_quorp_splash(version: &str, mode: StartupMode) -> io::Result<()>
+```
+
+Where `StartupMode` could be:
+
+```rust
+pub enum StartupMode {
+    FullAnimated,
+    Fast,
+    Quiet,
+    NoSplash,
+}
+```
+
+---
+
+# 12. Best next-phase enhancements for the splash
+
+If you want the splash to become elite, add these next:
+
+## A. Terminal capability detection
+
+Detect:
+
+* truecolor
+* emoji support
+* terminal brand
+* width / height
+* Kitty graphics support
+* iTerm inline image support
+
+## B. Real mascot image on supported terminals
+
+On terminals that support it:
+
+* Kitty graphics protocol
+* iTerm image protocol
+* sixel
+
+Show the **real mascot PNG** when possible.
+Fallback to the text mascot when not supported.
+
+That would be an incredible premium touch.
+
+## C. Motion polish
+
+Add:
+
+* subtle eye pulse
+* tail glow pulse
+* shimmer on `>_`
+* micro-glow on version text
+* animated step transitions
+
+## D. Soundless “feel”
+
+Use:
+
+* stable layout
+* no flicker
+* no jumpy cursor
+* no full redraw if unnecessary
+* soft timing
+
+---
+
+# 13. Full QUORP stack recommendation summary
+
+Here is the final stack I recommend.
+
+## Terminal / UX layer
+
+* **Rust**
+* **tokio**
+* **clap**
+* **crossterm**
+* **direct ANSI compositor**
+* **unicode-width**
+* **unicode-segmentation**
+* **ropey**
+* **tracing**
+
+## Code intelligence
+
+* **tree-sitter**
+* **rust-analyzer**
+* **LSP client**
+* **tantivy**
+* **ignore / walkdir / grep crates**
+
+## Agent / model layer
+
+* **reqwest**
+* **serde / schemars**
+* provider abstraction
+* streaming event normalization
+* **rmcp** for MCP
+
+## Diff / code edit layer
+
+* **similar**
+* **imara-diff**
+* **gix**
+* Tree-sitter-based semantic labels
+
+## Execution / tooling
+
+* **tokio::process**
+* **portable-pty**
+* sandbox wrappers per OS
+
+## Persistence
+
+* **SQLite**
+* optional **redb**
+
+---
+
+# 14. My strongest recommendation for QUORP’s identity
+
+If I were shaping QUORP from a product perspective, I would lock in these identity traits:
+
+## QUORP should be:
+
+* dark
+* neon
+* sharp
+* expressive
+* slightly mischievous
+* premium
+* safe
+* fast
+* diff-obsessed
+* terminal-native
+
+## QUORP should NOT be:
+
+* retro ncurses
+* gray corporate
+* overloaded with boxes
+* soft pastel
+* noisy
+* cartoonish
+* generic chat UI
+
+---
+
+# 15. Final recommendation
+
+If you want the **best possible implementation path**, do this:
+
+## Phase 1
+
+Build:
+
+* transcript-first CLI
+* direct ANSI renderer
+* QUORP splash
+* tool cards
+* diff cards
+* approvals
+* test runner cards
+
+## Phase 2
+
+Add:
+
+* beautiful diff review mode
+* hunk accept/reject
+* git checkpoints
+* semantic diff labels
+
+## Phase 3
+
+Add:
+
+* repo index
+* LSP integration
+* code navigation
+* symbol-aware agent context
+
+## Phase 4
+
+Add:
+
+* MCP
+* subagents
+* external tool integrations
+
+## Phase 5
+
+Add:
+
+* optional native app shell
+* real mascot image rendering where terminal supports it
+
+---
+
+If you want, next I can do one of these two things:
+
+1. **Turn this into a full QUORP architecture spec** with crate-by-crate Rust module design, APIs, and file tree, or
+2. **Upgrade the splash code** into a more advanced production-ready version with:
+
+   * terminal capability detection
+   * compact/full modes
+   * theme structs
+   * image-protocol fallback hooks
+   * cleaner mascot rendering
+   * a reusable `quorp_ui::splash` module.
+

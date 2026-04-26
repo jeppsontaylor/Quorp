@@ -1,0 +1,1168 @@
+Absolutely — build **Quorp** as a **terminal-native Rust agent IDE**, not as a generic Ratatui-style widget app. The key is to treat the terminal like a high-speed, truecolor typography surface: ANSI/OSC control sequences, Unicode art, GPU-rendered terminal fonts, carefully throttled streaming, custom diff rendering, and a fast Rust agent core.
+
+One useful reality check: Codex CLI’s current docs say it is a local terminal coding agent that can read, change, and run code, and that it is open source and built in Rust; its docs also describe a full-screen terminal UI with syntax-highlighted code blocks, diffs, approvals, and themes. ([OpenAI Developers][1]) Claude Code’s docs frame it as an agentic coding tool that reads a codebase, edits files, runs commands, and integrates with dev tools; the docs also expose the permission, hook, and subagent patterns worth copying conceptually for Quorp. ([Claude][2])
+
+## 1. Product direction: “terminal-native IDE agent,” not “Rust TUI”
+
+When you say the Rust TUI text feels pixelated, the issue is usually not Rust. Text sharpness comes from the terminal emulator, font, font fallback, scaling, and whether the app is drawing native glyphs or fake bitmap/block text. Quorp should render real UTF-8 text, ANSI truecolor, and carefully chosen Unicode shapes, then let terminals like WezTerm, Kitty, Ghostty, iTerm2, or Windows Terminal do the antialiasing. WezTerm, for example, advertises GPU-accelerated rendering, true color, ligatures, color emoji, and font fallback; Kitty’s graphics protocol can optionally display pixel images, but Quorp should keep the core splash text-mode so it works everywhere. ([WezTerm][3])
+
+The design target:
+
+**Quorp feels like a premium terminal IDE:**
+
+* blazing startup, visible within 50–100 ms;
+* black/charcoal base with molten orange, neon cyan, mint, violet, and diff red/green;
+* smooth streaming with no flicker;
+* tool calls as beautiful, inspectable cards;
+* diffs with strong red/green background panels;
+* mascot-first branding;
+* unusual terminal glyphs and less-common emojis, but with ASCII fallback;
+* CLI ergonomics first, optional GUI later.
+
+## 2. Recommended stack
+
+### Core Rust workspace
+
+Use a Rust workspace, not a single monolith.
+
+```text
+quorp/
+  crates/
+    quorp-cli/          # binary entrypoint, flags, installer checks
+    quorp-render/       # custom ANSI/truecolor renderer
+    quorp-agent/        # model loop, planning, tool calling
+    quorp-tools/        # file, shell, git, test, grep, patch tools
+    quorp-diff/         # diff engine, hunk accept/reject, patch validation
+    quorp-mcp/          # MCP client/server bridge
+    quorp-repo/         # repo map, ignore rules, AST indexing
+    quorp-sandbox/      # approval + command sandbox adapters
+    quorp-theme/        # palettes, theme preview, accessibility contrast
+    quorp-memory/       # project memory, summaries, embeddings/search
+    quorp-plugins/      # WASM/plugin runtime
+```
+
+### Rust crates I would use
+
+| Layer               | Rust tools                                                                | Purpose                                                                                                                                       |
+| ------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------- |
+| CLI shell           | `clap`, `clap_complete`, `directories`, `serde`, `toml`                   | Flags, config, completions, `~/.quorp/config.toml`, project `.quorp/config.toml`                                                              |
+| Async runtime       | `tokio`, `futures`, `tokio-util`, `async-trait`                           | Model streams, tool streams, PTY output, background indexing                                                                                  |
+| Terminal control    | `crossterm` first, optional `termwiz` later                               | Alternate screen, raw mode, keyboard, mouse, cursor, colors. Crossterm is a cross-platform Rust terminal manipulation library. ([Docs.rs][4]) |
+| Custom renderer     | custom `CellBuffer`, `DrawCommand`, dirty-region renderer                 | Avoid generic widget look; control every glyph, color, and animation                                                                          |
+| Unicode correctness | `unicode-width`, `unicode-segmentation`, `textwrap`                       | Correct cursor position with emoji, CJK, combining chars, wrapped markdown                                                                    |
+| Styling             | `anstyle`, `anstream`, `nu-ansi-term`, custom RGB structs                 | Truecolor foreground/background, OSC 8 links, terminal capability fallback                                                                    |
+| Markdown            | `comrak` or `pulldown-cmark`                                              | Render assistant messages, code blocks, tables, task lists                                                                                    |
+| Syntax highlighting | `tree-sitter`, `tree-sitter-highlight`, `syntect` fallback                | Fast code coloring, language-aware snippets                                                                                                   |
+| Diffs               | `similar`, `similar-asserts`, custom hunk renderer                        | Unified/side-by-side diffs, word-level highlights, accept/reject                                                                              |
+| Editing             | `ropey`, `content_inspector`, `encoding_rs`                               | Large file edits, binary detection, encodings                                                                                                 |
+| Repo walking        | `ignore`, `walkdir`, `globset`, `dunce`, `pathdiff`                       | Respect `.gitignore`, fast workspace scanning                                                                                                 |
+| Search              | spawn `rg` plus optional `grep-searcher`, `grep-regex`                    | Use ripgrep behavior for developer trust                                                                                                      |
+| Git                 | `gix` preferred, `git2` optional                                          | Status, branches, worktrees, staged diff, checkpoints                                                                                         |
+| PTY/shell           | `portable-pty`, `tokio::process`, `which`, `shell-words`, `shlex`         | Run commands, tests, REPLs, shell sessions                                                                                                    |
+| LSP                 | `lsp-types`, optional `tower-lsp`                                         | Diagnostics, go-to-definition, symbol search                                                                                                  |
+| Model clients       | `reqwest`, `eventsource-stream`, `serde_json`, `async-stream`             | SSE streaming, provider adapters, retry/backoff                                                                                               |
+| MCP                 | `serde_json`, `jsonrpsee`, `tokio-tungstenite`, `reqwest`                 | JSON-RPC over stdio/HTTP/WebSocket; external tools                                                                                            |
+| Storage             | `rusqlite` or `sqlx`, `redb`, `tantivy`                                   | Session DB, project index, local text search                                                                                                  |
+| Secrets             | `secrecy`, `zeroize`, `keyring`                                           | API keys, redaction, no accidental logs                                                                                                       |
+| Plugins             | `wasmtime`, `wit-bindgen`                                                 | Sandboxed extensions, themes, tools                                                                                                           |
+| Observability       | `tracing`, `tracing-subscriber`, `opentelemetry`                          | Debug traces, replayable sessions, timing                                                                                                     |
+| Tests               | `insta`, `assert_cmd`, `trycmd`, `proptest`, `criterion`, `cargo-nextest` | Golden terminal snapshots, CLI tests, fuzzed patch handling                                                                                   |
+| Security/dev        | `cargo-deny`, `cargo-audit`, `cargo-fuzz`                                 | Dependency and patch-safety hardening                                                                                                         |
+
+### Supporting non-Rust stack
+
+| Area               | Recommendation                                                                       |
+| ------------------ | ------------------------------------------------------------------------------------ |
+| Best terminals     | WezTerm, Kitty, Ghostty, iTerm2, Windows Terminal                                    |
+| Fonts              | JetBrains Mono Nerd Font, Iosevka Term, Berkeley Mono, Fira Code, Cascadia Code      |
+| Emoji fallback     | Apple Color Emoji, Segoe UI Emoji, Noto Color Emoji                                  |
+| Installer          | `cargo-dist`, Homebrew tap, npm thin wrapper, Winget/Scoop, shell installer          |
+| Dev environment    | Nix flake or Devcontainer; `mise` for tool versions                                  |
+| CI                 | GitHub Actions, `cargo nextest`, snapshot tests on Linux/macOS/Windows               |
+| External tools     | `rg`, `fd`, `git`, language test runners, Docker/Devcontainer for sandboxed commands |
+| Optional GUI later | Tauri, Dioxus, or GPUI front-end using the same Rust agent core                      |
+
+## 3. Visual system: Quorp “Neon Abyss”
+
+Your mascot has a very strong identity: soft black creature, molten orange eyes, mischievous face, rounded ears, long tail with glowing ember tips, and an orange terminal prompt. The whole product should feel like: **cute dark familiar + dangerous coding superpowers + glowing terminal magic**.
+
+### Primary palette
+
+| Token           |       Hex | Use                        |
+| --------------- | --------: | -------------------------- |
+| `abyss.black`   | `#030307` | Main background            |
+| `abyss.panel`   | `#090A10` | Panels, cards              |
+| `abyss.raised`  | `#11131C` | Elevated cards             |
+| `fur.shadow`    | `#151723` | Mascot body, inactive UI   |
+| `fur.edge`      | `#2A2D3E` | Mascot rim, subtle borders |
+| `text.main`     | `#F2F4FA` | Main text                  |
+| `text.muted`    | `#8D94A8` | Secondary text             |
+| `text.dim`      | `#555B70` | Metadata                   |
+| `quorp.ember`   | `#FF5A00` | Primary brand orange       |
+| `quorp.molten`  | `#FF8A00` | Gradients, prompt glyph    |
+| `quorp.halo`    | `#FFD166` | Eye glow, selected chips   |
+| `quorp.inferno` | `#FF2E00` | Hot warnings, errors       |
+| `plasma.violet` | `#8F5CFF` | Reasoning/plan accents     |
+| `star.cyan`     | `#41F2FF` | Links, tool outputs, info  |
+| `code.mint`     | `#5CFFB8` | Success, passing tests     |
+| `warning.amber` | `#FFD166` | Caution states             |
+| `danger.rose`   | `#FF426B` | Destructive actions        |
+| `shell.blue`    | `#72A7FF` | Shell/PTY commands         |
+
+### Diff palette
+
+This should be bold. Do not do faint GitHub-like pastel diffs. Use glowing high contrast.
+
+| Token             |       Hex | Use                          |
+| ----------------- | --------: | ---------------------------- |
+| `diff.add.bg`     | `#062D1F` | Added line background        |
+| `diff.add.bg.hot` | `#0A4A31` | Word-level added highlight   |
+| `diff.add.fg`     | `#C7FFE2` | Added text                   |
+| `diff.add.gutter` | `#36FF9A` | `+` gutter                   |
+| `diff.del.bg`     | `#351016` | Deleted line background      |
+| `diff.del.bg.hot` | `#5A1824` | Word-level deleted highlight |
+| `diff.del.fg`     | `#FFD4DA` | Deleted text                 |
+| `diff.del.gutter` | `#FF426B` | `-` gutter                   |
+| `diff.hunk.bg`    | `#21153C` | Hunk header background       |
+| `diff.hunk.fg`    | `#D8C8FF` | Hunk metadata                |
+| `diff.context.bg` | `#10121A` | Context line background      |
+| `diff.context.fg` | `#B8BECC` | Context text                 |
+
+### Less-common emoji/glyph language
+
+Use sparingly, as status signatures:
+
+| Glyph | Meaning                           |
+| ----- | --------------------------------- |
+| `🜂`  | ignition, model thinking, startup |
+| `🜄`  | context flow, streaming           |
+| `🜁`  | search, scan, exploration         |
+| `🜃`  | grounding, repo map               |
+| `🪬`  | permission gate, safety seal      |
+| `🧿`  | risk watcher                      |
+| `🧬`  | AST/code intelligence             |
+| `🪐`  | repo orbit/map                    |
+| `🪩`  | diff lens, visual polish          |
+| `🦑`  | subagent swarm                    |
+| `🪽`  | completed task                    |
+| `⌁`   | stream pulse                      |
+| `◆`   | mode marker                       |
+| `❯_`  | Quorp prompt signature            |
+
+Always provide fallback mode:
+
+```text
+🪬 Permission gate
+```
+
+becomes:
+
+```text
+[seal] Permission gate
+```
+
+when emoji width/rendering is unreliable.
+
+## 4. Terminal rendering architecture
+
+Do **not** start with Ratatui. Ratatui is excellent, but it tends to make apps look like terminal dashboards. Quorp should feel more like a custom interactive terminal instrument.
+
+Use this architecture:
+
+```text
+Model stream / tool events
+        ↓
+Event bus: tokio::mpsc<Event>
+        ↓
+App state reducer
+        ↓
+Scene builder
+        ↓
+CellBuffer / DrawCommand list
+        ↓
+Dirty-region ANSI renderer
+        ↓
+Terminal
+```
+
+Important rendering rules:
+
+1. **Use native text, not image-rendered text.** The terminal font should render the wordmark, code, and UI.
+2. **Throttle streaming.** Do not repaint for every token. Coalesce to 24–60 FPS.
+3. **Use dirty regions.** Track changed cells and only write the differences.
+4. **Avoid `println!` during UI mode.** Use buffered `queue!` calls and flush once per frame.
+5. **Use alternate screen for IDE mode.** Use normal stdout for scripted/noninteractive mode.
+6. **Support resize events.** Reflow markdown, composer, and diffs.
+7. **Use bracketed paste.** Pasting code should not trigger accidental submit.
+8. **Use OSC 8 hyperlinks.** File paths and docs can be clickable in capable terminals.
+9. **Probe terminal capabilities.** Truecolor, emoji width, Kitty/iTerm image support, hyperlink support, shell integration.
+
+## 5. Agent and tool-calling design
+
+Codex and Claude Code both lean heavily into controlled tool execution and approvals. Codex exposes approval controls and config-based sandbox/approval settings, while Claude Code documents a tiered permission system with allow/ask/deny rules and modes such as plan and accept-edits. ([OpenAI Developers][5])
+
+Quorp should have these modes:
+
+| Mode           | Behavior                                                                  |
+| -------------- | ------------------------------------------------------------------------- |
+| `plan`         | Read/search only. No file writes, no shell execution.                     |
+| `ask`          | Ask before edits and risky commands. Default.                             |
+| `accept-edits` | Auto-accept workspace edits, ask for shell/network/destructive actions.   |
+| `auto-safe`    | Classify tool calls; auto-approve low-risk actions; ask/block risky ones. |
+| `yolo-sandbox` | Only inside devcontainer/worktree sandbox. Never on host by default.      |
+
+Tool categories:
+
+| Tool            | Default permission                   |
+| --------------- | ------------------------------------ |
+| `read_file`     | allow                                |
+| `list_files`    | allow                                |
+| `search_text`   | allow                                |
+| `ast_query`     | allow                                |
+| `git_status`    | allow                                |
+| `git_diff`      | allow                                |
+| `write_file`    | ask                                  |
+| `patch_file`    | ask or accept-edits                  |
+| `shell`         | ask                                  |
+| `run_tests`     | ask first time, remember per command |
+| `network_fetch` | ask                                  |
+| `mcp_call`      | ask by server/tool policy            |
+| `delete_file`   | ask + scary confirmation             |
+| `git_push`      | ask + scary confirmation             |
+| `secret_read`   | deny by default                      |
+
+### Tool call card design
+
+Example terminal card:
+
+```text
+🪬  permission gate
+╭─ shell ───────────────────────────────────────────────╮
+│ command   cargo test -p quorp-diff                    │
+│ cwd       ./quorp                                     │
+│ risk      low: test command, no network, no writes     │
+│ policy    ask once for this command in this repo       │
+╰────────────────────────────────────── approve y/N ────╯
+```
+
+Example running card:
+
+```text
+🜂  running cargo test -p quorp-diff
+   ⌁ compiling quorp-diff v0.1.0
+   ⌁ test patch_roundtrip ... ok
+   ⌁ test reject_stale_hunk ... ok
+🪽  passed in 3.8s
+```
+
+### Reasoning display
+
+Do **not** show hidden chain-of-thought. Show useful, inspectable summaries:
+
+```text
+◆ plan
+1. Inspect parser and current patch application path.
+2. Add stale-hunk detection.
+3. Render failed hunks with red background.
+4. Run focused tests.
+
+◆ why this is safe
+Only reads and patches files under crates/quorp-diff.
+No network. No deletion. No git push.
+```
+
+### Subagents
+
+Claude Code’s docs describe custom subagents with prompts, tool restrictions, permission modes, hooks, and skills; this is a strong pattern for Quorp too. ([Claude API Docs][6])
+
+Quorp subagents:
+
+| Subagent      | Job                                                   |
+| ------------- | ----------------------------------------------------- |
+| `Scout`       | Search repo, map files, summarize architecture        |
+| `Surgeon`     | Make focused code edits                               |
+| `Reviewer`    | Critique patch before user sees it                    |
+| `Test Runner` | Run tests, parse failures, suggest next actions       |
+| `Diff Lens`   | Produce readable diffs and hunk summaries             |
+| `Sentinel`    | Watch for secrets, destructive commands, unsafe shell |
+| `Scribe`      | Maintain `.quorp/memory.md` and session summaries     |
+
+## 6. Diff UX
+
+The diff view should be one of Quorp’s signature features.
+
+### Unified diff style
+
+```text
+🪩 diff lens  crates/quorp-diff/src/render.rs
+╭─ hunk @@ -41,8 +41,12 @@ render_line ─────────────────────────╮
+│  41 │     let width = measure(line);                                  │
+│ -42 │     paint(line, Theme::default());                               │
+│ -43 │     flush();                                                     │
+│ +42 │     let bg = match line.kind {                                   │
+│ +43 │         Add => theme.diff_add_bg,                                │
+│ +44 │         Delete => theme.diff_del_bg,                             │
+│ +45 │         Context => theme.diff_context_bg,                        │
+│ +46 │     };                                                           │
+│ +47 │     paint_with_bg(line, bg);                                     │
+╰──────────────────────────── accept [a] reject [r] open [o] ─────────╯
+```
+
+### Implementation details
+
+Use `similar` for line-level and word-level diffing. Build your own renderer over the result:
+
+```text
+DiffModel
+  FileDiff
+    Hunk
+      Line {
+        old_no,
+        new_no,
+        kind: Add | Delete | Context,
+        spans: Vec<InlineSpan>
+      }
+```
+
+Patch application should be safe:
+
+1. Record pre-edit file hash.
+2. Apply patch to a rope buffer.
+3. Validate expected old lines.
+4. Write atomically through temp file + rename.
+5. Create checkpoint.
+6. Re-run diff from disk.
+7. Show final rendered hunk.
+
+## 7. Configuration files
+
+Use a project instruction system similar in spirit to existing agent tools, but branded:
+
+```text
+.quorp/
+  QUORP.md              # project instructions
+  config.toml           # repo-level config
+  tools.toml            # tool allow/ask/deny rules
+  agents/
+    reviewer.md
+    sentinel.md
+    rust-surgeon.md
+```
+
+Example:
+
+```toml
+[theme]
+name = "neon-abyss"
+emoji = true
+truecolor = true
+diff_backgrounds = "bold"
+
+[agent]
+default_mode = "ask"
+reasoning_effort = "high"
+compact_after_tokens = 120000
+
+[permissions]
+read_file = "allow"
+search_text = "allow"
+patch_file = "ask"
+shell = "ask"
+network = "ask"
+delete_file = "deny"
+
+[sandbox]
+workspace_write = true
+network = false
+prefer_devcontainer = true
+```
+
+## 8. Quorp load screen concept
+
+Visual identity:
+
+```text
+QUORP wordmark in orange → gold gradient
+❯_ prompt signature
+black mascot with ember eyes
+tail with three glowing ember tips
+status row with rare glyphs
+small diff preview with red/green background chips
+version chip
+```
+
+The load screen should feel alive but not slow. Show it immediately, animate for 1–3 seconds only when launching the interactive IDE, and skip it for noninteractive commands.
+
+Suggested startup sequence:
+
+```text
+🜂 igniting ember core
+🪬 sealing permission gates
+🪐 mapping repo orbit
+🧬 braiding AST memory
+🪩 polishing diff glass
+🪽 ready
+```
+
+## 9. Complete Rust code: Quorp splash screen
+
+This is a full standalone Rust splash demo using **crossterm**, truecolor ANSI, a custom renderer, the QUORP wordmark, mascot-inspired terminal art, glow-ish ember effects, unusual glyphs, version branding, and diff color chips.
+
+### `Cargo.toml`
+
+```toml
+[package]
+name = "quorp-splash"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crossterm = "0.29"
+unicode-width = "0.2"
+```
+
+### `src/main.rs`
+
+```rust
+use std::{
+    io::{self, stdout, Stdout, Write},
+    time::{Duration, Instant},
+};
+
+use crossterm::{
+    cursor::{Hide, MoveTo, Show},
+    event::{self, Event, KeyCode},
+    execute, queue,
+    style::{
+        Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor,
+        SetForegroundColor,
+    },
+    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+};
+
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+#[derive(Clone, Copy, Debug)]
+struct Rgb {
+    r: u8,
+    g: u8,
+    b: u8,
+}
+
+const fn rgb(r: u8, g: u8, b: u8) -> Rgb {
+    Rgb { r, g, b }
+}
+
+const ABYSS: Rgb = rgb(3, 3, 7);
+const PANEL: Rgb = rgb(9, 10, 16);
+const RAISED: Rgb = rgb(17, 19, 28);
+
+const TEXT: Rgb = rgb(242, 244, 250);
+const MUTED: Rgb = rgb(141, 148, 168);
+const DIM: Rgb = rgb(85, 91, 112);
+
+const BODY: Rgb = rgb(20, 22, 33);
+const BODY_EDGE: Rgb = rgb(45, 48, 66);
+
+const EMBER: Rgb = rgb(255, 90, 0);
+const MOLTEN: Rgb = rgb(255, 138, 0);
+const HALO: Rgb = rgb(255, 209, 102);
+const INFERNO: Rgb = rgb(255, 46, 0);
+
+const CYAN: Rgb = rgb(65, 242, 255);
+const MINT: Rgb = rgb(92, 255, 184);
+const VIOLET: Rgb = rgb(143, 92, 255);
+
+const DIFF_ADD_BG: Rgb = rgb(6, 45, 31);
+const DIFF_ADD_FG: Rgb = rgb(199, 255, 226);
+const DIFF_DEL_BG: Rgb = rgb(53, 16, 22);
+const DIFF_DEL_FG: Rgb = rgb(255, 212, 218);
+
+const WORDMARK: [&str; 6] = [
+    " ██████╗ ██╗   ██╗ ██████╗ ██████╗ ██████╗ ",
+    "██╔═══██╗██║   ██║██╔═══██╗██╔══██╗██╔══██╗",
+    "██║   ██║██║   ██║██║   ██║██████╔╝██████╔╝",
+    "██║▄▄ ██║██║   ██║██║   ██║██╔══██╗██╔═══╝ ",
+    "╚██████╔╝╚██████╔╝╚██████╔╝██║  ██║██║     ",
+    " ╚══▀▀═╝  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝     ",
+];
+
+const MASCOT: [&str; 14] = [
+    "                 ▟▙                 ▟▙       ",
+    "              ▟████▙             ▟████▙      ",
+    "             ▟██████▙▄▄▄▄▄▄▄▄▄▄▄▟██████▙     ",
+    "            ▟████████████████████████████▙    ",
+    "          ▟██████▀    ◉       ◉    ▀██████▙   ",
+    "          ██████        ᴗ   ᴗ         ██████   ",
+    "          ██████        ╰────╯        ██████▙  ",
+    "          ▜██████▄                  ▄███████▛  ",
+    "            ▀███████▄▄▄        ▄▄▄███████▀     ",
+    "                 ▀▀██████████████▀▀            ",
+    "                               ▄████▄          ",
+    "                            ▄██▀    ▀██▄       ",
+    "                          ▄█▀  ▄██▄   ▀██▄     ",
+    "                         ▀▄▄▄██▀  ▀██▄▄▄● ● ●  ",
+];
+
+const PROMPT_ICON: [&str; 5] = [
+    "   ▄▄▄▄   ",
+    " ▄█▀  ▀█  ",
+    " ██ ❯ ██  ",
+    " ▀█▄ _▄█  ",
+    "   ▀▀▀    ",
+];
+
+#[derive(Clone)]
+struct Span {
+    text: String,
+    fg: Rgb,
+    bg: Option<Rgb>,
+    bold: bool,
+    dim: bool,
+}
+
+impl Span {
+    fn new(text: impl Into<String>, fg: Rgb) -> Self {
+        Self {
+            text: text.into(),
+            fg,
+            bg: None,
+            bold: false,
+            dim: false,
+        }
+    }
+
+    fn bold(mut self) -> Self {
+        self.bold = true;
+        self
+    }
+
+    fn dim(mut self) -> Self {
+        self.dim = true;
+        self
+    }
+
+    fn bg(mut self, bg: Rgb) -> Self {
+        self.bg = Some(bg);
+        self
+    }
+}
+
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn enter() -> io::Result<Self> {
+        terminal::enable_raw_mode()?;
+        let mut out = stdout();
+        execute!(out, EnterAlternateScreen, Hide)?;
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = terminal::disable_raw_mode();
+        let mut out = stdout();
+        let _ = execute!(
+            out,
+            ResetColor,
+            SetAttribute(Attribute::Reset),
+            Show,
+            LeaveAlternateScreen
+        );
+    }
+}
+
+fn main() -> io::Result<()> {
+    let _terminal = TerminalGuard::enter()?;
+    let mut out = stdout();
+
+    run_splash(&mut out, env!("CARGO_PKG_VERSION"))
+}
+
+fn run_splash(out: &mut Stdout, version: &str) -> io::Result<()> {
+    let started = Instant::now();
+    let total = Duration::from_millis(2800);
+    let mut frame: usize = 0;
+
+    loop {
+        let elapsed = started.elapsed();
+        let progress = (elapsed.as_secs_f32() / total.as_secs_f32()).min(1.0);
+
+        draw_splash(out, version, progress, frame)?;
+
+        if elapsed >= total {
+            break;
+        }
+
+        if event::poll(Duration::from_millis(70))? {
+            if let Event::Key(key) = event::read()? {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => break,
+                    _ => {}
+                }
+            }
+        }
+
+        frame = frame.wrapping_add(1);
+    }
+
+    Ok(())
+}
+
+fn draw_splash(out: &mut Stdout, version: &str, progress: f32, frame: usize) -> io::Result<()> {
+    let (w, h) = terminal::size()?;
+
+    queue!(
+        out,
+        SetBackgroundColor(ct(ABYSS)),
+        Clear(ClearType::All),
+        ResetColor
+    )?;
+
+    if w < 82 || h < 29 {
+        draw_compact(out, version, progress, frame, w, h)?;
+        out.flush()?;
+        return Ok(());
+    }
+
+    let mut y = h.saturating_sub(29) / 2;
+
+    for line in WORDMARK {
+        draw_gradient_line(out, w, y, line, EMBER, HALO, true)?;
+        y += 1;
+    }
+
+    y += 1;
+
+    draw_row(
+        out,
+        w,
+        y,
+        &[
+            Span::new("❯_", MOLTEN).bold(),
+            Span::new("  QUORP AGENTIC IDE  ", TEXT).bold(),
+            Span::new(format!(" v{} ", version), HALO).bg(PANEL).bold(),
+            Span::new("  ◆  ", DIM),
+            Span::new("terminal-native rust", CYAN),
+        ],
+    )?;
+
+    y += 2;
+
+    draw_gradient_line(
+        out,
+        w,
+        y,
+        "╭────────────────────────────────────────────────────────────────────╮",
+        EMBER,
+        HALO,
+        false,
+    )?;
+
+    y += 1;
+
+    let mascot_w = max_text_width(&MASCOT);
+    let group_w = mascot_w.saturating_add(14);
+    let mascot_x = w.saturating_sub(group_w) / 2 + 14;
+    let prompt_x = mascot_x.saturating_sub(13);
+
+    draw_prompt_icon(out, prompt_x, y + 4, frame)?;
+
+    for line in MASCOT {
+        draw_mascot_line(out, mascot_x, y, line, frame)?;
+        y += 1;
+    }
+
+    draw_gradient_line(
+        out,
+        w,
+        y,
+        "╰────────────────────────────────────────────────────────────────────╯",
+        EMBER,
+        HALO,
+        false,
+    )?;
+
+    y += 2;
+
+    draw_status(out, w, y, progress, frame)?;
+    y += 2;
+
+    draw_diff_preview(out, w, y)?;
+    y += 2;
+
+    draw_row(
+        out,
+        w,
+        y,
+        &[
+            Span::new("press ", DIM),
+            Span::new("Enter", TEXT).bold(),
+            Span::new(" to skip  ", DIM),
+            Span::new("Esc", TEXT).bold(),
+            Span::new(" to vanish  ", DIM),
+            Span::new("🜂", EMBER),
+        ],
+    )?;
+
+    out.flush()?;
+    Ok(())
+}
+
+fn draw_compact(
+    out: &mut Stdout,
+    version: &str,
+    progress: f32,
+    frame: usize,
+    w: u16,
+    h: u16,
+) -> io::Result<()> {
+    let mut y = h.saturating_div(2).saturating_sub(4);
+
+    draw_gradient_line(out, w, y, "❯_ QUORP", EMBER, HALO, true)?;
+    y += 1;
+
+    draw_row(
+        out,
+        w,
+        y,
+        &[
+            Span::new("v", DIM),
+            Span::new(version, HALO).bold(),
+            Span::new("  terminal-native rust", CYAN),
+        ],
+    )?;
+
+    y += 2;
+    draw_status(out, w, y, progress, frame)?;
+
+    y += 2;
+    draw_row(
+        out,
+        w,
+        y,
+        &[Span::new("enlarge terminal for full mascot ember mode", MUTED)],
+    )?;
+
+    Ok(())
+}
+
+fn draw_prompt_icon(out: &mut Stdout, x: u16, y: u16, frame: usize) -> io::Result<()> {
+    let pulse = pulse(frame, 0.20);
+
+    for (i, line) in PROMPT_ICON.iter().enumerate() {
+        let hot = lerp(EMBER, HALO, pulse);
+        draw_gradient_line_at(out, x, y + i as u16, line, hot, MOLTEN, true)?;
+    }
+
+    Ok(())
+}
+
+fn draw_mascot_line(out: &mut Stdout, x: u16, y: u16, line: &str, frame: usize) -> io::Result<()> {
+    let p = pulse(frame, 0.18);
+
+    // Glow pass. This produces a slight orange rim to the right of dense shapes.
+    let mut col = 0u16;
+    for ch in line.chars() {
+        let width = glyph_width(ch);
+
+        if is_glow_candidate(ch) {
+            queue!(
+                out,
+                MoveTo(x.saturating_add(col).saturating_add(1), y),
+                SetForegroundColor(ct(lerp(INFERNO, EMBER, p))),
+                SetAttribute(Attribute::Dim),
+                Print("░"),
+                ResetColor,
+                SetAttribute(Attribute::Reset)
+            )?;
+        }
+
+        col = col.saturating_add(width);
+    }
+
+    // Main pass.
+    col = 0;
+    for ch in line.chars() {
+        let width = glyph_width(ch);
+
+        if ch != ' ' {
+            let fg = mascot_color(ch, p);
+
+            queue!(out, MoveTo(x.saturating_add(col), y), SetForegroundColor(ct(fg)))?;
+
+            if matches!(ch, '◉' | '●') {
+                queue!(out, SetAttribute(Attribute::Bold))?;
+            }
+
+            queue!(
+                out,
+                Print(ch),
+                ResetColor,
+                SetAttribute(Attribute::Reset)
+            )?;
+        }
+
+        col = col.saturating_add(width);
+    }
+
+    Ok(())
+}
+
+fn mascot_color(ch: char, pulse: f32) -> Rgb {
+    match ch {
+        '◉' | '●' => lerp(EMBER, HALO, pulse),
+        'ᴗ' | '╰' | '╯' | '─' => lerp(MOLTEN, HALO, pulse * 0.35),
+        '▟' | '▙' | '▜' | '▛' | '▀' | '▄' => lerp(BODY_EDGE, EMBER, pulse * 0.16),
+        '█' => BODY,
+        _ => BODY_EDGE,
+    }
+}
+
+fn is_glow_candidate(ch: char) -> bool {
+    matches!(
+        ch,
+        '▟' | '▙' | '▜' | '▛' | '▀' | '▄' | '◉' | '●'
+    )
+}
+
+fn draw_status(out: &mut Stdout, w: u16, y: u16, progress: f32, frame: usize) -> io::Result<()> {
+    let spinner = ["🜂", "🜄", "🜁", "🜃", "🪬", "🧿", "🧬", "🪩"];
+    let steps = [
+        "igniting ember core",
+        "sealing permission gates",
+        "mapping repo orbit",
+        "braiding AST memory",
+        "polishing diff glass",
+        "readying tool spirits",
+    ];
+
+    let step_idx = ((progress * steps.len() as f32).floor() as usize).min(steps.len() - 1);
+    let glyph = spinner[frame % spinner.len()];
+    let bar = progress_bar(progress, 26);
+    let pct = (progress * 100.0).round() as u8;
+
+    draw_row(
+        out,
+        w,
+        y,
+        &[
+            Span::new(glyph, HALO).bold(),
+            Span::new("  ", TEXT),
+            Span::new(steps[step_idx], TEXT).bold(),
+            Span::new("   ", TEXT),
+            Span::new(bar, MOLTEN).bold(),
+            Span::new(format!(" {:>3}% ", pct), MUTED),
+            Span::new(" tools warm ", HALO).bg(PANEL).bold(),
+            Span::new(" diffs lit ", MINT).bg(PANEL).bold(),
+            Span::new(" MCP gated ", VIOLET).bg(PANEL).bold(),
+        ],
+    )
+}
+
+fn draw_diff_preview(out: &mut Stdout, w: u16, y: u16) -> io::Result<()> {
+    draw_row(
+        out,
+        w,
+        y,
+        &[
+            Span::new(" − stale_guess.rs ", DIFF_DEL_FG)
+                .bg(DIFF_DEL_BG)
+                .bold(),
+            Span::new("  ", TEXT),
+            Span::new(" + focused_patch.rs ", DIFF_ADD_FG)
+                .bg(DIFF_ADD_BG)
+                .bold(),
+            Span::new("  ", TEXT),
+            Span::new("🪩 diff backgrounds online", MUTED),
+        ],
+    )
+}
+
+fn draw_row(out: &mut Stdout, term_w: u16, y: u16, spans: &[Span]) -> io::Result<()> {
+    let width = spans
+        .iter()
+        .map(|s| text_width(&s.text))
+        .fold(0u16, |acc, w| acc.saturating_add(w));
+
+    let mut x = term_w.saturating_sub(width) / 2;
+
+    for span in spans {
+        queue!(out, MoveTo(x, y), SetForegroundColor(ct(span.fg)))?;
+
+        if let Some(bg) = span.bg {
+            queue!(out, SetBackgroundColor(ct(bg)))?;
+        }
+
+        if span.bold {
+            queue!(out, SetAttribute(Attribute::Bold))?;
+        }
+
+        if span.dim {
+            queue!(out, SetAttribute(Attribute::Dim))?;
+        }
+
+        queue!(
+            out,
+            Print(&span.text),
+            ResetColor,
+            SetAttribute(Attribute::Reset)
+        )?;
+
+        x = x.saturating_add(text_width(&span.text));
+    }
+
+    Ok(())
+}
+
+fn draw_gradient_line(
+    out: &mut Stdout,
+    term_w: u16,
+    y: u16,
+    text: &str,
+    start: Rgb,
+    end: Rgb,
+    bold: bool,
+) -> io::Result<()> {
+    let width = text_width(text);
+    let x = term_w.saturating_sub(width) / 2;
+    draw_gradient_line_at(out, x, y, text, start, end, bold)
+}
+
+fn draw_gradient_line_at(
+    out: &mut Stdout,
+    x: u16,
+    y: u16,
+    text: &str,
+    start: Rgb,
+    end: Rgb,
+    bold: bool,
+) -> io::Result<()> {
+    let total = text_width(text).max(1) as f32;
+    let mut col = 0u16;
+
+    for ch in text.chars() {
+        let width = glyph_width(ch);
+
+        if ch != ' ' {
+            let t = (col as f32 / total).min(1.0);
+            queue!(
+                out,
+                MoveTo(x.saturating_add(col), y),
+                SetForegroundColor(ct(lerp(start, end, t)))
+            )?;
+
+            if bold {
+                queue!(out, SetAttribute(Attribute::Bold))?;
+            }
+
+            queue!(
+                out,
+                Print(ch),
+                ResetColor,
+                SetAttribute(Attribute::Reset)
+            )?;
+        }
+
+        col = col.saturating_add(width);
+    }
+
+    Ok(())
+}
+
+fn progress_bar(progress: f32, width: usize) -> String {
+    let filled = ((progress.clamp(0.0, 1.0) * width as f32).round() as usize).min(width);
+    format!("{}{}", "▰".repeat(filled), "▱".repeat(width - filled))
+}
+
+fn text_width(text: &str) -> u16 {
+    UnicodeWidthStr::width(text).min(u16::MAX as usize) as u16
+}
+
+fn max_text_width(lines: &[&str]) -> u16 {
+    lines.iter().map(|line| text_width(line)).max().unwrap_or(0)
+}
+
+fn glyph_width(ch: char) -> u16 {
+    UnicodeWidthChar::width(ch).unwrap_or(1) as u16
+}
+
+fn pulse(frame: usize, speed: f32) -> f32 {
+    (((frame as f32 * speed).sin() + 1.0) / 2.0).clamp(0.0, 1.0)
+}
+
+fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let t = t.clamp(0.0, 1.0);
+
+    Rgb {
+        r: mix(a.r, b.r, t),
+        g: mix(a.g, b.g, t),
+        b: mix(a.b, b.b, t),
+    }
+}
+
+fn mix(a: u8, b: u8, t: f32) -> u8 {
+    (a as f32 + (b as f32 - a as f32) * t).round() as u8
+}
+
+fn ct(c: Rgb) -> Color {
+    Color::Rgb {
+        r: c.r,
+        g: c.g,
+        b: c.b,
+    }
+}
+```
+
+Run it:
+
+```bash
+mkdir -p quorp-splash/src
+# add Cargo.toml and src/main.rs
+cargo run --release
+```
+
+## 10. Implementation roadmap
+
+### Phase 1 — visual foundation
+
+Build:
+
+```text
+quorp-render
+quorp-theme
+quorp-cli
+```
+
+Deliverables:
+
+* splash screen;
+* alternate-screen lifecycle;
+* truecolor theme;
+* keyboard input;
+* resize handling;
+* markdown renderer;
+* syntax-highlighted code blocks;
+* golden snapshot tests.
+
+### Phase 2 — chat/composer IDE shell
+
+Build:
+
+```text
+composer
+transcript
+statusline
+command palette
+slash commands
+```
+
+Slash commands:
+
+```text
+/help
+/theme
+/model
+/mode
+/plan
+/diff
+/tools
+/permissions
+/checkpoint
+/undo
+/agents
+/mcp
+```
+
+### Phase 3 — tools and patching
+
+Build:
+
+```text
+read_file
+search_text
+list_files
+patch_file
+shell
+run_tests
+git_diff
+git_status
+checkpoint
+rollback
+```
+
+Core UX:
+
+* every tool call becomes a card;
+* every patch becomes an accept/reject diff;
+* every command has visible cwd, risk, and output;
+* every edit is reversible.
+
+### Phase 4 — MCP and hooks
+
+Claude Code docs show hooks firing during lifecycle/tool events, and Codex docs list MCP as a way to add third-party tools/context. Quorp should implement both: MCP for external tools, hooks for team workflows. ([Claude API Docs][7])
+
+Hook examples:
+
+```text
+SessionStart
+UserPromptSubmit
+PreToolUse
+PermissionRequest
+PostToolUse
+PatchProposed
+PatchApplied
+TestsCompleted
+PreCompact
+SessionEnd
+```
+
+### Phase 5 — premium polish
+
+Add:
+
+* animated mascot moods;
+* theme gallery;
+* mini file tree;
+* inline diagnostics;
+* test failure parser;
+* hunk-by-hunk patch acceptance;
+* “review before apply” mode;
+* `quorp doctor` terminal capability check;
+* `quorp record` replayable session logs.
+
+## 11. The opinionated final stack
+
+For the first production version, I would choose:
+
+```text
+Language:        Rust
+Terminal core:  crossterm + custom renderer
+Async:          tokio
+Diffs:          similar + custom renderer
+Syntax:         tree-sitter-highlight
+Markdown:       comrak
+Repo search:    rg child process + ignore/globset fallback
+Git:            gix
+PTY:            portable-pty
+Storage:        rusqlite
+LLM streaming:  reqwest + eventsource-stream
+MCP:            JSON-RPC stdio/HTTP bridge
+Plugins:        wasmtime
+Config:         serde + toml + directories
+Telemetry:      tracing
+Testing:        insta + assert_cmd + cargo-nextest
+Packaging:      cargo-dist + Homebrew + npm shim + Winget/Scoop
+```
+
+That gives you a sharp, fast, brand-heavy CLI IDE that feels closer to Claude/Codex-style terminal agents than a boxed dashboard, while still being fully Rust, fully scriptable, and extensible.
+
+[1]: https://developers.openai.com/codex/cli "CLI – Codex | OpenAI Developers"
+[2]: https://code.claude.com/docs/en/overview "Claude Code overview - Claude Code Docs"
+[3]: https://wezterm.com/?utm_source=chatgpt.com "WezTerm – GPU Powered Cross-Platform Terminal"
+[4]: https://docs.rs/crossterm/?utm_source=chatgpt.com "crossterm - Rust"
+[5]: https://developers.openai.com/codex/cli/reference "Command line options – Codex CLI | OpenAI Developers"
+[6]: https://docs.anthropic.com/en/docs/claude-code/sub-agents "Create custom subagents - Claude Code Docs"
+[7]: https://docs.anthropic.com/en/docs/claude-code/hooks "Hooks reference - Claude Code Docs"
+

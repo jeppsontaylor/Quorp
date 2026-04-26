@@ -1,0 +1,1092 @@
+I’d build QUORP as a **Rust-native terminal IDE engine**, but **not** as a conventional Rust TUI dashboard.
+
+The winning direction is:
+
+> **Rust core + direct ANSI truecolor renderer + event-stream agent runtime + syntax-aware patch engine + optional GPU desktop shell.**
+
+That gives you the Claude/Codex-like behavior: fast streaming, brilliant cards, approval prompts, tool-call traces, green/red diff backgrounds, animated status, rare emojis, and a sharp terminal experience that feels alive instead of “boxed TUI app.”
+
+I also packaged a full Rust starter project for the QUORP splash/load screen using your mascot image:
+
+[Download the QUORP Rust splash project](sandbox:/mnt/data/quorp_splash_rust.zip)
+
+It contains:
+
+```text
+quorp_splash/
+  Cargo.toml
+  README.md
+  assets/quorp.png
+  src/main.rs
+```
+
+Cargo is not installed in this sandbox, so I could not run `cargo check` here. The project is complete Rust 2021 starter code using `crossterm`, `image`, `clap`, and `unicode-width`.
+
+---
+
+# 1. The product direction
+
+Claude Code is officially described as an agentic coding tool that can read a codebase, edit files, run commands, and work in the terminal, IDE, desktop app, and browser. Codex CLI is officially described as OpenAI’s local terminal coding agent that can read, change, and run code in the selected directory, and it is open source and built in Rust. Those two facts strongly suggest the correct QUORP target: not a static terminal dashboard, but an **agentic coding console** that streams reasoning summaries, tool calls, diffs, tests, approvals, and final summaries as high-quality terminal events. ([Claude][1])
+
+The mistake would be building “a TUI.” The right move is building a **terminal-native rendering system** that happens to use Rust.
+
+The UI should feel like this:
+
+```text
+🦇 QUORP v0.1.0-neon
+workspace: ~/repo/infra        mode: workspace-write        model: high-reasoning
+
+🧭 plan
+  1. inspect router and patch pipeline
+  2. add guarded edit mode
+  3. run targeted tests
+  4. summarize changed files
+
+🪛 read src/patch/router.rs
+  812 lines · 19.4 KB · 4.2 ms
+
+🪡 patch src/patch/router.rs  +18 -6
+  risk: medium
+  revert: available
+  verifier: cargo test -p quorp-patch
+
+🧪 cargo test -p quorp-patch
+  running · 12.4s · 41 tests discovered
+```
+
+This should be **append-first**, **card-based**, **animated**, **truecolor**, and **streaming**.
+
+---
+
+# 2. Why “Rust TUI text looks pixelated” is probably the wrong diagnosis
+
+Rust does not render terminal text. The terminal emulator renders the glyphs. A Rust TUI can look bad when the terminal font, fallback emoji font, DPI scaling, ligature settings, or box-drawing glyphs are poor.
+
+So the stack should optimize for terminal emulators that already render text beautifully:
+
+| Target terminal | Why it matters                                                                                                                       |
+| --------------- | ------------------------------------------------------------------------------------------------------------------------------------ |
+| **WezTerm**     | GPU-accelerated, truecolor, ligatures, color emoji, font fallback, hyperlinks, panes, tabs. ([WezTerm][2])                           |
+| **Kitty**       | GPU/SIMD rendering, threaded rendering, images, animations, ligatures, emoji, variable fonts. ([Kovid Goyal's Software Projects][3]) |
+| **iTerm2**      | Common macOS target with rich color and image capabilities.                                                                          |
+| **Ghostty**     | Excellent modern terminal target, especially for sharp text and GPU-native feel.                                                     |
+| **Alacritty**   | Great raw speed, but less visually rich than WezTerm/Kitty.                                                                          |
+
+The QUORP terminal should detect capabilities:
+
+```text
+truecolor
+OSC 8 hyperlinks
+emoji width behavior
+Kitty graphics protocol
+iTerm image protocol
+Sixel
+mouse support
+bracketed paste
+terminal size
+font fallback quality
+```
+
+Then render in one of these modes:
+
+```rust
+enum RenderProfile {
+    RichKitty,
+    RichWezTerm,
+    RichITerm,
+    TrueColorUnicode,
+    Ansi256,
+    PlainNoColor,
+}
+```
+
+For the mascot and startup screen, the safest beautiful approach is **truecolor Unicode half-block art**. Optional rich mode can use Kitty’s graphics protocol, which is designed to let terminal programs render raster graphics at pixel positions, but the fallback should always be pure text/ANSI. ([Kovid Goyal's Software Projects][4])
+
+---
+
+# 3. Recommended QUORP architecture
+
+```text
+quorp/
+  crates/
+    quorp-core/          session model, event log, orchestration
+    quorp-agent/         model loop, planning, tool-use, reviewers
+    quorp-term/          direct ANSI renderer, cards, diffs, splash
+    quorp-tools/         read/write/shell/git/LSP/MCP tools
+    quorp-patch/         patch planning, apply/revert, diff render
+    quorp-index/         repo map, symbols, semantic search
+    quorp-lsp/           LSP client integration
+    quorp-sandbox/       approvals, policy, path guards
+    quorp-protocol/      event protocol for terminal/desktop/web
+    quorp-daemon/        local background service
+    quorp-cli/           CLI entrypoint
+    quorp-desktop/       optional GPUI or Tauri shell
+```
+
+The critical architectural rule:
+
+> **The UI is only a projection of an event stream.**
+
+Every agent action emits typed events:
+
+```rust
+enum QuorpEvent {
+    SessionStarted(SessionInfo),
+    UserMessage(UserMessage),
+    ReasoningSummary(ReasoningSummary),
+    ToolStarted(ToolCall),
+    ToolDelta(ToolDelta),
+    ToolFinished(ToolResult),
+    ApprovalRequested(ApprovalRequest),
+    ApprovalResolved(ApprovalDecision),
+    PatchProposed(PatchSet),
+    PatchApplied(PatchSetId),
+    PatchRejected(PatchSetId),
+    CommandStarted(CommandRun),
+    CommandOutput(CommandOutputChunk),
+    CommandFinished(CommandResult),
+    TestSummary(TestSummary),
+    AgentDone(FinalSummary),
+}
+```
+
+The terminal, desktop app, app-server, and logs all subscribe to the same event stream.
+
+This gives you:
+
+```text
+terminal UI
+desktop UI
+headless mode
+CI mode
+record/replay
+session restore
+remote control
+audit logs
+```
+
+---
+
+# 4. Core Rust stack
+
+## Runtime and infrastructure
+
+| Area          | Rust crates / tools                       | Purpose                                               |
+| ------------- | ----------------------------------------- | ----------------------------------------------------- |
+| Async runtime | `tokio`, `futures`                        | model streams, tool calls, PTYs, file watching        |
+| Errors        | `thiserror`, `anyhow`                     | internal + user-facing diagnostics                    |
+| Serialization | `serde`, `serde_json`, `toml`, `schemars` | tool schemas, config, event logs                      |
+| Logging       | `tracing`, `tracing-subscriber`           | trace every tool call and render event                |
+| CLI           | `clap`                                    | `quorp`, `quorp exec`, `quorp splash`, `quorp doctor` |
+| Config        | `figment` or custom layered TOML          | global/project/team policy                            |
+| IDs           | `uuid`, `nanoid`, `time`                  | session IDs, patch IDs, tool IDs                      |
+| Concurrency   | `dashmap`, `parking_lot`, `arc-swap`      | shared caches and state                               |
+
+## Terminal renderer
+
+| Area                 | Rust crates                             | Purpose                                                                 |
+| -------------------- | --------------------------------------- | ----------------------------------------------------------------------- |
+| Terminal control     | `crossterm`                             | cursor, raw mode, clear, keyboard, mouse                                |
+| Escape parsing       | `termwiz`                               | parse/encode escape sequences and terminal capabilities. ([Docs.rs][5]) |
+| PTY                  | `portable-pty`                          | run shells/commands in pseudo-terminals                                 |
+| Unicode width        | `unicode-width`, `unicode-segmentation` | correct emoji, CJK, grapheme alignment                                  |
+| Styling              | `anstyle`, `owo-colors`                 | truecolor ANSI composition                                              |
+| ANSI cleanup         | `strip-ansi-escapes`                    | measuring visible widths                                                |
+| Optional TUI widgets | `ratatui`                               | only for tables/popups, not the core aesthetic                          |
+
+Do **not** start with a Ratatui-first layout. Ratatui is useful for terminal widgets, but QUORP should be a custom renderer that writes direct ANSI spans and tracks dirty regions. Ratatui is documented as a Rust library for terminal user interfaces; that is valuable, but your desired look is closer to a **streaming terminal design system** than a classic widget grid. ([Docs.rs][6])
+
+---
+
+# 5. Text sharpness plan
+
+Sharpness is mostly controlled by:
+
+```text
+terminal emulator
+font
+font fallback
+emoji fallback
+DPI scaling
+truecolor support
+ligature settings
+line height
+avoiding excessive box-drawing clutter
+```
+
+Recommended QUORP defaults:
+
+```text
+font: JetBrains Mono, Berkeley Mono, Monaspace Neon, Iosevka Term, or Commit Mono
+emoji fallback: Apple Color Emoji / Noto Color Emoji
+font size: 13.5–15.5
+line height: 1.08–1.15
+truecolor: required for premium mode
+ligatures: on for UI labels, optional for code
+background: near-black, not pure #000 for panels
+```
+
+QUORP should ship a `quorp doctor` command:
+
+```text
+quorp doctor terminal
+  truecolor: yes
+  hyperlinks: yes
+  emoji width: likely double
+  terminal: WezTerm
+  font: JetBrains Mono
+  graphics: iTerm2 image protocol available
+  recommendation: rich profile enabled
+```
+
+---
+
+# 6. Code intelligence stack
+
+## Syntax and structure
+
+Use Tree-sitter for parsing, highlighting context, function extraction, and syntax-aware edit regions. Tree-sitter is built for editor-grade parsing and is explicitly positioned as fast enough to parse on every keystroke while remaining useful in the presence of syntax errors. ([Tree-sitter][7])
+
+Use:
+
+```text
+tree-sitter
+tree-sitter-rust
+tree-sitter-typescript
+tree-sitter-python
+tree-sitter-go
+tree-sitter-json
+tree-sitter-bash
+tree-sitter-highlight
+```
+
+QUORP should maintain:
+
+```text
+symbol graph
+call graph
+import graph
+file ownership hints
+test-to-source mapping
+changed-function map
+```
+
+## LSP
+
+Use:
+
+```text
+lsp-types
+tower-lsp
+jsonrpc-lite or custom JSON-RPC
+```
+
+External language servers:
+
+```text
+Rust        rust-analyzer
+TypeScript  typescript-language-server
+Python      pyright / basedpyright
+Go          gopls
+C/C++       clangd
+Java        jdtls
+Lua         lua-language-server
+```
+
+QUORP tools:
+
+```text
+lsp_diagnostics
+lsp_definition
+lsp_references
+lsp_hover
+lsp_rename_preview
+lsp_format_file
+lsp_code_actions
+```
+
+## Text buffers
+
+Use:
+
+```text
+ropey
+crop
+xi-rope
+```
+
+For agentic edits, use a rope-backed buffer. Do not keep doing giant string copies for multi-file patching.
+
+---
+
+# 7. Diff and patch engine
+
+The diff UI is one of the most important emotional features. You specifically like the green/red diff backgrounds, so QUORP should make this a signature feature.
+
+Difftastic is a good design reference because it compares files based on syntax rather than raw lines, producing diffs that are easier for humans to read. ([Difftastic][8])
+
+Recommended stack:
+
+```text
+similar        line + word diffs
+imara-diff     fast diff core
+diffy          patch application
+difftastic     optional structural diff inspiration / external integration
+tree-sitter    syntax-aware hunk boundaries
+```
+
+Diff display style:
+
+```text
+🪡 patch src/router.rs  +18 -6
+risk: medium     revert: pch_01JZ...     verifier: cargo test -p quorp-router
+
+╭─ hunk 2/5 ─ route_tool_call() ─────────────────────────────╮
+│                                                            │
+│  141 │ match tool.kind {                                   │
+│  142 │     ToolKind::Shell => {                            │
+│ -143 │         self.run_shell(cmd).await                   │
+│ +143 │         self.run_shell_guarded(cmd, policy).await   │
+│ +144 │             .context("guarded shell failed")?       │
+│  145 │     }                                               │
+│                                                            │
+╰────────────────────────────────────────────────────────────╯
+```
+
+Implementation details:
+
+```rust
+struct PatchSet {
+    id: PatchSetId,
+    files: Vec<FilePatch>,
+    risk: Risk,
+    rationale: String,
+    revert_patch: Option<String>,
+    verification: Option<VerificationPlan>,
+}
+
+struct FilePatch {
+    path: PathBuf,
+    hunks: Vec<Hunk>,
+    before_hash: String,
+    after_hash: String,
+}
+
+struct Hunk {
+    old_start: usize,
+    old_lines: usize,
+    new_start: usize,
+    new_lines: usize,
+    lines: Vec<DiffLine>,
+}
+```
+
+Patch UX must include:
+
+```text
+preview
+apply
+reject
+edit patch
+explain patch
+test patch
+revert patch
+open in editor
+copy unified diff
+```
+
+Never silently mutate files without a visible patch event.
+
+---
+
+# 8. QUORP color system
+
+Your mascot is almost entirely:
+
+```text
+void black
+charcoal body
+ember orange
+gold glow
+neon prompt orange
+tiny red-orange eye cores
+```
+
+So QUORP should own an **obsidian + ember + neon terminal palette**.
+
+## Base palette
+
+| Token        |       Hex | Use                        |
+| ------------ | --------: | -------------------------- |
+| `void`       | `#030406` | terminal background        |
+| `obsidian`   | `#05070D` | app root                   |
+| `panel`      | `#0B1020` | cards                      |
+| `panel_2`    | `#10182B` | nested cards               |
+| `raised`     | `#16213A` | active card                |
+| `border_dim` | `#24324D` | passive borders            |
+| `border_hot` | `#FF5B00` | active mascot/brand border |
+| `text`       | `#EAF2FF` | primary text               |
+| `text_soft`  | `#B8C7E0` | secondary text             |
+| `text_muted` | `#7E91B5` | metadata                   |
+| `text_ghost` | `#4D5F7F` | disabled/collapsed         |
+
+## Brand/accent palette
+
+| Token           |       Hex | Use                                       |
+| --------------- | --------: | ----------------------------------------- |
+| `quorp_orange`  | `#FF5B00` | mascot eyes, prompt glyph, active actions |
+| `ember`         | `#FF7A00` | progress, warnings, shell activity        |
+| `gold`          | `#FFD166` | approvals, highlights                     |
+| `hot_rose`      | `#FF2E88` | patches, important deltas                 |
+| `plasma_blue`   | `#2F7BFF` | shell/tool cards                          |
+| `electric_cyan` | `#00E5FF` | links, live model stream                  |
+| `violet`        | `#A855F7` | planning/reasoning summaries              |
+| `acid_lime`     | `#9DFF00` | success sparks                            |
+| `mint`          | `#2CFF8B` | additions/pass                            |
+| `danger`        | `#FF3366` | destructive actions/failures              |
+
+## Diff palette
+
+| Token                |       Hex | Use                               |
+| -------------------- | --------: | --------------------------------- |
+| `diff_add_bg`        | `#053B2C` | added line background             |
+| `diff_add_bg_strong` | `#0A5C40` | changed token inside added line   |
+| `diff_add_fg`        | `#B8FFD9` | added line text                   |
+| `diff_add_marker`    | `#00FF88` | `+` marker                        |
+| `diff_del_bg`        | `#4A1020` | removed line background           |
+| `diff_del_bg_strong` | `#6A1830` | changed token inside removed line |
+| `diff_del_fg`        | `#FFD0DA` | removed line text                 |
+| `diff_del_marker`    | `#FF4D6D` | `-` marker                        |
+| `diff_mod_bg`        | `#3B2A05` | modified line background          |
+| `diff_mod_fg`        | `#FFE8A3` | modified line text                |
+| `hunk_bg`            | `#111B33` | hunk header                       |
+| `hunk_fg`            | `#AFC7FF` | hunk header text                  |
+
+## Tool state colors
+
+| State           |     Color |
+| --------------- | --------: |
+| thinking        | `#A855F7` |
+| reading         | `#00E5FF` |
+| editing         | `#FF2E88` |
+| running         | `#FF8A00` |
+| passed          | `#2CFF8B` |
+| failed          | `#FF3366` |
+| approval needed | `#FFD166` |
+| blocked         | `#FF4D6D` |
+| cached          | `#7E91B5` |
+| skipped         | `#4D5F7F` |
+
+---
+
+# 9. Tool calling UX
+
+Claude Code’s docs describe hooks as deterministic commands that run at specific lifecycle points to enforce rules, automate repetitive tasks, and integrate with existing tools. Codex docs also describe MCP tool approval defaults and per-tool overrides in config. QUORP should build those concepts into the product from day one. ([Claude][9])
+
+## Tool card grammar
+
+```text
+🪛 read_file
+path: src/engine.rs
+result: 812 lines · 19.4 KB · 4.2 ms
+```
+
+```text
+🧪 cargo test -p quorp-patch
+status: running
+elapsed: 13.7s
+stdout: 1,284 lines hidden
+tail:
+  test patch::applies_cleanly ... ok
+  test patch::reverts_cleanly ... ok
+```
+
+```text
+🪬 approval required
+tool: shell
+command: rm -rf target/quorp-cache
+risk: destructive filesystem operation
+scope: workspace
+actions: approve once · always allow under target/ · deny
+```
+
+## Rust tool trait
+
+```rust
+#[async_trait::async_trait]
+pub trait Tool: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    fn schema(&self) -> serde_json::Value;
+    fn risk(&self, input: &serde_json::Value, ctx: &ToolContext) -> Risk;
+
+    async fn call(
+        &self,
+        input: serde_json::Value,
+        ctx: ToolContext,
+        events: EventSink,
+    ) -> anyhow::Result<ToolOutput>;
+}
+```
+
+## Core tools
+
+```text
+read_file
+write_file_preview
+apply_patch
+revert_patch
+list_dir
+grep
+semantic_search
+open_symbol
+lsp_diagnostics
+lsp_definition
+lsp_references
+shell
+cargo_test
+npm_test
+git_status
+git_diff
+git_apply
+git_commit_draft
+mcp_call
+browser_open
+memory_read
+memory_write
+```
+
+## Permission classes
+
+```text
+safe_read
+workspace_write_preview
+workspace_write_apply
+shell_readonly
+shell_build
+shell_test
+shell_network
+shell_destructive
+credential_access
+external_publish
+git_history_mutation
+```
+
+Default policy:
+
+```text
+read workspace files: allow
+write workspace files: preview patch first
+apply patch: ask or auto-apply by mode
+run tests: allow after first approval
+network: ask
+delete files: ask always
+access ~/.ssh, ~/.aws, .env: deny by default
+git push / deploy / publish: ask always
+```
+
+---
+
+# 10. Reasoning UX
+
+Do not show raw hidden chain-of-thought. Show **visible reasoning summaries**.
+
+Good QUORP style:
+
+```text
+🧭 reasoning summary
+I found the failing route in `ToolRouter::dispatch`. I’m going to add a policy gate before shell execution, patch the branch, then run the targeted router tests.
+```
+
+Agent states:
+
+| State     | Emoji | Meaning                  |
+| --------- | ----- | ------------------------ |
+| orienting | `🧭`  | scanning project         |
+| mapping   | `🧬`  | building repo/symbol map |
+| reading   | `🪛`  | reading files            |
+| patching  | `🪡`  | editing                  |
+| verifying | `🧪`  | tests/checks             |
+| reviewing | `🪞`  | self-review              |
+| waiting   | `🪬`  | approval needed          |
+| blocked   | `🧱`  | policy/tool failure      |
+| debugging | `🪲`  | failure loop             |
+| complete  | `🪩`  | final summary            |
+
+Rare emoji set for QUORP:
+
+```text
+🪬 approvals / guardrails
+🧿 watch mode / monitoring
+🪩 complete / celebration
+🫧 streaming / thinking
+🧬 repo map / structure
+🪡 patches
+🪲 debugging
+🦇 mascot / stealth mode
+🛸 background agent
+🪐 context universe
+🪭 refresh / fanout
+🪶 lightweight write
+🕸️ MCP / tool network
+🧪 tests
+🪞 review
+```
+
+---
+
+# 11. MCP and plug-in stack
+
+MCP should be treated as a first-class plug-in protocol. The official MCP specification describes servers as exposing resources, prompts, and tools to clients, which maps directly to a coding IDE that needs docs, databases, browsers, GitHub, Figma, Linear, and internal systems. ([Model Context Protocol][10])
+
+QUORP config:
+
+```toml
+[mcp_servers.docs]
+command = "quorp-docs-mcp"
+default_tools_approval_mode = "approve"
+
+[mcp_servers.docs.tools.search]
+approval_mode = "approve"
+
+[mcp_servers.docs.tools.write]
+approval_mode = "prompt"
+
+[mcp_servers.github]
+command = "github-mcp"
+default_tools_approval_mode = "prompt"
+allowed_tools = ["issues.search", "pulls.read", "repos.get"]
+blocked_tools = ["repos.delete", "actions.write"]
+```
+
+Tool card:
+
+```text
+🕸️ mcp:github.issues.search
+query: repo:quorp/engine is:open label:bug
+result: 12 issues · 430 ms
+```
+
+---
+
+# 12. Hooks
+
+Implement lifecycle hooks:
+
+```text
+SessionStart
+UserPromptSubmit
+BeforeTool
+AfterTool
+BeforePatch
+AfterPatch
+BeforeShell
+AfterShell
+AfterTest
+ApprovalRequested
+ApprovalResolved
+AgentDone
+Error
+Checkpoint
+```
+
+Example:
+
+```toml
+[[hooks.AfterPatch]]
+name = "format rust"
+when = "files.any(ext == 'rs')"
+command = "cargo fmt"
+
+[[hooks.BeforeShell]]
+name = "block production deletes"
+block_if = "command.contains('kubectl delete') || command.contains('rm -rf /')"
+
+[[hooks.AfterTest]]
+name = "desktop notification"
+command = "terminal-notifier -message 'QUORP tests finished'"
+```
+
+This creates the feeling that the IDE is smart, deterministic, and safe.
+
+---
+
+# 13. Optional desktop strategy
+
+The terminal comes first. The desktop comes later, using the same engine.
+
+## Option A: Tauri shell
+
+Use Tauri when you want a beautiful desktop UI quickly with a Rust backend and a web frontend. Tauri’s docs describe it as a framework for tiny, fast binaries across desktop/mobile platforms, with any frontend that compiles to HTML/JS/CSS and Rust for backend logic. ([Tauri][11])
+
+Stack:
+
+```text
+Rust backend:
+  tauri
+  tokio
+  quorp-core
+  quorp-agent
+  quorp-tools
+
+Frontend:
+  Svelte or React
+  CodeMirror 6
+  xterm.js
+  Tailwind
+  Motion/animations
+```
+
+This is the fastest path to a polished desktop app.
+
+## Option B: GPUI-native app
+
+Use GPUI for the premium native Rust path. Zed describes itself as written from scratch in Rust to leverage multiple CPU cores and the GPU, and GPUI is positioned as a fast Rust UI framework from Zed’s creators. ([Zed][12])
+
+Stack:
+
+```text
+gpui
+quorp-core
+tree-sitter
+ropey
+lsp-types
+tokio
+accesskit
+```
+
+This is the long-term high-end direction.
+
+## Option C: Vello/wgpu custom renderer
+
+Use this only if you want to own every pixel. Vello is a Rust 2D rendering engine using `wgpu`, designed for large interactive 2D scenes; Cosmic Text provides shaping, font discovery, fallback, layout, rasterization, and editing abstractions. ([Docs.rs][13])
+
+Stack:
+
+```text
+winit
+wgpu
+vello
+cosmic-text
+fontdb
+swash
+accesskit
+```
+
+This is the highest effort, highest control route.
+
+---
+
+# 14. QUORP mascot design
+
+Your mascot reads as:
+
+```text
+small black terminal familiar
+cat/bat/gremlin silhouette
+soft rounded body
+glowing ember-orange eyes
+tiny mischievous mouth
+orange rim light
+prompt glyph companion: ❯_
+tail with ember tips
+high-contrast black/orange identity
+```
+
+The load screen should use this personality:
+
+```text
+mischievous
+fast
+dangerously cute
+terminal-native
+neon ember
+agentic
+slightly magical
+```
+
+Suggested QUORP brand phrases:
+
+```text
+QUORP AGENTIC CODE ENGINE
+small daemon · big diffs
+terminal familiar online
+patches with teeth
+controlled chaos for code
+summon the repo gremlin
+```
+
+---
+
+# 15. QUORP splash screen layout
+
+The splash should look like this conceptually:
+
+```text
+╭────────────────────────────────────────────────────────────╮
+│              QUORP AGENTIC CODE ENGINE                    │
+╰────────────────────────────────────────────────────────────╯
+
+                 [truecolor mascot rendered as text]
+
+ ██████╗ ██╗   ██╗ ██████╗ ██████╗ ██████╗
+██╔═══██╗██║   ██║██╔═══██╗██╔══██╗██╔══██╗
+██║   ██║██║   ██║██║   ██║██████╔╝██████╔╝
+██║▄▄ ██║██║   ██║██║   ██║██╔══██╗██╔═══╝
+╚██████╔╝╚██████╔╝╚██████╔╝██║  ██║██║
+ ╚══▀▀═╝  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝
+
+terminal-native coding IDE • v0.1.0-neon ✦ boot 72%
+
+🪬 approvals   🪡 patches   🧬 repo-map   🧪 tests   🕸️ MCP   🛡 sandbox
+
+╭━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━──────────────╮  🪐
+◠  72%  preloading diff pigments   press /help once inside QUORP
+```
+
+The included Rust project renders:
+
+```text
+truecolor gradient QUORP wordmark
+truecolor PNG-to-Unicode mascot
+animated progress bar
+rare emoji spinner
+capability chips
+version string
+text-only fallback mascot
+```
+
+Run it:
+
+```bash
+unzip quorp_splash_rust.zip
+cd quorp_splash
+cargo run --release -- --persist
+```
+
+Text-only fallback:
+
+```bash
+cargo run --release -- --text-only --persist
+```
+
+Bigger mascot:
+
+```bash
+cargo run --release -- --art-width 52 --persist
+```
+
+---
+
+# 16. Splash implementation strategy
+
+The important trick is this:
+
+> Convert the mascot PNG into ANSI truecolor Unicode half-blocks.
+
+Each terminal cell uses `▀`:
+
+```text
+foreground color = top pixel
+background color = bottom pixel
+glyph = upper half block
+```
+
+So one terminal row represents two image rows. This is pure text, but it looks much more detailed than ASCII.
+
+Core conversion idea:
+
+```rust
+for y in (0..height).step_by(2) {
+    for x in 0..width {
+        let top = image.get_pixel(x, y);
+        let bottom = image.get_pixel(x, y + 1);
+
+        print!(
+            "\x1b[38;2;{};{};{}m\x1b[48;2;{};{};{}m▀\x1b[0m",
+            top.r, top.g, top.b,
+            bottom.r, bottom.g, bottom.b
+        );
+    }
+}
+```
+
+That is the “not Rust TUI” path: direct terminal rendering, direct ANSI, no widget framework required.
+
+---
+
+# 17. Implementation roadmap
+
+## Phase 1: Terminal MVP
+
+Build:
+
+```text
+quorp init
+quorp chat
+quorp exec
+quorp splash
+quorp doctor terminal
+```
+
+Core features:
+
+```text
+streaming chat
+file read/write tools
+patch preview
+green/red diff cards
+shell command cards
+approvals
+session event log
+basic repo search
+```
+
+## Phase 2: Coding IDE layer
+
+Add:
+
+```text
+tree-sitter repo map
+LSP diagnostics
+symbol navigation
+test discovery
+git integration
+patch rollback
+session checkpoints
+```
+
+## Phase 3: Agent orchestration
+
+Add:
+
+```text
+planner agent
+coder agent
+reviewer agent
+tester agent
+security reviewer
+parallel subagents
+tool risk scoring
+MCP servers
+hooks
+```
+
+## Phase 4: Premium UI
+
+Add:
+
+```text
+terminal themes
+animated startup
+rich command palette
+rare emoji language
+OSC 8 hyperlinks
+Kitty/iTerm image support
+workspace dashboard
+desktop app shell
+```
+
+## Phase 5: Enterprise/team features
+
+Add:
+
+```text
+policy files
+audit logs
+team-shared hooks
+blocked paths
+secret scanning
+network approval rules
+compliance mode
+reproducible session replay
+```
+
+---
+
+# 18. Final stack recommendation
+
+The stack I’d actually choose:
+
+```text
+Rust core:
+  tokio
+  serde
+  schemars
+  tracing
+  anyhow
+  thiserror
+  clap
+
+Terminal:
+  crossterm
+  termwiz
+  portable-pty
+  unicode-width
+  unicode-segmentation
+  anstyle
+  custom QUORP renderer
+
+Code intelligence:
+  tree-sitter
+  syntect
+  ropey/crop
+  lsp-types
+  tower-lsp
+
+Diffs:
+  similar
+  imara-diff
+  diffy
+  difftastic-inspired structural mode
+
+Repo:
+  ignore
+  grep
+  tantivy
+  gix
+  notify
+
+Agent/tools:
+  custom tool registry
+  MCP client
+  policy engine
+  hooks
+  approval gateway
+
+Desktop later:
+  Tauri for fastest polished shell
+  GPUI for premium native Rust shell
+  Vello/wgpu only if owning every pixel becomes strategically important
+```
+
+The strongest visual identity is:
+
+```text
+obsidian terminal
+ember-orange mascot
+gold progress glow
+mint/green additions
+rose/red deletions
+cyan live streams
+violet reasoning summaries
+rare emoji status language
+full-background diff hunks
+```
+
+QUORP should feel like a **tiny neon code familiar living in the terminal**: sharp, fast, mischievous, controlled, and unusually beautiful.
+
+[1]: https://code.claude.com/docs/en/overview?utm_source=chatgpt.com "Claude Code overview - Claude Code Docs"
+[2]: https://wezterm.org/features.html?utm_source=chatgpt.com "Features - Wez's Terminal Emulator"
+[3]: https://sw.kovidgoyal.net/kitty/?utm_source=chatgpt.com "kitty"
+[4]: https://sw.kovidgoyal.net/kitty/graphics-protocol/?utm_source=chatgpt.com "Terminal graphics protocol - kitty"
+[5]: https://docs.rs/termwiz/latest/termwiz/escape/index.html?utm_source=chatgpt.com "termwiz::escape - Rust"
+[6]: https://docs.rs/ratatui/latest/ratatui/?utm_source=chatgpt.com "ratatui - Rust"
+[7]: https://tree-sitter.github.io/?utm_source=chatgpt.com "Tree-sitter: Introduction"
+[8]: https://difftastic.wilfred.me.uk/?utm_source=chatgpt.com "Difftastic, a structural diff"
+[9]: https://code.claude.com/docs/en/hooks-guide?utm_source=chatgpt.com "Automate workflows with hooks - Claude Code Docs"
+[10]: https://modelcontextprotocol.io/specification/2025-11-25?utm_source=chatgpt.com "Specification"
+[11]: https://v2.tauri.app/start/?utm_source=chatgpt.com "What is Tauri?"
+[12]: https://zed.dev/?utm_source=chatgpt.com "Zed — Love your editor again"
+[13]: https://docs.rs/vello?utm_source=chatgpt.com "vello - Rust"
+

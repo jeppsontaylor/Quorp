@@ -1,0 +1,924 @@
+## Executive direction
+
+Build **QUORP** as a **terminal-native coding IDE in Rust**, not as a “widget-heavy TUI clone.” The sharpness you like in Claude/Codex-style CLIs comes from native terminal text rendering, truecolor ANSI, Unicode glyphs, fast streaming, excellent spacing, and restrained animation. The key correction: Rust TUI libraries do **not** rasterize fonts. A library like Ratatui talks to the terminal emulator through a backend that draws styled text, moves the cursor, captures input, and uses raw/alternate screen modes; the terminal emulator still renders the actual glyphs. Pixelation usually comes from the terminal font, DPI scaling, block-character image fallbacks, or a low-resolution terminal/image mode, not Rust itself. ([Ratatui][1])
+
+As of current public docs, Codex CLI is a local coding agent, the official repository is overwhelmingly Rust, and the repo contains `codex-rs/tui` documentation for alternate-screen behavior and streaming chunking. Claude Code’s docs likewise describe a terminal-first coding assistant with interactive sessions, piping, session resume, agents, MCP, plugins, permission modes, tool restrictions, and print/JSON modes. ([GitHub][2])
+
+---
+
+## 1. Product vision: “QUORP Terminal IDE”
+
+QUORP should feel like a **neon agentic terminal IDE**:
+
+`>_` prompt energy, black glossy mascot, ember-orange glow, crisp text, fast model streaming, beautiful diff cards, less-common emojis, clear tool-call cards, and human-in-the-loop approvals.
+
+The mascot gives the brand direction:
+
+The character is a glossy charcoal-black terminal gremlin/cat-like creature with rounded ears, glowing orange eyes, a mischievous mouth, hot orange rim light, and a long tail that ends in three ember bulbs. The left-side `>_` prompt icon is as important as the creature itself. The whole brand should feel like **dark terminal void + hot ember intelligence**.
+
+---
+
+## 2. Core technical decision
+
+Use this stack as the primary architecture:
+
+**Rust core + terminal-native renderer + provider-agnostic agent runtime + sandboxed tool execution + brilliant truecolor visual system.**
+
+Do **not** start with a full GUI. Do **not** start with a heavy Ratatui dashboard. Use a custom renderer that writes directly to stdout with ANSI/crossterm/termwiz. Ratatui can remain optional for isolated widgets or test backends, but QUORP’s signature look should be a custom cinematic terminal layer.
+
+The important split:
+
+| Layer               | Recommendation                                           | Why                                                                                              |
+| ------------------- | -------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| CLI runtime         | Rust                                                     | Fast startup, low overhead, single binary, good sandbox/process control.                         |
+| Terminal control    | `crossterm` first, `termwiz` optional                    | Cross-platform raw mode, cursor movement, events, color, terminal capability probing.            |
+| Layout              | Custom line renderer, not widget-heavy TUI               | More like Claude/Codex: clean transcript, anchored composer, diff cards, tool cards.             |
+| Text sharpness      | Let terminal emulator render text                        | Use WezTerm, Kitty, Ghostty, iTerm2, Windows Terminal; QUORP emits truecolor text.               |
+| Optional image mode | Kitty/iTerm/Sixel protocols via `viuer`/custom detection | For a premium mascot splash where supported; text-first fallback always.                         |
+| Agent protocol      | Event bus                                                | Model deltas, tool calls, diffs, approvals, tests, and reasoning summaries all stream as events. |
+| Tool execution      | Sandboxed, typed tools                                   | Read/edit/search/shell/git/test/MCP with per-tool permissions.                                   |
+| Diff rendering      | Custom unified-diff renderer                             | Green/red background blocks, word-level highlight, approval gates.                               |
+
+WezTerm is a strong recommended terminal profile because its docs list truecolor, ligatures, color emoji, font fallback, tabs/panes, and cross-platform support. Kitty and iTerm2 image protocols can render actual pixel graphics when QUORP later wants a high-resolution mascot, while `viuer` is a Rust library that supports terminal image display through Kitty, iTerm, and Sixel where available. ([WezTerm][3])
+
+---
+
+## 3. Rust workspace layout
+
+```text
+quorp/
+  Cargo.toml
+  crates/
+    quorp-cli/             # clap entrypoint, subcommands, config loading
+    quorp-ui/              # terminal renderer, splash, composer, transcript, diff cards
+    quorp-agent/           # model loop, event bus, reasoning modes, provider adapters
+    quorp-protocol/        # typed events, tool schemas, transcript JSONL
+    quorp-tools/           # read/edit/apply_patch/search/shell/git/test tools
+    quorp-sandbox/         # macOS/Linux/Windows sandbox + approvals
+    quorp-diff/            # unified diff parser, word diff, patch planning
+    quorp-index/           # repo map, symbols, ripgrep/tree-sitter/tantivy
+    quorp-mcp/             # MCP client/server bridge
+    quorp-config/          # TOML config, themes, permissions, keymaps
+    quorp-telemetry/       # tracing, perf counters, event logs
+    quorp-git/             # gix/git2 shell fallback, worktrees, checkpoints
+```
+
+---
+
+## 4. Core Rust stack
+
+| Area              | Rust crates / tools                                                                           | Notes                                                                        |
+| ----------------- | --------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
+| CLI               | `clap`, `clap_complete`, `anstream`, `anstyle`, `directories`                                 | `quorp`, `quorp exec`, `quorp auth`, `quorp theme`, `quorp mcp`.             |
+| Async runtime     | `tokio`, `tokio-util`, `futures`, `async-trait`                                               | Stream model events and tool events concurrently.                            |
+| HTTP/model APIs   | `reqwest`, `eventsource-stream` or SSE parser, `serde`, `serde_json`, `schemars`              | Provider adapters normalize OpenAI/Anthropic/local models into `QuorpEvent`. |
+| Terminal control  | `crossterm`, `termwiz`, `terminal_size`, `unicode-width`, `unicode-segmentation`              | Raw mode, alternate screen, keyboard, paste, colors, emoji width.            |
+| Rendering         | Custom immediate renderer, optional `ratatui` test backend                                    | Avoid generic dashboard look. Use dirty-line redraw and transcript cards.    |
+| Text editing      | `ropey`, `unicode-width`, `arboard` or `clipboard-rs`                                         | Multiline composer, bracketed paste, history search, external editor.        |
+| Diffs             | `similar`, `diffy`, custom unified parser, `syntect`/`tree-sitter-highlight`                  | Green/red backgrounds, hunk cards, word highlights, patch application.       |
+| Code intelligence | `tree-sitter`, `tree-sitter-*`, `ignore`, `globset`, `grep`, `tantivy`                        | Repo map, symbols, search, “what files matter?” context.                     |
+| Git               | `gix` first, `git2` optional, shell fallback                                                  | Status, branch, diff, worktree, checkpoints.                                 |
+| Shell/process     | `tokio::process`, `portable-pty`, `command-group`, `nix`, `which`, `shell-words`              | PTY for interactive commands; capture mode for tests/builds.                 |
+| Sandbox           | `bubblewrap` Linux, macOS Seatbelt/sandbox profile, Windows job objects/AppContainer strategy | Default deny network, workspace write only, explicit approvals.              |
+| Persistence       | `sqlx` + SQLite or `redb`, JSONL transcripts                                                  | Sessions, command history, approvals, tool logs.                             |
+| Config            | `toml`, `figment` or `config`, `serde`, `jsonschema`                                          | `~/.quorp/config.toml`, repo `.quorp/config.toml`.                           |
+| Observability     | `tracing`, `tracing-subscriber`, `opentelemetry`, `console-subscriber`                        | Tool latency, stream lag, redraw frame time.                                 |
+| Distribution      | `cargo-dist`, Homebrew tap, npm shim, GitHub Releases, `cargo-binstall`                       | Single Rust binary plus optional npm wrapper.                                |
+
+---
+
+## 5. Terminal rendering plan
+
+### The QUORP renderer
+
+Avoid “TUI panels everywhere.” Build a custom renderer with these primitives:
+
+```rust
+enum UiCell {
+    TranscriptCard(Card),
+    ToolCallCard(ToolCallView),
+    DiffCard(DiffView),
+    ApprovalCard(ApprovalView),
+    Composer(ComposerState),
+    StatusBar(StatusState),
+    Toast(Toast),
+}
+```
+
+The renderer should support two modes:
+
+`inline`: preserve normal terminal scrollback; best for code review and copying.
+
+`fullscreen`: alternate screen; clean app feel, composer pinned, more visual.
+
+`auto`: choose fullscreen except in terminal multiplexers or when user config asks for scrollback. Codex’s public docs describe the same general tension: alternate screen gives a clean fullscreen app, but multiplexers can remove normal scrollback, so Codex documents `auto`, `always`, and `never` alternate-screen modes. ([GitHub][4])
+
+### Fast streaming behavior
+
+Use an adaptive stream policy:
+
+Normal mode: commit 1 line per frame for smoothness.
+
+Catch-up mode: drain batches when the queue grows or the oldest queued item gets stale.
+
+Codex’s current TUI stream-chunking docs describe this exact kind of policy: smooth mode drains one line per baseline tick, catch-up drains queued backlog, with hysteresis to avoid flapping. Their documented baseline commit tick is about 8.3 ms, roughly 120 fps. ([GitHub][5])
+
+For QUORP:
+
+```text
+Target redraw cadence:       60–120 fps max
+Normal token flush:          every 8–16 ms
+Catch-up threshold:          queue >= 8 lines or oldest >= 100–140 ms
+Severe backlog:              queue >= 64 lines or oldest >= 300 ms
+Renderer rule:               never full-clear unless resizing/splash
+Backpressure:                model stream continues; UI coalesces render events
+```
+
+---
+
+## 6. Visual design system
+
+### Main palette
+
+| Name           |       Hex | Use                              |
+| -------------- | --------: | -------------------------------- |
+| Quorp Void     | `#020204` | Main background                  |
+| Deep Black     | `#000000` | Splash/mascot negative space     |
+| Charcoal Fur   | `#151521` | Mascot body, inactive panels     |
+| Graphite Fur   | `#242436` | Mascot highlights, cards         |
+| Slate Glow     | `#3A3952` | Soft edges, borders              |
+| Quorp Ember    | `#FF6A00` | Primary brand orange             |
+| Ember Hot      | `#FF8A00` | Active glow                      |
+| Ember Core     | `#FFC857` | Eyes, prompt core, progress head |
+| Ember Halo     | `#FFE7A3` | Highlights                       |
+| Ember Red      | `#FF2D00` | Danger glow, destructive actions |
+| Terminal Cream | `#F7F1E1` | Primary text                     |
+| Muted Lavender | `#A8A2B8` | Secondary text                   |
+| Dim Graphite   | `#6E6A7F` | Line numbers, timestamps         |
+
+### Semantic colors
+
+| Semantic     | Foreground | Background | Use                            |
+| ------------ | ---------: | ---------: | ------------------------------ |
+| Thinking     |  `#FFC857` |  `#211707` | Reasoning summary / planning   |
+| Tool running |  `#22D3EE` |  `#061D22` | Search, shell, MCP call        |
+| Success      |  `#00FFA3` |  `#062819` | Tests pass, patch applied      |
+| Warning      |  `#FBBF24` |  `#2A1E04` | Risk, approval needed          |
+| Error        |  `#FF3864` |  `#2A0610` | Failed command, rejected patch |
+| File path    |  `#8BE9FD` |       none | Clickable paths / OSC 8 links  |
+| Symbol       |  `#C084FC` |       none | Function/class names           |
+
+### Diff colors
+
+| Diff element  | Foreground | Background |
+| ------------- | ---------: | ---------: |
+| Added line    |  `#B8FFD7` |  `#003B22` |
+| Added word    |  `#FFFFFF` |  `#007A3D` |
+| Removed line  |  `#FFB4BF` |  `#3B0710` |
+| Removed word  |  `#FFFFFF` |  `#8A1026` |
+| Modified line |  `#FFE7A3` |  `#3A2A00` |
+| Hunk header   |  `#FFC857` |  `#211707` |
+| Context line  |  `#C8C2D7` |  `#080810` |
+| Line number   |  `#6E6A7F` |  `#080810` |
+
+Use truecolor ANSI:
+
+```text
+Foreground: ESC[38;2;<r>;<g>;<b>m
+Background: ESC[48;2;<r>;<g>;<b>m
+Reset:      ESC[0m
+```
+
+---
+
+## 7. Less-common emoji and glyph system
+
+Use rare symbols as **state accents**, not as layout-critical elements. Emoji width varies across terminals, so every line must be measured with `unicode-width`, and config must include `emoji = "auto" | "on" | "off"`.
+
+| State                 | Primary glyph | Fallback |
+| --------------------- | ------------- | -------- |
+| Reasoning / ignition  | `🜂`          | `*`      |
+| Tool discovery        | `🧲`          | `@`      |
+| Diff inspection       | `🩻`          | `±`      |
+| Approval gate         | `🪬`          | `!`      |
+| Search / crawl        | `🪲`          | `#`      |
+| Test run              | `🧪`          | `T`      |
+| Sandbox               | `🕳️`         | `[]`     |
+| MCP / external server | `🛸`          | `M`      |
+| Patch magic           | `🪄`          | `~`      |
+| Background task       | `🪐`          | `o`      |
+| Memory / context      | `🧬`          | `%`      |
+| Browser/web           | `🫧`          | `.`      |
+
+Example tool-card rhythm:
+
+```text
+🜂 reasoning   mapping edit plan
+🧲 search      rg "AuthSession" crates/
+🩻 diff        3 files  +42 / -17
+🧪 test        cargo test -p quorp-agent
+🪬 approval    apply patch?  y / n / inspect
+```
+
+---
+
+## 8. Agent loop, tool calling, and reasoning
+
+QUORP needs a **typed event loop** that normalizes provider APIs into local UI events.
+
+OpenAI’s function calling docs describe tools as functions the model can request, a tool call as the model’s request to use one, and a tool output as the application’s response; the high-level flow is model request → tool call → execute application code → send tool output → final response or more tool calls. ([OpenAI Developers][6])
+
+### Internal event protocol
+
+```rust
+enum QuorpEvent {
+    ModelTextDelta { text: String },
+    ReasoningSummary { title: String, bullets: Vec<String> },
+    PlanUpdated { steps: Vec<PlanStep> },
+
+    ToolCallStarted { id: ToolId, name: String, args_preview: String },
+    ToolCallDelta { id: ToolId, stream: ToolStream, text: String },
+    ToolCallCompleted { id: ToolId, status: ToolStatus, elapsed_ms: u64 },
+
+    PatchProposed { patch_id: PatchId, summary: PatchSummary },
+    PatchApplied { patch_id: PatchId, files: Vec<PathBuf> },
+    ApprovalRequested { approval_id: ApprovalId, risk: RiskLevel },
+
+    TestStarted { command: String },
+    TestCompleted { status: TestStatus, elapsed_ms: u64 },
+
+    UiToast { level: ToastLevel, text: String },
+}
+```
+
+### Tool registry
+
+Each tool should have:
+
+```text
+name
+description
+JSON schema
+side_effect_level: read | write | network | destructive
+sandbox requirement
+approval policy
+timeout
+stdout/stderr capture policy
+diff impact summary
+```
+
+Core tools:
+
+```text
+read_file
+list_files
+search_text
+search_symbols
+git_status
+git_diff
+apply_patch
+write_file
+shell
+run_tests
+open_in_editor
+mcp_call
+web_search, gated
+```
+
+### Reasoning display
+
+Do **not** display hidden chain-of-thought. Display a compact public “reasoning summary”:
+
+```text
+🜂 reasoning
+  plan: inspect auth state, patch session refresh, run targeted tests
+  risk: token storage and retry logic
+  next: propose diff before writing
+```
+
+OpenAI’s reasoning guide says reasoning models are useful for complex, multistep planning, while faster GPT-style models are better for straightforward execution; it also recommends simple/direct prompts and avoiding chain-of-thought prompts because reasoning happens internally. That maps perfectly to QUORP’s UX: show plan summaries, not raw private reasoning. ([OpenAI Developers][7])
+
+### Streaming
+
+Use SSE or WebSocket depending on provider. OpenAI’s streaming docs describe starting to process output before the full response is generated and note that the Responses API streams semantic, typed events. ([OpenAI Developers][8])
+
+QUORP should turn provider events into local events immediately:
+
+```text
+provider stream
+  -> provider adapter
+  -> QuorpEvent
+  -> transcript store
+  -> renderer queue
+  -> adaptive flush/chunking
+```
+
+---
+
+## 9. Security, sandboxing, and approvals
+
+Default mode should be **safe but productive**:
+
+```text
+read-only       Reads/searches only
+workspace-write Reads, edits current repo, runs safe commands
+full-auto       Edits and runs commands in workspace without constant prompts
+danger          Explicitly user-enabled, all warnings visible
+```
+
+Codex’s public docs describe sandboxing and approvals as two layers: sandbox mode controls what the agent technically can do, while approval policy decides when it must ask. They also state that local CLI/IDE default behavior includes no network access and write permissions limited to the active workspace. ([OpenAI Developers][9])
+
+QUORP approval cards should be visually impossible to miss:
+
+```text
+🪬 approval required
+  tool: shell
+  command: npm install
+  reason: network access requested
+  sandbox: workspace-write, network=false
+
+  [a] allow once   [s] allow session   [n] deny   [i] inspect
+```
+
+---
+
+## 10. MCP, hooks, plugins
+
+MCP support should be built in early. OpenAI’s Codex MCP docs describe MCP as a way to connect models to third-party tools/context, with support for STDIO and Streamable HTTP servers, and shared configuration for CLI/IDE. ([OpenAI Developers][10])
+
+QUORP config shape:
+
+```toml
+[mcp_servers.context7]
+command = "npx"
+args = ["-y", "@upstash/context7-mcp"]
+
+[mcp_servers.figma]
+url = "https://mcp.example.com/figma"
+bearer_token_env_var = "FIGMA_MCP_TOKEN"
+```
+
+Hooks should be deterministic scripts around the agent lifecycle. Codex hooks docs describe lifecycle hooks like `PreToolUse`, `PermissionRequest`, `PostToolUse`, `UserPromptSubmit`, and `Stop`; that pattern is exactly what QUORP should adopt. ([OpenAI Developers][11])
+
+QUORP hooks:
+
+```text
+SessionStart
+UserPromptSubmit
+PreToolUse
+PermissionRequest
+PostToolUse
+PatchProposed
+PatchApplied
+Stop
+```
+
+---
+
+## 11. Diff UX
+
+The diff screen is one of the most important parts.
+
+Design principles:
+
+1. Use green/red **backgrounds**, not only `+` and `-`.
+2. Highlight changed words inside changed lines.
+3. Show file summary before hunks.
+4. Make “apply / reject / edit / open file” keyboard-native.
+5. Keep line numbers muted.
+6. Show risk hints.
+
+Example:
+
+```text
+🩻 diff  crates/quorp-agent/src/loop.rs
+    42 │   let timeout = Duration::from_secs(30);
+  - 43 │   let retries = 1;
+  + 43 │   let retries = config.retry_budget.max(1);
+    44 │   run_tool_with_timeout(timeout, retries).await?;
+```
+
+Keyboard:
+
+```text
+a     apply all
+A     apply selected hunk
+r     reject selected hunk
+e     open in $EDITOR
+d     show raw diff
+t     run tests
+u     undo last patch
+```
+
+---
+
+## 12. QUORP load screen design
+
+Text-only splash layout:
+
+```text
+        ╭────────╮              ╭╮        ╭╮
+        │  >_    │           ╭──╯╰╮    ╭─╯╰──╮
+        ╰────────╯         ╭─╯     ╰────╯     ╰╮
+                         ╭╯   ◉          ◉     ╰╮
+                         │       ╭──╮           │
+                         │    ╰──╯  ╰──╯        │
+                         ╰╮        ▄▄▄         ╭╯
+                  ╭────────╯                 ╭─╯
+                  ╰╮  ●     ●     ●   ╭──────╯
+                   ╰──────────────────╯
+
+ ██████╗ ██╗   ██╗ ██████╗ ██████╗ ██████╗
+██╔═══██╗██║   ██║██╔═══██╗██╔══██╗██╔══██╗
+██║   ██║██║   ██║██║   ██║██████╔╝██████╔╝
+██║▄▄ ██║██║   ██║██║   ██║██╔══██╗██╔═══╝
+╚██████╔╝╚██████╔╝╚██████╔╝██║  ██║██║
+ ╚══▀▀═╝  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝
+
+v0.1.0 • local agentic coding IDE • truecolor terminal core
+🜂 waking ember tail...
+━━━━━━━━━━━━━━━───────
+```
+
+Animation details:
+
+```text
+Frame 0–8:    eyes pulse Ember Core -> Ember Halo
+Frame 9–20:   tail bulbs pulse left-to-right
+All frames:   comet progress bar moves in orange/yellow
+After load:   fade to transcript/composer
+```
+
+I did not compile-test the following in this environment because Rust is not installed here, but it is written as a standalone `crossterm` program.
+
+### `Cargo.toml`
+
+```toml
+[package]
+name = "quorp-splash"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+crossterm = "0.28"
+unicode-width = "0.1"
+```
+
+### `src/main.rs`
+
+```rust
+use std::io::{self, IsTerminal, Stdout, Write};
+use std::thread;
+use std::time::{Duration, Instant};
+
+use crossterm::{
+    cursor::{Hide, MoveTo, Show},
+    execute, queue,
+    style::{
+        Attribute, Color, Print, ResetColor, SetAttribute, SetBackgroundColor, SetForegroundColor,
+    },
+    terminal::{self, Clear, ClearType, EnterAlternateScreen, LeaveAlternateScreen},
+};
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+#[derive(Clone, Copy, Debug)]
+struct Rgb {
+    r: u8,
+    g: u8,
+    b: u8,
+}
+
+impl Rgb {
+    const fn new(r: u8, g: u8, b: u8) -> Self {
+        Self { r, g, b }
+    }
+
+    fn color(self) -> Color {
+        Color::Rgb {
+            r: self.r,
+            g: self.g,
+            b: self.b,
+        }
+    }
+}
+
+const VOID: Rgb = Rgb::new(0x02, 0x02, 0x04);
+const FUR_DARK: Rgb = Rgb::new(0x15, 0x15, 0x21);
+const FUR: Rgb = Rgb::new(0x24, 0x24, 0x36);
+const FUR_HI: Rgb = Rgb::new(0x3A, 0x39, 0x52);
+
+const EMBER_RED: Rgb = Rgb::new(0xFF, 0x2D, 0x00);
+const EMBER: Rgb = Rgb::new(0xFF, 0x6A, 0x00);
+const EMBER_HOT: Rgb = Rgb::new(0xFF, 0x8A, 0x00);
+const EMBER_CORE: Rgb = Rgb::new(0xFF, 0xC8, 0x57);
+const EMBER_HALO: Rgb = Rgb::new(0xFF, 0xE7, 0xA3);
+
+const TEXT: Rgb = Rgb::new(0xF7, 0xF1, 0xE1);
+const TEXT_DIM: Rgb = Rgb::new(0xA8, 0xA2, 0xB8);
+const LINE_DIM: Rgb = Rgb::new(0x3A, 0x39, 0x52);
+
+const HERO: &[&str] = &[
+    "        ╭────────╮              ╭╮        ╭╮",
+    "        │  >_    │           ╭──╯╰╮    ╭─╯╰──╮",
+    "        ╰────────╯         ╭─╯     ╰────╯     ╰╮",
+    "                         ╭╯   ◉          ◉     ╰╮",
+    "                         │       ╭──╮           │",
+    "                         │    ╰──╯  ╰──╯        │",
+    "                         ╰╮        ▄▄▄         ╭╯",
+    "                  ╭────────╯                 ╭─╯",
+    "                  ╰╮  ●     ●     ●   ╭──────╯",
+    "                   ╰──────────────────╯",
+];
+
+const BRAND: &[&str] = &[
+    " ██████╗ ██╗   ██╗ ██████╗ ██████╗ ██████╗ ",
+    "██╔═══██╗██║   ██║██╔═══██╗██╔══██╗██╔══██╗",
+    "██║   ██║██║   ██║██║   ██║██████╔╝██████╔╝",
+    "██║▄▄ ██║██║   ██║██║   ██║██╔══██╗██╔═══╝ ",
+    "╚██████╔╝╚██████╔╝╚██████╔╝██║  ██║██║     ",
+    " ╚══▀▀═╝  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝     ",
+];
+
+const STATES: &[&str] = &[
+    "🜂 waking ember tail",
+    "🧲 binding tool lattice",
+    "🪲 indexing repo shadows",
+    "🩻 priming diff lens",
+    "🧪 warming test harness",
+    "🪬 arming approval gate",
+    "🛸 syncing MCP channels",
+    "🪄 sharpening patch wand",
+];
+
+struct TerminalGuard;
+
+impl TerminalGuard {
+    fn enter(stdout: &mut Stdout) -> io::Result<Self> {
+        terminal::enable_raw_mode()?;
+
+        if let Err(err) = execute!(stdout, EnterAlternateScreen, Hide) {
+            let _ = terminal::disable_raw_mode();
+            return Err(err);
+        }
+
+        Ok(Self)
+    }
+}
+
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let mut stdout = io::stdout();
+        let _ = execute!(stdout, ResetColor, Show, LeaveAlternateScreen);
+        let _ = terminal::disable_raw_mode();
+    }
+}
+
+fn main() -> io::Result<()> {
+    let version = env!("CARGO_PKG_VERSION");
+
+    if !io::stdout().is_terminal() {
+        println!("QUORP v{version} >_");
+        return Ok(());
+    }
+
+    quorp_splash(version, Duration::from_millis(1_650))?;
+    println!("QUORP v{version} ready.");
+    Ok(())
+}
+
+fn quorp_splash(version: &str, duration: Duration) -> io::Result<()> {
+    let mut stdout = io::stdout();
+    let _guard = TerminalGuard::enter(&mut stdout)?;
+
+    let started = Instant::now();
+    let mut frame = 0usize;
+
+    while started.elapsed() < duration {
+        draw_frame(&mut stdout, version, frame)?;
+        stdout.flush()?;
+        thread::sleep(Duration::from_millis(48));
+        frame += 1;
+    }
+
+    Ok(())
+}
+
+fn draw_frame(stdout: &mut Stdout, version: &str, frame: usize) -> io::Result<()> {
+    let (term_w, term_h) = terminal::size().unwrap_or((96, 32));
+
+    queue!(
+        stdout,
+        SetBackgroundColor(VOID.color()),
+        Clear(ClearType::All)
+    )?;
+
+    if term_w < 72 || term_h < 24 {
+        return draw_compact(stdout, version, term_w, term_h, frame);
+    }
+
+    let hero_h = HERO.len() as u16;
+    let brand_h = BRAND.len() as u16;
+    let total_h = hero_h + 1 + brand_h + 4;
+    let mut y = term_h.saturating_sub(total_h) / 2;
+
+    draw_hero(stdout, term_w, y, frame)?;
+    y += hero_h + 1;
+
+    draw_brand(stdout, term_w, y, frame)?;
+    y += brand_h + 1;
+
+    let subtitle = format!(
+        "v{}  •  local agentic coding IDE  •  truecolor terminal core",
+        version
+    );
+    draw_gradient_line(
+        stdout,
+        center_x(term_w, &subtitle),
+        y,
+        &subtitle,
+        TEXT_DIM,
+        TEXT,
+        false,
+    )?;
+
+    y += 1;
+
+    let state = STATES[(frame / 5) % STATES.len()];
+    draw_gradient_line(
+        stdout,
+        center_x(term_w, state),
+        y,
+        state,
+        EMBER_CORE,
+        EMBER_HALO,
+        false,
+    )?;
+
+    y += 2;
+
+    let bar_w = term_w.saturating_sub(24).min(58).max(18);
+    let x = term_w.saturating_sub(bar_w) / 2;
+    draw_comet_bar(stdout, x, y, bar_w, frame)?;
+
+    queue!(stdout, ResetColor)?;
+    Ok(())
+}
+
+fn draw_compact(
+    stdout: &mut Stdout,
+    version: &str,
+    term_w: u16,
+    term_h: u16,
+    frame: usize,
+) -> io::Result<()> {
+    let y = term_h.saturating_sub(7) / 2;
+
+    draw_gradient_line(
+        stdout,
+        center_x(term_w, "QUORP"),
+        y,
+        "QUORP",
+        EMBER,
+        EMBER_HALO,
+        true,
+    )?;
+
+    let prompt = ">_  ember agent online";
+    draw_gradient_line(
+        stdout,
+        center_x(term_w, prompt),
+        y + 2,
+        prompt,
+        EMBER_RED,
+        EMBER_CORE,
+        false,
+    )?;
+
+    let version_line = format!("v{}  •  truecolor terminal core", version);
+    draw_gradient_line(
+        stdout,
+        center_x(term_w, &version_line),
+        y + 3,
+        &version_line,
+        TEXT_DIM,
+        TEXT,
+        false,
+    )?;
+
+    let bar_w = term_w.saturating_sub(12).min(42).max(12);
+    draw_comet_bar(stdout, term_w.saturating_sub(bar_w) / 2, y + 5, bar_w, frame)?;
+
+    Ok(())
+}
+
+fn draw_hero(stdout: &mut Stdout, term_w: u16, y: u16, frame: usize) -> io::Result<()> {
+    let hero_w = HERO.iter().map(|line| visible_width(line)).max().unwrap_or(0);
+    let x = term_w.saturating_sub(hero_w) / 2;
+
+    for (row, line) in HERO.iter().enumerate() {
+        draw_hero_line(stdout, x, y + row as u16, row, line, frame)?;
+    }
+
+    Ok(())
+}
+
+fn draw_hero_line(
+    stdout: &mut Stdout,
+    x: u16,
+    y: u16,
+    row: usize,
+    line: &str,
+    frame: usize,
+) -> io::Result<()> {
+    let pulse = pulse(frame, 0.0);
+    let tail_pulse = pulse(frame, row as f32 * 0.33);
+    let mut col = 0u16;
+
+    queue!(
+        stdout,
+        MoveTo(x, y),
+        SetBackgroundColor(VOID.color()),
+        SetAttribute(Attribute::Bold)
+    )?;
+
+    for ch in line.chars() {
+        let prompt_zone = row <= 2 && col <= 20;
+        let fg = match ch {
+            '>' | '_' => lerp(EMBER_HOT, EMBER_HALO, pulse),
+            '◉' => lerp(EMBER_HOT, EMBER_HALO, pulse),
+            '●' => lerp(EMBER, EMBER_CORE, tail_pulse),
+            '▄' => lerp(FUR_HI, EMBER_CORE, 0.35),
+            c if prompt_zone && is_box(c) => lerp(EMBER, EMBER_CORE, pulse),
+            c if is_box(c) => lerp(FUR, FUR_HI, 0.55),
+            c if c == '╭' || c == '╮' || c == '╰' || c == '╯' => FUR_HI,
+            ' ' => FUR_DARK,
+            _ => FUR,
+        };
+
+        queue!(stdout, SetForegroundColor(fg.color()), Print(ch))?;
+        col = col.saturating_add(char_width(ch));
+    }
+
+    queue!(stdout, ResetColor, SetAttribute(Attribute::Reset))?;
+    Ok(())
+}
+
+fn draw_brand(stdout: &mut Stdout, term_w: u16, y: u16, frame: usize) -> io::Result<()> {
+    let brand_w = BRAND.iter().map(|line| visible_width(line)).max().unwrap_or(0);
+    let x = term_w.saturating_sub(brand_w) / 2;
+
+    for (i, line) in BRAND.iter().enumerate() {
+        let phase = pulse(frame, i as f32 * 0.18);
+        let left = lerp(EMBER_RED, EMBER, phase * 0.45);
+        let right = lerp(EMBER_HOT, EMBER_HALO, phase);
+        draw_gradient_line(stdout, x, y + i as u16, line, left, right, true)?;
+    }
+
+    Ok(())
+}
+
+fn draw_gradient_line(
+    stdout: &mut Stdout,
+    x: u16,
+    y: u16,
+    text: &str,
+    left: Rgb,
+    right: Rgb,
+    bold: bool,
+) -> io::Result<()> {
+    let chars: Vec<char> = text.chars().collect();
+    let denom = chars.len().saturating_sub(1).max(1) as f32;
+
+    queue!(stdout, MoveTo(x, y), SetBackgroundColor(VOID.color()))?;
+
+    if bold {
+        queue!(stdout, SetAttribute(Attribute::Bold))?;
+    }
+
+    for (i, ch) in chars.iter().enumerate() {
+        let t = i as f32 / denom;
+        let fg = lerp(left, right, t);
+        queue!(stdout, SetForegroundColor(fg.color()), Print(*ch))?;
+    }
+
+    queue!(stdout, ResetColor, SetAttribute(Attribute::Reset))?;
+    Ok(())
+}
+
+fn draw_comet_bar(
+    stdout: &mut Stdout,
+    x: u16,
+    y: u16,
+    width: u16,
+    frame: usize,
+) -> io::Result<()> {
+    let width = width.max(8);
+    let head = ((frame as u16).wrapping_mul(3)) % width;
+
+    queue!(
+        stdout,
+        MoveTo(x, y),
+        SetBackgroundColor(VOID.color()),
+        SetAttribute(Attribute::Bold)
+    )?;
+
+    for i in 0..width {
+        let raw_dist = (head as i32 - i as i32).abs();
+        let wrap_dist = width as i32 - raw_dist;
+        let dist = raw_dist.min(wrap_dist).max(0) as u16;
+
+        let (glyph, fg) = if dist == 0 {
+            ('━', EMBER_HALO)
+        } else if dist <= 2 {
+            ('━', EMBER_CORE)
+        } else if dist <= 5 {
+            ('━', lerp(EMBER_HOT, EMBER, dist as f32 / 5.0))
+        } else {
+            ('─', LINE_DIM)
+        };
+
+        queue!(stdout, SetForegroundColor(fg.color()), Print(glyph))?;
+    }
+
+    queue!(stdout, ResetColor, SetAttribute(Attribute::Reset))?;
+    Ok(())
+}
+
+fn pulse(frame: usize, phase: f32) -> f32 {
+    let x = frame as f32 * 0.42 + phase;
+    (x.sin() + 1.0) * 0.5
+}
+
+fn lerp(a: Rgb, b: Rgb, t: f32) -> Rgb {
+    let t = t.clamp(0.0, 1.0);
+    let r = a.r as f32 + (b.r as f32 - a.r as f32) * t;
+    let g = a.g as f32 + (b.g as f32 - a.g as f32) * t;
+    let b_ = a.b as f32 + (b.b as f32 - a.b as f32) * t;
+
+    Rgb::new(r.round() as u8, g.round() as u8, b_.round() as u8)
+}
+
+fn is_box(ch: char) -> bool {
+    matches!(
+        ch,
+        '╭' | '╮' | '╰' | '╯' | '─' | '│' | '╲' | '╱' | '━' | '═' | '║'
+    )
+}
+
+fn visible_width(text: &str) -> u16 {
+    UnicodeWidthStr::width(text).min(u16::MAX as usize) as u16
+}
+
+fn center_x(term_w: u16, text: &str) -> u16 {
+    term_w.saturating_sub(visible_width(text)) / 2
+}
+
+fn char_width(ch: char) -> u16 {
+    UnicodeWidthChar::width(ch).unwrap_or(1).max(1) as u16
+}
+```
+
+---
+
+## 13. Build roadmap
+
+**Phase 1: Identity shell**
+
+Ship `quorp` with splash, theme system, truecolor renderer, composer, command history, terminal capability detection, and `emoji=auto`.
+
+**Phase 2: Agent transcript**
+
+Add streaming model adapter, transcript cards, reasoning summaries, `/plan`, `/clear`, `/theme`, `/permissions`, `/model`.
+
+**Phase 3: Tools**
+
+Add `read_file`, `search_text`, `git_status`, `git_diff`, `apply_patch`, `shell`, `run_tests`. Every tool produces a visible card.
+
+**Phase 4: Diffs**
+
+Add unified diff parser, green/red backgrounds, word-level diff, approval flow, undo/checkpoints.
+
+**Phase 5: Sandboxing**
+
+Add read-only/workspace-write/full-auto/danger modes, network gate, outside-workspace gate, per-tool policy.
+
+**Phase 6: MCP and hooks**
+
+Add MCP client configuration, `/mcp`, hook lifecycle, plugin directory, project trust.
+
+**Phase 7: Premium polish**
+
+Add optional mascot pixel mode through Kitty/iTerm/Sixel, OSC 8 clickable file paths, terminal profile presets, and a `quorp doctor` command that scores the user’s terminal for truecolor, emoji width, image protocol, clipboard, and font fallback.
+
+[1]: https://ratatui.rs/concepts/backends/ "Backends | Ratatui"
+[2]: https://github.com/openai/codex "GitHub - openai/codex: Lightweight coding agent that runs in your terminal · GitHub"
+[3]: https://wezterm.org/index.html "WezTerm - Wez's Terminal Emulator"
+[4]: https://github.com/openai/codex/blob/main/docs/tui-alternate-screen.md "codex/docs/tui-alternate-screen.md at main · openai/codex · GitHub"
+[5]: https://github.com/openai/codex/blob/main/docs/tui-stream-chunking-review.md "codex/docs/tui-stream-chunking-review.md at main · openai/codex · GitHub"
+[6]: https://developers.openai.com/api/docs/guides/function-calling "Function calling | OpenAI API"
+[7]: https://developers.openai.com/api/docs/guides/reasoning-best-practices "Reasoning best practices | OpenAI API"
+[8]: https://developers.openai.com/api/docs/guides/streaming-responses "Streaming API responses | OpenAI API"
+[9]: https://developers.openai.com/codex/agent-approvals-security "Agent approvals & security – Codex | OpenAI Developers"
+[10]: https://developers.openai.com/codex/mcp "Model Context Protocol – Codex | OpenAI Developers"
+[11]: https://developers.openai.com/codex/hooks "Hooks – Codex | OpenAI Developers"
+

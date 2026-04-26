@@ -1,0 +1,21 @@
+version = 1
+
+[[zones]]
+path = "target/**"
+policy = "never-edit"
+reason = "Cargo build output."
+
+[[zones]]
+path = ".quorp-runs/**"
+policy = "never-edit"
+reason = "Runtime output and diagnostics."
+
+[[zones]]
+path = "benchmark/**/workspace/**/.quorp-cargo-target/**"
+policy = "never-edit"
+reason = "Benchmark cargo cache."
+
+[[zones]]
+path = "Cargo.lock"
+policy = "mechanical"
+reason = "Only update through cargo when dependency changes require it."

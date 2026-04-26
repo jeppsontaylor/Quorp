@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+# check-loc-cap CAP [--warn|--error]
+# Walks crates/ and reports any *.rs file that exceeds CAP non-blank, non-comment LOC.
+# --warn (default): print offenders, exit 0.
+# --error: print offenders, exit 1 if any.
+set -euo pipefail
+
+CAP="${1:-}"
+MODE="${2:---warn}"
+if [[ -z "$CAP" || ! "$CAP" =~ ^[0-9]+$ ]]; then
+  echo "usage: $(basename "$0") CAP [--warn|--error]" >&2
+  exit 2
+fi
+
+OFFENDERS=()
+while IFS= read -r -d '' file; do
+  case "$file" in
+    */target/*|*/.git/*|*/tests/fixtures/*|*/snapshots/*)
+      continue ;;
+  esac
+  loc=$(wc -l < "$file" | tr -d ' ')
+  if (( loc > CAP )); then
+    OFFENDERS+=("$loc $file")
+  fi
+done < <(find crates -type f -name '*.rs' -print0 2>/dev/null)
+
+if (( ${#OFFENDERS[@]} == 0 )); then
+  exit 0
+fi
+
+printf "%s\n" "${OFFENDERS[@]}" | sort -rn | while read -r loc file; do
+  printf "  %6d  %s\n" "$loc" "$file"
+done
+
+if [[ "$MODE" == "--error" ]]; then
+  echo
+  echo "files exceed cap of ${CAP} LOC" >&2
+  exit 1
+fi

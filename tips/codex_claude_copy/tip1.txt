@@ -1,0 +1,934 @@
+# QUORP technical report: Rust-native, sharp, brilliant coding IDE + terminal agent
+
+I would build **QUORP** as a Rust-first product, but **not as a conventional widget-heavy Rust TUI**. The winning design is a **terminal-native text compositor**: raw ANSI/truecolor output, carefully buffered rendering, Unicode-aware layout, high-contrast branding, fast streaming cards, and optional pixel-image protocols for terminals that support them.
+
+One important note: the “Rust TUI makes text pixelated” concern is usually not Rust itself. Terminal apps emit character cells and ANSI styling; the terminal emulator renders the glyphs. The sharpness comes from the terminal, font, DPI scaling, and how aggressively the app redraws. Codex CLI is officially described by OpenAI as open source and “built in Rust for speed and efficiency,” so the sharp look you like is compatible with Rust; the product decision is to avoid a clunky widget-grid aesthetic, not to avoid Rust. ([OpenAI Developers][1])
+
+I also packaged a buildable Rust splash-screen prototype here: [Download the QUORP splash Rust project](sandbox:/mnt/data/quorp_splash_rust.zip).
+
+---
+
+## 1. What I see in the mascot
+
+Your mascot has a very strong identity:
+
+* A dark, rounded, slightly mischievous creature.
+* Matte charcoal body with subtle bluish-purple highlights.
+* Hot orange glowing eyes.
+* Orange rim light around ears, cheeks, body edge, and tail.
+* A glowing terminal prompt mark on the left: `>_`.
+* A long tail ending in three orange light bulbs.
+* Overall feeling: **cute, dangerous, fast, terminal-native, agentic, night-mode, cyber-pet**.
+
+That gives QUORP a clear visual language:
+
+```text
+black glass + lava orange + electric cyan + violet agent glow + green/red diff cards
+```
+
+The mascot should not be treated like a static logo only. It should become a **stateful terminal character**:
+
+| State             | Mascot behavior                                |
+| ----------------- | ---------------------------------------------- |
+| Loading           | Eyes pulse orange, tail bulbs flicker          |
+| Thinking          | Eyes narrow, violet/cyan aura appears          |
+| Tool call running | Tail bulbs animate left-to-right               |
+| Patch proposed    | Green glow on one side, red glow on the other  |
+| Tests pass        | Tail bulbs turn acid green                     |
+| Tests fail        | Eyes flash red/orange                          |
+| Permission needed | Prompt glyph `❯_` flashes amber                |
+| Idle              | Calm charcoal body, slow orange breathing glow |
+
+---
+
+# 2. Core product architecture
+
+The best architecture is:
+
+```text
+QUORP Core Agent Engine
+        │
+        ├── Terminal Text Compositor
+        │      raw ANSI + crossterm/termwiz-style input
+        │
+        ├── Desktop IDE Shell
+        │      GPUI or Tauri + Monaco
+        │
+        ├── Tool Runtime
+        │      shell, patch, git, tests, LSP, MCP
+        │
+        └── Event Log
+               replay, telemetry, debugging, session restore
+```
+
+I would **not** make the terminal UI a Ratatui-first application. Ratatui is still useful to study, but for QUORP I would build a custom **ANSI scene renderer** that emits styled spans, cards, tables, gutters, diff backgrounds, and animations. Crossterm is still a strong low-level option because it is a pure-Rust terminal manipulation library for cross-platform text interfaces. ([Docs.rs][2])
+
+The key idea: **the core never prints text directly**. It emits structured UI events.
+
+```rust
+pub enum QuorpEvent {
+    UserPrompt {
+        id: TurnId,
+        text: String,
+    },
+    AssistantDelta {
+        id: TurnId,
+        markdown_delta: String,
+    },
+    ReasoningSummary {
+        id: TurnId,
+        title: String,
+        bullets: Vec<String>,
+    },
+    ToolRequested {
+        id: ToolCallId,
+        name: String,
+        args_preview: String,
+        risk: RiskClass,
+    },
+    ToolStarted {
+        id: ToolCallId,
+    },
+    ToolOutputDelta {
+        id: ToolCallId,
+        stream: ToolStream,
+        text: String,
+    },
+    ToolFinished {
+        id: ToolCallId,
+        status: ToolStatus,
+        elapsed_ms: u64,
+    },
+    PatchProposed {
+        id: PatchId,
+        files: Vec<FilePatch>,
+    },
+    PatchApplied {
+        id: PatchId,
+        result: PatchApplyResult,
+    },
+    ApprovalNeeded {
+        id: ApprovalId,
+        message: String,
+        choices: Vec<ApprovalChoice>,
+    },
+}
+```
+
+This event-first architecture lets you drive:
+
+* a beautiful terminal agent,
+* a native IDE,
+* a webview IDE,
+* a replay viewer,
+* JSONL logs,
+* tests,
+* screenshots,
+* session restore.
+
+---
+
+# 3. Recommended stack
+
+## 3.1 Rust core
+
+| Layer          | Recommendation                                      |
+| -------------- | --------------------------------------------------- |
+| Async runtime  | `tokio`                                             |
+| Error handling | `anyhow`, `thiserror`, `miette`, `color-eyre`       |
+| Serialization  | `serde`, `serde_json`, `toml`, `schemars`           |
+| CLI args       | `clap`                                              |
+| Paths          | `camino`, `directories`                             |
+| Event IDs      | `uuid`, `time`                                      |
+| Caching        | `moka`, `lru`, `dashmap`                            |
+| Logging        | `tracing`, `tracing-subscriber`, `tracing-appender` |
+
+## 3.2 Terminal renderer
+
+| Need                                | Stack                                     |
+| ----------------------------------- | ----------------------------------------- |
+| Raw ANSI rendering                  | Custom QUORP renderer                     |
+| Terminal control                    | `crossterm`                               |
+| Lower-level terminal control option | `termwiz`                                 |
+| Unicode width                       | `unicode-width`, `unicode-segmentation`   |
+| ANSI parsing/testing                | `vte`, `strip-ansi-escapes`               |
+| Clipboard                           | `arboard`                                 |
+| Terminal screenshot tests           | `vt100`, PTY tests                        |
+| High-speed Linux path               | direct ANSI writer with buffered `stdout` |
+
+This is the big difference from a “normal Rust TUI.” QUORP should have a **scene graph**, but not a heavy rectangular widget framework.
+
+```text
+Scene
+  ├── Header
+  ├── Transcript
+  │     ├── UserCard
+  │     ├── AssistantCard
+  │     ├── ReasoningCard
+  │     ├── ToolCard
+  │     └── PatchCard
+  ├── DiffReview
+  ├── Composer
+  └── StatusLine
+```
+
+Each scene node renders into styled spans:
+
+```rust
+pub struct Span {
+    pub text: String,
+    pub fg: Option<Rgb>,
+    pub bg: Option<Rgb>,
+    pub bold: bool,
+    pub italic: bool,
+    pub dim: bool,
+    pub underline: bool,
+}
+
+pub struct CellLine {
+    pub spans: Vec<Span>,
+}
+```
+
+## 3.3 Native desktop IDE
+
+There are two serious options.
+
+### Option A: GPUI native Rust IDE
+
+Use this if you want the sharpest, most premium Rust-native long-term IDE. GPUI is a Rust UI framework from the creators of Zed. ([Gpui][3])
+
+```text
+Rust
+GPUI
+Tree-sitter
+LSP
+Rope text buffer
+gix/git2
+imara-diff
+Tokio
+SQLite
+MCP
+```
+
+Best for:
+
+* native sharp text,
+* custom panels,
+* smooth animation,
+* proper IDE layout,
+* Rust-first brand identity.
+
+### Option B: Tauri + Monaco fastest polished IDE
+
+Use this if you want to ship a desktop IDE faster. Tauri lets you build cross-platform apps with Rust application logic and web UI, and Monaco is the browser-based editor that powers VS Code. ([Tauri][4])
+
+```text
+Rust backend
+Tauri 2
+React or Svelte
+Monaco Editor
+xterm.js
+Tailwind
+Rust agent core
+Tree-sitter/LSP bridge
+MCP
+```
+
+Best for:
+
+* fast polish,
+* great editor immediately,
+* Monaco diff editor,
+* easy CSS theming,
+* web frontend velocity.
+
+My recommendation: **terminal compositor first**, then **GPUI** for the real QUORP IDE. Use Tauri + Monaco only if speed-to-market is more important than Rust-native identity.
+
+---
+
+# 4. Image rendering strategy for the mascot
+
+For normal terminals, QUORP should use the **text mascot** below. For premium terminals, support an optional image mode:
+
+```text
+quorp --splash=text       # always text fallback
+quorp --splash=image      # try terminal image protocol
+quorp --splash=auto       # image when supported, text otherwise
+```
+
+Kitty’s terminal graphics protocol is designed to let terminal clients render raster graphics at pixel positions, which is exactly what you would use to show the actual mascot PNG in a terminal splash. ([Kovid Goyal's Software Projects][5])
+
+Recommended hierarchy:
+
+| Mode                    | UX                                    |
+| ----------------------- | ------------------------------------- |
+| Kitty graphics          | Highest fidelity mascot               |
+| Sixel                   | Good fallback in compatible terminals |
+| iTerm2 inline image     | macOS fallback                        |
+| Chafa-style ANSI blocks | Semi-graphical fallback               |
+| Pure text mascot        | Universal fallback                    |
+
+But for the startup screen I would default to **text mode** because it feels productized, fast, and shell-native.
+
+---
+
+# 5. Color system
+
+## 5.1 QUORP master palette
+
+| Role                 |           Name |       Hex |
+| -------------------- | -------------: | --------: |
+| App background       |     Void Black | `#06070A` |
+| Alternate background |      Ink Black | `#0B0F14` |
+| Surface              |    Night Panel | `#111827` |
+| Surface hover        |   Carbon Hover | `#1D2433` |
+| Border               |     Steel Edge | `#2A3446` |
+| Text primary         |     Moon White | `#E6EDF3` |
+| Text strong          |          White | `#FFFFFF` |
+| Text muted           |           Mist | `#98A2B3` |
+| Text dim             |          Slate | `#667085` |
+| Mascot body          | Quorp Charcoal | `#262A37` |
+| Mascot highlight     |    Quorp Smoke | `#505670` |
+| Mascot shadow        |   Quorp Shadow | `#12141C` |
+| Mascot eye           |       Lava Eye | `#FF5E00` |
+| Mascot glow          |    Solar Amber | `#FFB500` |
+| Primary accent       |  Electric Cyan | `#00E5FF` |
+| Secondary accent     |     Hyper Blue | `#3B82F6` |
+| Agent accent         |    Neon Violet | `#A855F7` |
+| Loud accent          |    Hot Magenta | `#FF3DCE` |
+| Success              |     Acid Green | `#39FF88` |
+| Warning              |   Laser Yellow | `#FDE047` |
+| Danger               |      Laser Red | `#FF4D6D` |
+
+## 5.2 Diff colors
+
+This should be one of QUORP’s signature surfaces.
+
+| Diff part                 |       Hex |
+| ------------------------- | --------: |
+| Added line background     | `#062E18` |
+| Added token background    | `#135C36` |
+| Added gutter              | `#22C55E` |
+| Added text                | `#E6FFF2` |
+| Deleted line background   | `#350A15` |
+| Deleted token background  | `#681A2A` |
+| Deleted gutter            | `#EF4444` |
+| Deleted text              | `#FFE4E9` |
+| Modified line background  | `#2A1F05` |
+| Modified token background | `#5C4308` |
+| Hunk header background    | `#111827` |
+| Hunk header text          | `#93C5FD` |
+| File header text          | `#67E8F9` |
+
+Example patch card:
+
+```text
+╭─ src/agent/tool_runner.rs ───────────────────────── +42 -17
+│ Reason: add timeout handling and structured tool errors
+│
+│ @@ run_tool(...)
+│ - let output = command.output().await?;
+│ + let output = timeout(config.tool_timeout, command.output()).await??;
+│
+│ [Approve file] [Approve hunk] [Reject hunk] [Open in editor]
+╰─────────────────────────────────────────────────────────────
+```
+
+---
+
+# 6. Tool-calling UX
+
+QUORP should make tool calls visible, sexy, and trustworthy.
+
+Codex documents approval modes, permissions, and sandboxing as major controls, and Claude Code documents interactive patterns like slash commands, bash mode, background commands, transcript viewer, and task list. QUORP should learn from those patterns while building its own visual identity. ([OpenAI Developers][6])
+
+## 6.1 Tool call card
+
+```text
+╭─ 🪄 tool: shell ───────────────────────────── 2.4s
+│ risk: workspace-write
+│ cwd:  ./quorp
+│
+│ cargo test -p quorp-patch
+│
+│ ✓ patch_apply_roundtrip
+│ ✓ reject_outside_workspace
+│ ✓ token_diff_highlight
+│
+│ status: passed
+╰────────────────────────────────────────────────────
+```
+
+## 6.2 Risk colors
+
+| Risk               |     Color | Behavior                      |
+| ------------------ | --------: | ----------------------------- |
+| Read-only          | `#60A5FA` | Auto-run                      |
+| Workspace write    | `#39FF88` | Auto-run in normal agent mode |
+| Shell read         | `#FDE047` | Usually auto-run              |
+| Shell write        | `#FB923C` | Ask if command is unfamiliar  |
+| Network            | `#A855F7` | Ask                           |
+| Destructive        | `#FF4D6D` | Always ask                    |
+| Outside workspace  | `#FF4D6D` | Always ask                    |
+| Secret access      | `#FF3DCE` | Deny or ask hard              |
+| Privileged command | `#FF4D6D` | Deny by default               |
+
+## 6.3 Permission modes
+
+```text
+/permissions read-only
+/permissions workspace-auto
+/permissions confirm-everything
+/permissions full-access
+```
+
+| Mode               | Behavior                                  |
+| ------------------ | ----------------------------------------- |
+| Read-only          | Can inspect, search, plan, explain        |
+| Workspace Auto     | Can edit repo and run safe local commands |
+| Confirm Everything | Every tool call prompts                   |
+| Full Access        | For trusted disposable sandboxes only     |
+
+---
+
+# 7. Reasoning display
+
+Do **not** show raw hidden chain-of-thought. Show a crisp reasoning summary.
+
+```text
+╭─ 🧿 reasoning summary ─────────────────────────────
+│ I found the failing tests in quorp-patch.
+│ The bug appears to be hunk offset recalculation.
+│ I’ll patch the offset mapper, then run focused tests.
+╰────────────────────────────────────────────────────
+```
+
+Reasoning cards:
+
+| Card        | Emoji |      Color |
+| ----------- | ----: | ---------: |
+| Plan        |  `🪶` |     Violet |
+| Observation |  `🧿` |       Cyan |
+| Decision    |  `🜂` |      Amber |
+| Tool        |  `🪄` |       Cyan |
+| Patch       |  `🧬` |      Green |
+| Risk        | `🕳️` | Red/Yellow |
+| Done        |  `🪐` | Green/Cyan |
+
+---
+
+# 8. Less-common emoji system
+
+Use emojis as **status glyphs**, not clutter.
+
+| Emoji | Use                              |
+| ----- | -------------------------------- |
+| `🪬`  | terminal glyph attunement        |
+| `🧿`  | sandbox/security/permissions     |
+| `🜂`  | hot patch forge / execution      |
+| `🪐`  | repo orbit / indexing            |
+| `🧬`  | symbol graph / code intelligence |
+| `🪄`  | tool call                        |
+| `🫧`  | UI polish / rendering            |
+| `🪶`  | memory/rules                     |
+| `🕳️` | context tunnel / risk            |
+| `🛸`  | agent bus / background worker    |
+| `🪲`  | bug hunt                         |
+| `🧯`  | safety stop                      |
+| `🪙`  | token budget                     |
+| `🧩`  | dependency graph                 |
+
+Important production note: emoji width varies by terminal and OS. Critical UI alignment should use ASCII/Unicode symbols, and emojis should live in flexible labels. Use `unicode-width` and `unicode-segmentation` in production.
+
+---
+
+# 9. Code intelligence stack
+
+Use Tree-sitter for structural parsing. Tree-sitter is an incremental parsing library that can build syntax trees and efficiently update them as source changes. ([Tree-sitter][7])
+
+| Need                   | Stack                                                                    |
+| ---------------------- | ------------------------------------------------------------------------ |
+| Incremental parsing    | `tree-sitter`                                                            |
+| Language grammars      | `tree-sitter-rust`, `tree-sitter-typescript`, `tree-sitter-python`, etc. |
+| Diagnostics/completion | LSP                                                                      |
+| LSP types              | `lsp-types`                                                              |
+| LSP server/client      | `tower-lsp`, custom client                                               |
+| Text buffer            | `ropey`, `xi-rope`                                                       |
+| File watching          | `notify`                                                                 |
+| Project walking        | `ignore`, `walkdir`, `globset`                                           |
+| Search                 | `grep`, `ripgrep` subprocess                                             |
+| Index                  | `tantivy`, `sqlite`, `rusqlite`                                          |
+
+MCP should be the standard external-tool bridge. MCP is documented as an open-source standard for connecting AI applications to external systems, tools, workflows, and data sources. ([Model Context Protocol][8])
+
+---
+
+# 10. Recommended repo structure
+
+```text
+quorp/
+  crates/
+    quorp-core/
+      src/
+        agent_loop.rs
+        model.rs
+        events.rs
+        session.rs
+
+    quorp-terminal/
+      src/
+        ansi.rs
+        compositor.rs
+        cards.rs
+        splash.rs
+        input.rs
+
+    quorp-tools/
+      src/
+        registry.rs
+        shell.rs
+        files.rs
+        grep.rs
+        git.rs
+        tests.rs
+        mcp.rs
+
+    quorp-patch/
+      src/
+        diff.rs
+        patch.rs
+        apply.rs
+        review.rs
+
+    quorp-lang/
+      src/
+        tree_sitter.rs
+        lsp.rs
+        symbols.rs
+        diagnostics.rs
+
+    quorp-index/
+      src/
+        lexical.rs
+        symbols.rs
+        embeddings.rs
+
+    quorp-theme/
+      src/
+        palette.rs
+        theme.rs
+        tmtheme.rs
+
+    quorp-desktop/
+      src/
+        main.rs
+
+    quorp-cli/
+      src/
+        main.rs
+```
+
+---
+
+# 11. QUORP splash screen design
+
+The load screen should look like this conceptually:
+
+```text
+╭────────────────────────────────────────────────────────────────────────╮
+│                                                                        │
+│        ██████╗ ██╗   ██╗ ██████╗ ██████╗ ██████╗                     │
+│       ██╔═══██╗██║   ██║██╔═══██╗██╔══██╗██╔══██╗                    │
+│       ██║   ██║██║   ██║██║   ██║██████╔╝██████╔╝                    │
+│       ██║▄▄ ██║██║   ██║██║   ██║██╔══██╗██╔═══╝                     │
+│       ╚██████╔╝╚██████╔╝╚██████╔╝██║  ██║██║                         │
+│        ╚══▀▀═╝  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝                          │
+│                                                                        │
+│             ❯_       │       ●                 ●       │              │
+│                      │          ╲    ╭──╮    ╱          │              │
+│                      │           ╲__╱    ╲__╱           │              │
+│                      │             ╰─╮  ╭─╯             │              │
+│                       ╲               ╰──╯              ╱              │
+│                         ╰──╮                    ╭──╯                  │
+│                             ╰────╮  ╭────╯                            │
+│                                   ╰──╮                                 │
+│                                      ╰──●──●──●                        │
+│                                                                        │
+│        ╭────────────────────────────────────────────────────╮          │
+│        │ QUORP v0.1.0 · loading local code intelligence     │          │
+│        │ 🪐 mapping repo orbit                              │          │
+│        │ ████████████████████░░░░░░░░░░░░░░░░  54%          │          │
+│        ╰────────────────────────────────────────────────────╯          │
+╰────────────────────────────────────────────────────────────────────────╯
+```
+
+The exact image mascot can be displayed later using image protocols, but the text version should be the default because it is universal, fast, and very “agent CLI.”
+
+---
+
+# 12. Buildable QUORP splash code
+
+The project zip above contains this exact code. It is intentionally **pure ANSI + Rust stdlib** so it does not depend on a TUI crate.
+
+## `Cargo.toml`
+
+```toml
+[package]
+name = "quorp-splash"
+version = "0.1.0"
+edition = "2021"
+description = "A pure-ANSI, Rust-powered QUORP terminal load screen with a glowing text mascot."
+license = "MIT"
+
+[dependencies]
+```
+
+## `src/main.rs`
+
+```rust
+use std::{env, io::{self, Write}, thread, time::Duration};
+
+#[derive(Clone, Copy)]
+struct Rgb(u8, u8, u8);
+
+impl Rgb {
+    fn fg(self) -> String { format!("\x1b[38;2;{};{};{}m", self.0, self.1, self.2) }
+    fn bg(self) -> String { format!("\x1b[48;2;{};{};{}m", self.0, self.1, self.2) }
+}
+
+const RESET: &str = "\x1b[0m";
+const BOLD: &str = "\x1b[1m";
+const DIM: &str = "\x1b[2m";
+const ITALIC: &str = "\x1b[3m";
+const HIDE_CURSOR: &str = "\x1b[?25l";
+const SHOW_CURSOR: &str = "\x1b[?25h";
+const CLEAR: &str = "\x1b[2J";
+
+const INK_950: Rgb = Rgb(6, 7, 10);
+const INK_900: Rgb = Rgb(11, 15, 20);
+const PANEL: Rgb = Rgb(17, 24, 39);
+const STEEL: Rgb = Rgb(42, 52, 70);
+const TEXT: Rgb = Rgb(230, 237, 243);
+const MUTED: Rgb = Rgb(152, 162, 179);
+const SLATE: Rgb = Rgb(102, 112, 133);
+const CYAN: Rgb = Rgb(0, 229, 255);
+const BLUE: Rgb = Rgb(59, 130, 246);
+const VIOLET: Rgb = Rgb(168, 85, 247);
+const MAGENTA: Rgb = Rgb(255, 61, 206);
+const ORANGE: Rgb = Rgb(255, 94, 0);
+const AMBER: Rgb = Rgb(255, 181, 0);
+const YELLOW: Rgb = Rgb(253, 224, 71);
+const GREEN: Rgb = Rgb(57, 255, 136);
+const RED: Rgb = Rgb(255, 77, 109);
+const BODY: Rgb = Rgb(38, 42, 55);
+const BODY_HI: Rgb = Rgb(80, 86, 112);
+const BODY_SHADOW: Rgb = Rgb(18, 20, 28);
+
+struct TerminalGuard;
+impl TerminalGuard {
+    fn enter() -> io::Result<Self> {
+        let mut out = io::stdout();
+        write!(out, "{}{}{}", HIDE_CURSOR, CLEAR, goto(1, 1))?;
+        out.flush()?;
+        Ok(Self)
+    }
+}
+impl Drop for TerminalGuard {
+    fn drop(&mut self) {
+        let _ = write!(io::stdout(), "{}{}", RESET, SHOW_CURSOR);
+        let _ = io::stdout().flush();
+    }
+}
+
+#[derive(Clone, Copy)]
+enum Weight { Regular, Bold, Dim, Italic }
+
+struct Span<'a> {
+    text: &'a str,
+    fg: Rgb,
+    bg: Option<Rgb>,
+    weight: Weight,
+}
+impl<'a> Span<'a> {
+    fn new(text: &'a str, fg: Rgb) -> Self {
+        Self { text, fg, bg: None, weight: Weight::Regular }
+    }
+    fn bg(mut self, bg: Rgb) -> Self { self.bg = Some(bg); self }
+    fn bold(mut self) -> Self { self.weight = Weight::Bold; self }
+    fn dim(mut self) -> Self { self.weight = Weight::Dim; self }
+    fn italic(mut self) -> Self { self.weight = Weight::Italic; self }
+}
+
+type Line<'a> = Vec<Span<'a>>;
+
+fn main() -> io::Result<()> {
+    let _guard = TerminalGuard::enter()?;
+    let version = env!("CARGO_PKG_VERSION");
+    let total_frames = 44;
+
+    for frame in 0..total_frames {
+        render(frame, total_frames, version)?;
+        thread::sleep(Duration::from_millis(42));
+    }
+
+    render_ready(version)?;
+    thread::sleep(Duration::from_millis(780));
+    Ok(())
+}
+
+fn render(frame: usize, total_frames: usize, version: &str) -> io::Result<()> {
+    let (cols, rows) = term_size();
+    let mut out = io::stdout();
+    write!(out, "{}{}", CLEAR, goto(1, 1))?;
+
+    paint_background(&mut out, cols, rows)?;
+    draw_frame(&mut out, cols, rows, frame)?;
+
+    let top = if rows > 34 { 3 } else { 1 };
+    draw_brand(&mut out, cols, top, frame)?;
+    draw_mascot(&mut out, cols, top + 8, frame)?;
+    draw_loading_panel(&mut out, cols, rows.saturating_sub(8), frame, total_frames, version)?;
+
+    out.flush()
+}
+
+fn render_ready(version: &str) -> io::Result<()> {
+    let (cols, rows) = term_size();
+    let mut out = io::stdout();
+    write!(out, "{}{}", CLEAR, goto(1, 1))?;
+    paint_background(&mut out, cols, rows)?;
+    draw_frame(&mut out, cols, rows, 99)?;
+    draw_brand(&mut out, cols, if rows > 34 { 3 } else { 1 }, 99)?;
+    draw_mascot(&mut out, cols, if rows > 34 { 11 } else { 9 }, 99)?;
+    let ready = format!("🜂 QUORP v{} is awake — enter the code orbit", version);
+    print_centered(&mut out, rows.saturating_sub(4), &gradient(&ready, &[ORANGE, AMBER, YELLOW, CYAN], 2), visible_width(&ready), cols)?;
+    print_centered(&mut out, rows.saturating_sub(2), &format!("{}{}press any command to begin{}", MUTED.fg(), ITALIC, RESET), 26, cols)?;
+    out.flush()
+}
+
+fn draw_brand(out: &mut impl Write, cols: u16, start_row: u16, frame: usize) -> io::Result<()> {
+    let logo = [
+        " ██████╗ ██╗   ██╗ ██████╗ ██████╗ ██████╗ ",
+        "██╔═══██╗██║   ██║██╔═══██╗██╔══██╗██╔══██╗",
+        "██║   ██║██║   ██║██║   ██║██████╔╝██████╔╝",
+        "██║▄▄ ██║██║   ██║██║   ██║██╔══██╗██╔═══╝ ",
+        "╚██████╔╝╚██████╔╝╚██████╔╝██║  ██║██║     ",
+        " ╚══▀▀═╝  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝     ",
+    ];
+    for (i, line) in logo.iter().enumerate() {
+        let rendered = gradient(line, &[ORANGE, AMBER, MAGENTA, VIOLET, CYAN], frame + i);
+        print_centered(out, start_row + i as u16, &rendered, line.chars().count(), cols)?;
+    }
+
+    let sub = "agentic code IDE · diff forge · terminal-native glow";
+    let line = format!("{}{}{}{}", DIM, CYAN.fg(), sub, RESET);
+    print_centered(out, start_row + 6, &line, sub.len(), cols)
+}
+
+fn draw_mascot(out: &mut impl Write, cols: u16, start_row: u16, frame: usize) -> io::Result<()> {
+    let blink = frame % 18 == 0;
+    let pulse = if frame % 8 < 4 { AMBER } else { ORANGE };
+    let eye = if blink { "─" } else { "●" };
+    let bulb = if frame % 6 < 3 { "●" } else { "◉" };
+
+    let lines: Vec<Line> = vec![
+        vec![Span::new("                         ╭╮            ╭╮        ", BODY_SHADOW).dim().italic()],
+        vec![Span::new("                    ╭────╯╰─╮      ╭─╯╰────╮   ", BODY_HI)],
+        vec![Span::new("                 ╭──╯        ╰────╯        ╰──╮", BODY_HI)],
+        vec![Span::new("               ╭─╯                             ╰─╮", BODY)],
+        vec![Span::new("     ", TEXT), Span::new("❯_", pulse).bold().bg(PANEL), Span::new("       │       ", BODY), Span::new(eye, pulse).bold(), Span::new("                 ", BODY), Span::new(eye, pulse).bold(), Span::new("       │", BODY)],
+        vec![Span::new("            │          ╲    ╭──╮    ╱          │", BODY)],
+        vec![Span::new("            │           ╲__╱    ╲__╱           │", BODY)],
+        vec![Span::new("            │             ", BODY), Span::new("╰─╮  ╭─╯", ORANGE).bold(), Span::new("             │", BODY)],
+        vec![Span::new("             ╲               ╰──╯              ╱ ", BODY)],
+        vec![Span::new("              ╲      ╭╮              ╭╮      ╱  ", BODY)],
+        vec![Span::new("               ╰╮    ╰╯              ╰╯    ╭╯   ", BODY_HI)],
+        vec![Span::new("                ╰──╮                    ╭──╯    ", BODY_SHADOW)],
+        vec![Span::new("                    ╰──╮            ╭──╯        ", BODY_SHADOW)],
+        vec![Span::new("                        ╰────╮  ╭────╯          ", BODY_SHADOW)],
+        vec![Span::new("                              ╰──╮              ", BODY_SHADOW)],
+        vec![Span::new("                                 ╰────╮         ", BODY_SHADOW)],
+        vec![Span::new("                                      ╰──", BODY_SHADOW), Span::new(bulb, pulse).bold(), Span::new("──", BODY_SHADOW), Span::new(bulb, AMBER).bold(), Span::new("──", BODY_SHADOW), Span::new(bulb, YELLOW).bold()],
+    ];
+
+    for (i, line) in lines.iter().enumerate() {
+        print_span_line_centered(out, start_row + i as u16, line, cols)?;
+    }
+
+    let aura = if frame % 10 < 5 { "✦" } else { "✧" };
+    let aura_line = format!("{}{}{}  mascot online  {}{}{}", ORANGE.fg(), aura, RESET, CYAN.fg(), aura, RESET);
+    print_centered(out, start_row + 18, &aura_line, 21, cols)
+}
+
+fn draw_loading_panel(out: &mut impl Write, cols: u16, row: u16, frame: usize, total: usize, version: &str) -> io::Result<()> {
+    let panel_width: usize = 72.min(cols.saturating_sub(4) as usize).max(44);
+    let left = ((cols as usize).saturating_sub(panel_width) / 2 + 1) as u16;
+    let pct = ((frame + 1) as f32 / total as f32).clamp(0.0, 1.0);
+    let filled = ((panel_width - 12) as f32 * pct).round() as usize;
+    let empty = (panel_width - 12).saturating_sub(filled);
+
+    let top = format!("╭{}╮", "─".repeat(panel_width - 2));
+    let bottom = format!("╰{}╯", "─".repeat(panel_width - 2));
+    print_at(out, row, left, &format!("{}{}{}", STEEL.fg(), top, RESET))?;
+
+    let title = format!(" QUORP v{} · loading local code intelligence ", version);
+    let mut title_line = format!("│{}{}{}{}", BOLD, CYAN.fg(), title, RESET);
+    title_line.push_str(&" ".repeat(panel_width.saturating_sub(visible_width(&title) + 2)));
+    title_line.push('│');
+    print_at(out, row + 1, left, &format!("{}{}{}", STEEL.fg(), title_line, RESET))?;
+
+    let stages = [
+        "🪬 attuning terminal glyphs",
+        "🧿 sealing sandbox permissions",
+        "🜂 igniting patch forge",
+        "🪐 mapping repo orbit",
+        "🧬 indexing symbols",
+        "🪄 priming tool calls",
+        "🫧 polishing diff glow",
+        "🪶 loading memory rules",
+        "🕳️ opening context tunnel",
+        "🛸 warming agent bus",
+    ];
+    let status = stages[frame % stages.len()];
+    let status_plain = format!(" {}", status);
+    let mut status_line = format!("│{}{}{}{}", MUTED.fg(), DIM, status_plain, RESET);
+    status_line.push_str(&" ".repeat(panel_width.saturating_sub(visible_width(&status_plain) + 2)));
+    status_line.push('│');
+    print_at(out, row + 2, left, &format!("{}{}{}", STEEL.fg(), status_line, RESET))?;
+
+    let bar = format!("{}{}{}", "█".repeat(filled), SLATE.fg(), "░".repeat(empty));
+    let pct_text = format!(" {:>3}% ", (pct * 100.0) as usize);
+    let rendered_bar = format!("│  {}{}{}{}{}{}  │", gradient(&bar, &[RED, ORANGE, AMBER, GREEN, CYAN, BLUE], frame), RESET, BOLD, TEXT.fg(), pct_text, RESET);
+    print_at(out, row + 3, left, &format!("{}{}{}", STEEL.fg(), rendered_bar, RESET))?;
+    print_at(out, row + 4, left, &format!("{}{}{}", STEEL.fg(), bottom, RESET))
+}
+
+fn draw_frame(out: &mut impl Write, cols: u16, rows: u16, frame: usize) -> io::Result<()> {
+    if cols < 16 || rows < 8 { return Ok(()); }
+    let horizontal = "─".repeat(cols.saturating_sub(2) as usize);
+    let color = if frame % 12 < 6 { ORANGE } else { VIOLET };
+    print_at(out, 1, 1, &format!("{}╭{}╮{}", color.fg(), horizontal, RESET))?;
+    for r in 2..rows {
+        print_at(out, r, 1, &format!("{}│{}", STEEL.fg(), RESET))?;
+        print_at(out, r, cols, &format!("{}│{}", STEEL.fg(), RESET))?;
+    }
+    print_at(out, rows, 1, &format!("{}╰{}╯{}", color.fg(), horizontal, RESET))
+}
+
+fn paint_background(out: &mut impl Write, cols: u16, rows: u16) -> io::Result<()> {
+    let blank = " ".repeat(cols as usize);
+    for r in 1..=rows {
+        let bg = if r % 2 == 0 { INK_950 } else { INK_900 };
+        print_at(out, r, 1, &format!("{}{}{}", bg.bg(), blank, RESET))?;
+    }
+    Ok(())
+}
+
+fn print_span_line_centered(out: &mut impl Write, row: u16, line: &Line, cols: u16) -> io::Result<()> {
+    let width: usize = line.iter().map(|s| visible_width(s.text)).sum();
+    let col = ((cols as usize).saturating_sub(width) / 2 + 1) as u16;
+    let mut s = String::new();
+    for span in line {
+        match span.weight {
+            Weight::Regular => {}
+            Weight::Bold => s.push_str(BOLD),
+            Weight::Dim => s.push_str(DIM),
+            Weight::Italic => s.push_str(ITALIC),
+        }
+        if let Some(bg) = span.bg { s.push_str(&bg.bg()); }
+        s.push_str(&span.fg.fg());
+        s.push_str(span.text);
+        s.push_str(RESET);
+    }
+    print_at(out, row, col, &s)
+}
+
+fn print_centered(out: &mut impl Write, row: u16, rendered: &str, plain_width: usize, cols: u16) -> io::Result<()> {
+    let col = ((cols as usize).saturating_sub(plain_width) / 2 + 1) as u16;
+    print_at(out, row, col, rendered)
+}
+
+fn print_at(out: &mut impl Write, row: u16, col: u16, text: &str) -> io::Result<()> {
+    write!(out, "{}{}", goto(row, col), text)
+}
+
+fn goto(row: u16, col: u16) -> String {
+    format!("\x1b[{};{}H", row, col)
+}
+
+fn gradient(text: &str, palette: &[Rgb], shift: usize) -> String {
+    let chars: Vec<char> = text.chars().collect();
+    if chars.is_empty() || palette.is_empty() { return String::new(); }
+    let mut out = String::new();
+    for (i, ch) in chars.iter().enumerate() {
+        let color = palette[(i + shift) % palette.len()];
+        if ch.is_whitespace() {
+            out.push(*ch);
+        } else {
+            out.push_str(&color.fg());
+            out.push(*ch);
+            out.push_str(RESET);
+        }
+    }
+    out
+}
+
+fn visible_width(s: &str) -> usize {
+    // Good enough for this dependency-free splash. In production use unicode-width.
+    s.chars().map(|c| if c as u32 >= 0x1F300 { 2 } else { 1 }).sum()
+}
+
+fn term_size() -> (u16, u16) {
+    let cols = env::var("COLUMNS").ok().and_then(|v| v.parse::<u16>().ok()).unwrap_or(100);
+    let rows = env::var("LINES").ok().and_then(|v| v.parse::<u16>().ok()).unwrap_or(36);
+    (cols.max(80), rows.max(28))
+}
+```
+
+Run it:
+
+```bash
+cd quorp_splash
+cargo run
+```
+
+For production, I would replace the dependency-free sizing with `crossterm::terminal::size()`, add terminal capability detection, and use `unicode-width` for precise emoji and grapheme alignment.
+
+---
+
+# 13. Final stack recommendation
+
+Build QUORP as:
+
+```text
+Rust agent core
++ custom pure-ANSI terminal compositor
++ crossterm/termwiz input and terminal control
++ Tree-sitter structural parsing
++ LSP diagnostics and code intelligence
++ imara-diff/similar/diffy patch engine
++ gix/git2 Git integration
++ portable-pty shell runner
++ MCP external tools
++ strict permission/sandbox system
++ GPUI native IDE later
+```
+
+The visual identity should be:
+
+```text
+QUORP = dark mascot + lava eyes + orange terminal glow + cyan agent intelligence + violet reasoning + green/red diff forge
+```
+
+The result will feel much closer to a premium terminal-native coding companion than a boxy old TUI: fast, sharp, brilliant, keyboard-first, tool-transparent, and visually unforgettable.
+
+[1]: https://developers.openai.com/codex/cli?utm_source=chatgpt.com "Codex CLI"
+[2]: https://docs.rs/crossterm/?utm_source=chatgpt.com "crossterm - Rust"
+[3]: https://www.gpui.rs/?utm_source=chatgpt.com "gpui"
+[4]: https://v2.tauri.app/?utm_source=chatgpt.com "Tauri 2.0 | Tauri"
+[5]: https://sw.kovidgoyal.net/kitty/graphics-protocol/?utm_source=chatgpt.com "Terminal graphics protocol - kitty"
+[6]: https://developers.openai.com/codex/cli/features?utm_source=chatgpt.com "Codex CLI features"
+[7]: https://tree-sitter.github.io/?utm_source=chatgpt.com "Tree-sitter: Introduction"
+[8]: https://modelcontextprotocol.io/docs/getting-started/intro?utm_source=chatgpt.com "Model Context Protocol"
+

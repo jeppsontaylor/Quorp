@@ -1,10 +1,14 @@
-use std::collections::{BTreeMap, BTreeSet};
+#![allow(
+    clippy::collapsible_match,
+    clippy::disallowed_methods,
+    clippy::manual_contains,
+    clippy::too_many_arguments
+)]
+
+use std::collections::BTreeSet;
 use std::env;
-use std::ffi::OsStr;
 use std::fs;
 use std::io::ErrorKind;
-#[cfg(unix)]
-use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
@@ -14,19 +18,35 @@ use std::time::Duration;
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
-use clap::ValueEnum;
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 
-use crate::quorp::agent_local::{HeadlessRunOptions, resume_headless_agent, run_headless_agent};
-use crate::quorp::codex_executor::{
-    CodexCompletionOptions, CodexRunOptions, default_model_id as default_codex_model_id,
-    fresh_session_strategy, request_codex_completion, run_codex_agent,
-};
+use crate::quorp::agent_runner::{HeadlessRunOptions, resume_headless_agent, run_headless_agent};
 use crate::quorp::tui::chat_service::{
     ChatServiceMessage, ChatServiceRole, StreamRequest, request_single_completion_details,
 };
-use crate::quorp::tui::ssd_moe_tui::SsdMoeRuntimeHandle;
 use quorp_agent_core::{PromptCompactionPolicy, TranscriptMessage, TranscriptRole};
+use quorp_benchmark::{
+    AttemptReport, BatchCaseReport, BenchmarkReport, ChallengeCapsule, ChallengeJudgeOutcome,
+    ChallengeManifest, ChallengeMetadata, EvaluatorOutcome, PromptTokenTurnSample,
+    ReadRangeObservation, ResolvedBenchmark, ResolvedChallengeCase, RoutingSummary,
+    challenge_evaluation_env, challenge_evaluation_target_dir, copy_dir_all, ensure_git_baseline,
+    prepare_challenge_run as prepare_benchmark_challenge_run, rebase_attempt_path,
+    render_batch_report, render_report_markdown, render_run_summary,
+    reset_challenge_workspace_for_attempt as reset_benchmark_challenge_workspace_for_attempt,
+    resolve_benchmark, resolve_challenge_case, run_collector_evaluator, run_shell_command_with_env,
+    run_visible_evaluator, substitute_condition, summarize_batch_report, summarize_markdown_brief,
+    summarize_run_report, summarize_workspace_root,
+};
+#[cfg(test)]
+use quorp_benchmark::{
+    BatchReport, BenchmarkScoreReport, collect_context_files, compile_challenge_capsule,
+    evaluator_passed, looks_like_issue_dir, looks_like_proof_full_workspace,
+    looks_like_warpos_staged_workspace, run_shell_command, rust_swe_case_profile,
+    write_workspace_challenge_command_wrappers,
+};
+pub use quorp_benchmark::{BenchmarkExecutor, BenchmarkScoreOptions, score_benchmark_reports};
+use quorp_core::{ProofReceipt, RawArtifact, ValidationRecord};
 
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_BOLD: &str = "\x1b[1m";
@@ -40,7 +60,6 @@ const CHALLENGE_SANDBOX_DIR: &str = "sandbox";
 const CHALLENGE_CARGO_CACHE_DIR: &str = ".quorp-cargo-target";
 const CHALLENGE_EVALUATION_CARGO_CACHE_DIR: &str = ".quorp-cargo-target-eval";
 const SAFE_PROMPT_TOKEN_CAP: u64 = 1800;
-const SAFE_LOCAL_BENCHMARK_MODEL_ID: &str = "ssd_moe/qwen35-27b";
 const JUDGE_OUTPUT_LINE_LIMIT: usize = 48;
 const JUDGE_OUTPUT_CHAR_LIMIT: usize = 6000;
 const BENCHMARK_BOOTSTRAP_PROGRESS_FILE: &str = "bootstrap-progress.json";
@@ -55,66 +74,12 @@ const BOOTSTRAP_PHASE_CONTROL_LOOP_STARTED: &str = "control_loop_started";
 const BOOTSTRAP_PHASE_FIRST_TASK_MODEL_REQUEST: &str = "first_task_model_request";
 const BOOTSTRAP_STALL_CLASS_PRE_MODEL: &str = "pre_model_bootstrap_stalled";
 
-fn safe_benchmark_model_id() -> anyhow::Result<String> {
-    if let Some(model_id) =
-        crate::quorp::tui::model_registry::preferred_verified_local_coding_model_id()
-    {
-        return Ok(model_id);
-    }
-    if crate::quorp::tui::model_registry::local_moe_spec_for_registry_id(
-        SAFE_LOCAL_BENCHMARK_MODEL_ID,
-    )
-    .is_some()
-    {
-        return Ok(SAFE_LOCAL_BENCHMARK_MODEL_ID.to_string());
-    }
-    crate::quorp::tui::model_registry::local_moe_catalog()
-        .into_iter()
-        .find(|model| !is_heavy_local_model_id(model.id))
-        .map(|model| model.id.to_string())
-        .or_else(crate::quorp::tui::model_registry::preferred_local_coding_model_id)
-        .ok_or_else(|| {
-            anyhow::anyhow!(
-                "no safe local benchmark model was available; pass --model explicitly if you want a specific native runtime"
-            )
-        })
-}
-
-fn allow_resolved_benchmark_model_without_opt_in(
-    requested_model_id: Option<&str>,
-    resolved_model_id: &str,
-    allow_heavy_local_model: bool,
-) -> bool {
-    allow_heavy_local_model
-        || (requested_model_id.is_none()
-            && safe_benchmark_model_id()
-                .ok()
-                .is_some_and(|default_model| default_model.eq_ignore_ascii_case(resolved_model_id)))
-}
-
 fn apply_requested_prompt_compaction_override(
     completion_policy: &mut quorp_agent_core::CompletionPolicy,
     requested_policy: Option<PromptCompactionPolicy>,
 ) {
     if let Some(policy) = requested_policy {
         completion_policy.prompt_compaction_policy = Some(policy);
-    }
-}
-
-#[derive(Debug, Clone, Copy, Default, Eq, PartialEq, Serialize, Deserialize, ValueEnum)]
-#[serde(rename_all = "snake_case")]
-pub enum BenchmarkExecutor {
-    #[default]
-    Native,
-    Codex,
-}
-
-impl BenchmarkExecutor {
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Native => "native",
-            Self::Codex => "codex",
-        }
     }
 }
 
@@ -133,7 +98,6 @@ pub struct BenchmarkRunOptions {
     pub result_dir: PathBuf,
     pub autonomy_profile: quorp_agent_core::AutonomyProfile,
     pub max_attempts: Option<usize>,
-    pub allow_heavy_local_model: bool,
     pub condition: Option<String>,
     pub keep_sandbox: bool,
 }
@@ -154,15 +118,6 @@ pub struct BenchmarkPromptBundle {
     prompt_fingerprint: String,
     prompt_token_estimate: u64,
 }
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct TuiBenchmarkLaunch {
-    pub workspace_dir: PathBuf,
-    pub objective_file: PathBuf,
-    pub evaluate_command: Option<String>,
-    pub objective_metadata: serde_json::Value,
-}
-
 #[derive(Debug, Clone)]
 pub struct BenchmarkBatchRunOptions {
     pub cases_root: PathBuf,
@@ -178,24 +133,9 @@ pub struct BenchmarkBatchRunOptions {
     pub max_total_tokens: Option<u64>,
     pub max_attempts: Option<usize>,
     pub autonomy_profile: quorp_agent_core::AutonomyProfile,
-    pub allow_heavy_local_model: bool,
     pub condition: Option<String>,
     pub keep_sandbox: bool,
     pub log_dir: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BenchmarkScoreOptions {
-    pub run_dirs: Vec<PathBuf>,
-    pub suite: String,
-    pub reports_root: PathBuf,
-    pub output_root: Option<PathBuf>,
-}
-
-#[derive(Debug, Clone)]
-pub struct BenchmarkScoreArtifacts {
-    pub output_dir: PathBuf,
-    pub markdown: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,112 +168,6 @@ struct BenchmarkManifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct ResolvedBenchmark {
-    benchmark_root: PathBuf,
-    issue_id: String,
-    benchmark_name: String,
-    issue_dir: Option<PathBuf>,
-    workspace_source: PathBuf,
-    objective_source: PathBuf,
-    visible_evaluator: Option<PathBuf>,
-    collector_evaluator: Option<PathBuf>,
-    context_files: Vec<PathBuf>,
-    repair_artifacts: Vec<PathBuf>,
-}
-
-#[derive(Debug, Clone, Deserialize)]
-struct WarposBenchmarkRootMarker {
-    benchmark: Option<String>,
-    issue: String,
-    #[allow(dead_code)]
-    condition: Option<String>,
-    #[allow(dead_code)]
-    suite: Option<String>,
-    handoff_root: PathBuf,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ChallengeManifest {
-    id: String,
-    title: String,
-    difficulty: String,
-    category: String,
-    repo_condition: Vec<String>,
-    objective_file: String,
-    success_file: String,
-    reset_command: String,
-    evaluate_command: String,
-    estimated_minutes: Option<u64>,
-    expected_files_touched: Vec<String>,
-    #[serde(default)]
-    allowed_generated_files: Vec<String>,
-    primary_metrics: Vec<String>,
-    tags: Vec<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ChallengeMetadata {
-    case_root: PathBuf,
-    sandbox_root: PathBuf,
-    workspace_dir: PathBuf,
-    condition: String,
-    objective_file: PathBuf,
-    success_file: PathBuf,
-    #[serde(default)]
-    reference_file: Option<PathBuf>,
-    reset_command: String,
-    evaluate_command: String,
-    expected_files_touched: Vec<String>,
-    #[serde(default)]
-    allowed_generated_files: Vec<String>,
-    primary_metrics: Vec<String>,
-    tags: Vec<String>,
-    capsule_file: PathBuf,
-    #[serde(default)]
-    capsule: ChallengeCapsule,
-}
-
-#[derive(Debug, Clone)]
-struct ResolvedChallengeCase {
-    case_root: PathBuf,
-    manifest: ChallengeManifest,
-    condition: String,
-    objective_source: PathBuf,
-    success_source: PathBuf,
-}
-
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
-struct ChallengeCapsule {
-    #[serde(default)]
-    case_class: String,
-    #[serde(default)]
-    owner_files: Vec<String>,
-    #[serde(default)]
-    first_reads: Vec<String>,
-    #[serde(default)]
-    fast_loop_commands: Vec<String>,
-    #[serde(default)]
-    expected_touch_targets: Vec<String>,
-    #[serde(default)]
-    companion_files_required: Vec<String>,
-    #[serde(default)]
-    strong_hints: Vec<String>,
-    #[serde(default)]
-    watch_points: Vec<String>,
-    #[serde(default)]
-    named_tests: Vec<String>,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct RustSweCaseProfile {
-    case_id: &'static str,
-    fast_loop_commands: &'static [&'static str],
-    final_eval_command: &'static str,
-    likely_owner_files: &'static [&'static str],
-    expected_touch_targets: &'static [&'static str],
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
 struct BenchmarkBootstrapProgress {
     attempt: usize,
     bootstrap_phase: String,
@@ -356,555 +190,6 @@ struct BenchmarkBootstrapTracker {
     attempt_progress_path: PathBuf,
     attempt: usize,
     started_at: Instant,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct EvaluatorOutcome {
-    name: String,
-    script: PathBuf,
-    #[serde(default)]
-    command: Option<String>,
-    #[serde(default)]
-    duration_ms: u64,
-    exit_code: i32,
-    passed: bool,
-    stdout: String,
-    stderr: String,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct AttemptReport {
-    attempt: usize,
-    #[serde(default)]
-    executor: BenchmarkExecutor,
-    #[serde(default)]
-    model_id: String,
-    #[serde(default = "default_safe_mode_label")]
-    safety_mode_label: String,
-    #[serde(default)]
-    scenario_label: Option<String>,
-    agent_stop_reason: quorp_agent_core::StopReason,
-    agent_error_message: Option<String>,
-    total_steps: usize,
-    #[serde(default)]
-    duration_ms: u64,
-    total_billed_tokens: u64,
-    #[serde(default)]
-    max_prompt_token_estimate: Option<u64>,
-    #[serde(default)]
-    max_completion_token_cap: Option<u32>,
-    #[serde(default)]
-    watchdog_near_limit: bool,
-    #[serde(default)]
-    watchdog_triggered: bool,
-    visible_evaluation: Option<EvaluatorOutcome>,
-    collector_evaluation: Option<EvaluatorOutcome>,
-    evaluation: Option<EvaluatorOutcome>,
-    changed_files: Vec<String>,
-    #[serde(default)]
-    ignored_changed_files: Vec<String>,
-    validations: Vec<String>,
-    widening_happened: bool,
-    attempt_dir: PathBuf,
-    workspace_dir: PathBuf,
-    agent_result_dir: PathBuf,
-    #[serde(default)]
-    input_tokens: u64,
-    #[serde(default)]
-    output_tokens: u64,
-    #[serde(default)]
-    reasoning_tokens: u64,
-    #[serde(default)]
-    cache_read_input_tokens: u64,
-    #[serde(default)]
-    cache_write_input_tokens: u64,
-    #[serde(default)]
-    model_requests: usize,
-    #[serde(default)]
-    first_request_prompt_token_estimate: Option<u64>,
-    #[serde(default)]
-    first_request_raw_prompt_token_estimate: Option<u64>,
-    #[serde(default)]
-    first_request_compacted_prompt_token_estimate: Option<u64>,
-    #[serde(default)]
-    first_request_first_token_latency_ms: Option<u64>,
-    #[serde(default)]
-    first_model_turn_started: bool,
-    #[serde(default)]
-    first_action_emitted: bool,
-    #[serde(default)]
-    prompt_token_series_by_turn: Vec<PromptTokenTurnSample>,
-    #[serde(default)]
-    read_range_observations: Vec<ReadRangeObservation>,
-    #[serde(default)]
-    read_count: usize,
-    #[serde(default)]
-    write_count: usize,
-    #[serde(default)]
-    command_execution_count: usize,
-    #[serde(default)]
-    parser_recovery_count: usize,
-    #[serde(default)]
-    repair_invalid_action_streak_max: usize,
-    #[serde(default)]
-    repair_submode_entered: bool,
-    #[serde(default)]
-    repair_submode_turns: usize,
-    #[serde(default)]
-    repair_write_locked: bool,
-    #[serde(default)]
-    write_phase_action_refusal_count: usize,
-    #[serde(default)]
-    patch_scaffold_offered: bool,
-    #[serde(default)]
-    patch_scaffold_honored: bool,
-    #[serde(default)]
-    preview_apply_locked: bool,
-    #[serde(default)]
-    preview_apply_action_refusal_count: usize,
-    #[serde(default)]
-    write_phase_write_emitted: bool,
-    #[serde(default)]
-    bootstrap_phase: Option<String>,
-    #[serde(default)]
-    bootstrap_phase_detail: Option<String>,
-    #[serde(default)]
-    first_task_model_request_seen: bool,
-    #[serde(default)]
-    bootstrap_elapsed_ms_before_first_task_request: Option<u64>,
-    #[serde(default)]
-    pre_model_bootstrap_stalled: bool,
-    #[serde(default)]
-    bootstrap_stall_class: Option<String>,
-    #[serde(default)]
-    rolled_back_write_count: usize,
-    #[serde(default)]
-    rolled_back_non_support_edit_count: usize,
-    #[serde(default)]
-    soft_budget_inefficient: bool,
-    #[serde(default)]
-    fast_loop_command_seen: bool,
-    #[serde(default)]
-    agent_final_evaluate_command_seen: bool,
-    #[serde(default)]
-    final_evaluate_command_seen: bool,
-    #[serde(default)]
-    host_evaluation_commands_run: usize,
-    #[serde(default)]
-    non_support_edit_count: usize,
-    #[serde(default)]
-    repo_capsule_injected: bool,
-    #[serde(default)]
-    reasoning_enabled: bool,
-    #[serde(default)]
-    path_resolution_failures: usize,
-    #[serde(default)]
-    recovery_turns: usize,
-    #[serde(default)]
-    action_contract_mode: String,
-    #[serde(default)]
-    action_contract_selected: String,
-    #[serde(default)]
-    action_contract_fallback_reason: Option<String>,
-    #[serde(default)]
-    attempt_lineage: Vec<String>,
-    #[serde(default)]
-    effective_prompt_compaction_policy: Option<String>,
-    #[serde(default)]
-    fast_loop_validation_status: Option<String>,
-    #[serde(default)]
-    last_validation_failure: Option<String>,
-    #[serde(default)]
-    failing_test_names: Vec<String>,
-    #[serde(default)]
-    primary_failure_test_name: Option<String>,
-    #[serde(default)]
-    primary_failure_path: Option<String>,
-    #[serde(default)]
-    primary_failure_line: Option<usize>,
-    #[serde(default)]
-    assertion_excerpt: Option<String>,
-    #[serde(default)]
-    diagnostic_class: Option<String>,
-    #[serde(default)]
-    implementation_target_lease: Option<String>,
-    #[serde(default)]
-    dependency_candidates: Vec<String>,
-    #[serde(default)]
-    target_dependency_table: Option<String>,
-    #[serde(default)]
-    repair_required: bool,
-    #[serde(default)]
-    repair_phase_terminal: Option<String>,
-    #[serde(default)]
-    failure_anchor_reread_attempted: bool,
-    #[serde(default)]
-    failure_anchor_reread_honored: bool,
-    #[serde(default)]
-    implementation_reread_allowed: bool,
-    #[serde(default)]
-    implementation_reread_attempted: bool,
-    #[serde(default)]
-    implementation_reread_honored: bool,
-    #[serde(default)]
-    repair_phase_invalid_action_count: usize,
-    #[serde(default)]
-    post_fast_loop_patch_attempted: bool,
-    #[serde(default)]
-    post_fast_loop_validation_rerun_attempted: bool,
-    #[serde(default)]
-    patch_packet_injected: bool,
-    #[serde(default)]
-    patch_packet_honored_range: Option<String>,
-    #[serde(default)]
-    recommended_rerun_command: Option<String>,
-    #[serde(default)]
-    fast_loop_rerun_match_kind: Option<String>,
-    #[serde(default)]
-    failed_edit_records: Vec<quorp_agent_core::FailedEditRecord>,
-    #[serde(default)]
-    local_model_memory: quorp_agent_core::LocalModelMemory,
-    #[serde(default)]
-    local_agent_scorecard: quorp_agent_core::LocalAgentScorecard,
-    #[serde(default)]
-    planner_model: Option<String>,
-    #[serde(default)]
-    executor_model: Option<String>,
-    #[serde(default)]
-    judge: Option<ChallengeJudgeOutcome>,
-    #[serde(default)]
-    routing: crate::quorp::agent_local::RoutingSummary,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct BenchmarkReport {
-    benchmark_name: String,
-    issue_id: String,
-    #[serde(default)]
-    executor: BenchmarkExecutor,
-    #[serde(default)]
-    model_id: String,
-    #[serde(default = "default_safe_mode_label")]
-    safety_mode_label: String,
-    #[serde(default)]
-    scenario_label: Option<String>,
-    #[serde(default)]
-    provider_kind: String,
-    #[serde(default)]
-    provider_base_url: Option<String>,
-    #[serde(default)]
-    auth_mode: String,
-    #[serde(default)]
-    usage_source: String,
-    #[serde(default)]
-    proxy_visible_remote_egress_expected: bool,
-    #[serde(default)]
-    routing_mode: Option<String>,
-    #[serde(default)]
-    requested_provider: Option<String>,
-    #[serde(default)]
-    requested_model: Option<String>,
-    #[serde(default)]
-    candidate_models: Vec<String>,
-    #[serde(default)]
-    effective_provider: Option<String>,
-    #[serde(default)]
-    effective_model: Option<String>,
-    #[serde(default)]
-    used_local_fallback: bool,
-    #[serde(default)]
-    fallback_reason: Option<String>,
-    #[serde(default)]
-    comparable_run: Option<bool>,
-    #[serde(default)]
-    provider_request_id: Option<String>,
-    #[serde(default)]
-    routing_status: Option<String>,
-    success: bool,
-    attempts_run: usize,
-    max_attempts: usize,
-    total_billed_tokens: u64,
-    #[serde(default)]
-    wall_clock_ms: u64,
-    max_total_tokens: Option<u64>,
-    #[serde(default)]
-    max_prompt_token_estimate_seen: Option<u64>,
-    #[serde(default)]
-    max_completion_token_cap_seen: Option<u32>,
-    #[serde(default)]
-    watchdog_near_limit: bool,
-    #[serde(default)]
-    watchdog_triggered: bool,
-    final_stop_reason: Option<quorp_agent_core::StopReason>,
-    changed_files: Vec<String>,
-    #[serde(default)]
-    ignored_changed_files: Vec<String>,
-    widening_happened: bool,
-    attempts: Vec<AttemptReport>,
-    #[serde(default)]
-    reset_outcome: Option<EvaluatorOutcome>,
-    #[serde(default)]
-    challenge: Option<ChallengeMetadata>,
-    #[serde(default)]
-    run_dir: PathBuf,
-    #[serde(default)]
-    sandbox_root: Option<PathBuf>,
-    #[serde(default)]
-    exit_code: i32,
-    #[serde(default)]
-    lines_added: u64,
-    #[serde(default)]
-    lines_removed: u64,
-    #[serde(default)]
-    mistakes_corrected: usize,
-    #[serde(default)]
-    validation_commands_run: usize,
-    #[serde(default)]
-    evaluation_commands_run: usize,
-    #[serde(default)]
-    prompt_tokens: u64,
-    #[serde(default)]
-    completion_tokens: u64,
-    #[serde(default)]
-    reasoning_tokens: u64,
-    #[serde(default)]
-    cache_read_input_tokens: u64,
-    #[serde(default)]
-    cache_write_input_tokens: u64,
-    #[serde(default)]
-    run_error: Option<String>,
-    #[serde(default)]
-    setup_failure_class: Option<String>,
-    #[serde(default)]
-    total_requests: usize,
-    #[serde(default)]
-    task_model_call_count: usize,
-    #[serde(default)]
-    tool_call_count: usize,
-    #[serde(default)]
-    edit_count: usize,
-    #[serde(default)]
-    read_count: usize,
-    #[serde(default)]
-    write_count: usize,
-    #[serde(default)]
-    command_execution_count: usize,
-    #[serde(default)]
-    parser_recovery_count: usize,
-    #[serde(default)]
-    repair_invalid_action_streak_max: usize,
-    #[serde(default)]
-    repair_submode_entered: bool,
-    #[serde(default)]
-    repair_submode_turns: usize,
-    #[serde(default)]
-    repair_write_locked: bool,
-    #[serde(default)]
-    write_phase_action_refusal_count: usize,
-    #[serde(default)]
-    patch_scaffold_offered: bool,
-    #[serde(default)]
-    patch_scaffold_honored: bool,
-    #[serde(default)]
-    preview_apply_locked: bool,
-    #[serde(default)]
-    preview_apply_action_refusal_count: usize,
-    #[serde(default)]
-    write_phase_write_emitted: bool,
-    #[serde(default)]
-    bootstrap_phase: Option<String>,
-    #[serde(default)]
-    bootstrap_phase_detail: Option<String>,
-    #[serde(default)]
-    first_task_model_request_seen: bool,
-    #[serde(default)]
-    bootstrap_elapsed_ms_before_first_task_request: Option<u64>,
-    #[serde(default)]
-    pre_model_bootstrap_stalled: bool,
-    #[serde(default)]
-    bootstrap_stall_class: Option<String>,
-    #[serde(default)]
-    rolled_back_write_count: usize,
-    #[serde(default)]
-    rolled_back_non_support_edit_count: usize,
-    #[serde(default)]
-    soft_budget_inefficient: bool,
-    #[serde(default)]
-    fast_loop_command_seen: bool,
-    #[serde(default)]
-    agent_final_evaluate_command_seen: bool,
-    #[serde(default)]
-    final_evaluate_command_seen: bool,
-    #[serde(default)]
-    host_evaluation_commands_run: usize,
-    #[serde(default)]
-    non_support_edit_count: usize,
-    #[serde(default)]
-    last_failure_class: Option<String>,
-    #[serde(default)]
-    evaluation_command_seen: bool,
-    #[serde(default)]
-    text_only_action_failure: bool,
-    #[serde(default)]
-    first_request_prompt_token_estimate: Option<u64>,
-    #[serde(default)]
-    first_request_raw_prompt_token_estimate: Option<u64>,
-    #[serde(default)]
-    first_request_compacted_prompt_token_estimate: Option<u64>,
-    #[serde(default)]
-    first_request_first_token_latency_ms: Option<u64>,
-    #[serde(default)]
-    first_model_turn_started: bool,
-    #[serde(default)]
-    first_action_emitted: bool,
-    #[serde(default)]
-    prompt_token_series_by_turn: Vec<PromptTokenTurnSample>,
-    #[serde(default)]
-    read_range_observations: Vec<ReadRangeObservation>,
-    #[serde(default)]
-    repo_capsule_injected: bool,
-    #[serde(default)]
-    reasoning_enabled: bool,
-    #[serde(default)]
-    path_resolution_failures: usize,
-    #[serde(default)]
-    recovery_turns: usize,
-    #[serde(default)]
-    action_contract_mode: String,
-    #[serde(default)]
-    action_contract_selected: String,
-    #[serde(default)]
-    action_contract_fallback_reason: Option<String>,
-    #[serde(default)]
-    attempt_lineage: Vec<String>,
-    #[serde(default)]
-    effective_prompt_compaction_policy: Option<String>,
-    #[serde(default)]
-    fast_loop_validation_status: Option<String>,
-    #[serde(default)]
-    last_validation_failure: Option<String>,
-    #[serde(default)]
-    failing_test_names: Vec<String>,
-    #[serde(default)]
-    primary_failure_test_name: Option<String>,
-    #[serde(default)]
-    primary_failure_path: Option<String>,
-    #[serde(default)]
-    primary_failure_line: Option<usize>,
-    #[serde(default)]
-    assertion_excerpt: Option<String>,
-    #[serde(default)]
-    diagnostic_class: Option<String>,
-    #[serde(default)]
-    implementation_target_lease: Option<String>,
-    #[serde(default)]
-    dependency_candidates: Vec<String>,
-    #[serde(default)]
-    target_dependency_table: Option<String>,
-    #[serde(default)]
-    repair_required: bool,
-    #[serde(default)]
-    repair_phase_terminal: Option<String>,
-    #[serde(default)]
-    failure_anchor_reread_attempted: bool,
-    #[serde(default)]
-    failure_anchor_reread_honored: bool,
-    #[serde(default)]
-    implementation_reread_allowed: bool,
-    #[serde(default)]
-    implementation_reread_attempted: bool,
-    #[serde(default)]
-    implementation_reread_honored: bool,
-    #[serde(default)]
-    repair_phase_invalid_action_count: usize,
-    #[serde(default)]
-    post_fast_loop_patch_attempted: bool,
-    #[serde(default)]
-    post_fast_loop_validation_rerun_attempted: bool,
-    #[serde(default)]
-    patch_packet_injected: bool,
-    #[serde(default)]
-    patch_packet_honored_range: Option<String>,
-    #[serde(default)]
-    recommended_rerun_command: Option<String>,
-    #[serde(default)]
-    fast_loop_rerun_match_kind: Option<String>,
-    #[serde(default)]
-    failed_edit_records: Vec<quorp_agent_core::FailedEditRecord>,
-    #[serde(default)]
-    local_model_memory: quorp_agent_core::LocalModelMemory,
-    #[serde(default)]
-    local_agent_scorecard: quorp_agent_core::LocalAgentScorecard,
-    #[serde(default)]
-    preview_edit_count: usize,
-    #[serde(default)]
-    preview_edit_success_count: usize,
-    #[serde(default)]
-    preview_created_count: usize,
-    #[serde(default)]
-    replace_range_count: usize,
-    #[serde(default)]
-    replace_range_hash_mismatch_count: usize,
-    #[serde(default)]
-    modify_toml_count: usize,
-    #[serde(default)]
-    apply_preview_count: usize,
-    #[serde(default)]
-    apply_preview_hash_mismatch_count: usize,
-    #[serde(default)]
-    syntax_preview_count: usize,
-    #[serde(default)]
-    syntax_preview_failure_count: usize,
-    #[serde(default)]
-    target_redirect_count: usize,
-    #[serde(default)]
-    evidence_file_fixation_count: usize,
-    #[serde(default)]
-    local_agent_final_failure_classification: Option<String>,
-    #[serde(default)]
-    planner_model: Option<String>,
-    #[serde(default)]
-    executor_model: Option<String>,
-    #[serde(default)]
-    deterministic_evaluation_passed: Option<bool>,
-    #[serde(default)]
-    judge: Option<ChallengeJudgeOutcome>,
-    #[serde(default)]
-    primary_failure: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ChallengeJudgeOutcome {
-    passed: bool,
-    summary: String,
-    rationale: String,
-    #[serde(default)]
-    model_id: String,
-    #[serde(default)]
-    raw_response: serde_json::Value,
-    #[serde(default)]
-    error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct PromptTokenTurnSample {
-    step: usize,
-    prompt_token_estimate: u64,
-    #[serde(default)]
-    raw_prompt_token_estimate: Option<u64>,
-    #[serde(default)]
-    compacted_prompt_token_estimate: Option<u64>,
-    #[serde(default)]
-    completion_token_cap: Option<u32>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct ReadRangeObservation {
-    path: String,
-    #[serde(default)]
-    requested_range: Option<String>,
-    #[serde(default)]
-    honored_range: Option<String>,
 }
 
 #[derive(Debug, Clone, Default)]
@@ -971,9 +256,9 @@ struct CheckpointValidationState {
     #[serde(default)]
     failed_edit_records: Vec<quorp_agent_core::FailedEditRecord>,
     #[serde(default)]
-    local_model_memory: quorp_agent_core::LocalModelMemory,
+    agent_repair_memory: quorp_agent_core::AgentRepairMemory,
     #[serde(default)]
-    local_agent_scorecard: quorp_agent_core::LocalAgentScorecard,
+    agent_repair_scorecard: quorp_agent_core::AgentRepairScorecard,
 }
 
 #[derive(Debug, Clone)]
@@ -985,148 +270,8 @@ struct BenchmarkProviderSummary {
     proxy_visible_remote_egress_expected: bool,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct BatchCaseReport {
-    case_id: String,
-    case_root: PathBuf,
-    objective_path: PathBuf,
-    result_dir: PathBuf,
-    log_file: PathBuf,
-    #[serde(default)]
-    executor: BenchmarkExecutor,
-    success: bool,
-    exit_code: i32,
-    wall_clock_ms: u64,
-    total_requests: usize,
-    total_billed_tokens: u64,
-    lines_added: u64,
-    lines_removed: u64,
-    mistakes_corrected: usize,
-    judge_passed: Option<bool>,
-    deterministic_evaluation_passed: Option<bool>,
-    first_request_prompt_token_estimate: Option<u64>,
-    #[serde(default)]
-    first_request_raw_prompt_token_estimate: Option<u64>,
-    #[serde(default)]
-    first_request_compacted_prompt_token_estimate: Option<u64>,
-    first_request_first_token_latency_ms: Option<u64>,
-    #[serde(default)]
-    first_model_turn_started: bool,
-    #[serde(default)]
-    first_action_emitted: bool,
-    final_stop_reason: Option<quorp_agent_core::StopReason>,
-    primary_failure: Option<String>,
-    #[serde(default)]
-    local_agent_final_failure_classification: Option<String>,
-    #[serde(default)]
-    adaptive_action_mode_retry: bool,
-    report_path: PathBuf,
-    error: Option<String>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct BatchReport {
-    cases_root: PathBuf,
-    result_dir: PathBuf,
-    cases: Vec<BatchCaseReport>,
-    total_requests: usize,
-    total_billed_tokens: u64,
-    lines_added: u64,
-    lines_removed: u64,
-    mistakes_corrected: usize,
-    successful_cases: usize,
-    failed_cases: usize,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RunSummaryCase {
-    case_id: String,
-    success: bool,
-    primary_failure: Option<String>,
-    local_agent_final_failure_classification: Option<String>,
-    final_stop_reason: Option<quorp_agent_core::StopReason>,
-    first_valid_write_step: Option<usize>,
-    parser_recovery_count: usize,
-    redundant_read_count: usize,
-    rejected_validation_alias_count: usize,
-    target_redirect_count: usize,
-    syntax_preview_failure_count: usize,
-    adaptive_action_mode_retry: bool,
-    report_path: PathBuf,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct RunSummary {
-    cases_root: PathBuf,
-    result_dir: PathBuf,
-    cases_run: usize,
-    successful_cases: usize,
-    failed_cases: usize,
-    total_requests: usize,
-    total_billed_tokens: u64,
-    cases: Vec<RunSummaryCase>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct BenchmarkScoreReport {
-    suite: String,
-    generated_at_unix_seconds: u64,
-    output_dir: PathBuf,
-    run_dirs: Vec<PathBuf>,
-    total_cases: usize,
-    solved_cases: usize,
-    valid_write_cases: usize,
-    post_write_validation_cases: usize,
-    diagnostic_classified_cases: usize,
-    tooling_healthy_cases: usize,
-    total_requests: usize,
-    total_billed_tokens: u64,
-    common_blocker: Option<String>,
-    blocker_counts: BTreeMap<String, usize>,
-    regressions: Vec<String>,
-    cases: Vec<BenchmarkScoreCase>,
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize)]
-struct BenchmarkScoreCase {
-    case_id: String,
-    success: bool,
-    progress_score: u8,
-    progress_phase: String,
-    failure_classification: String,
-    primary_failure: Option<String>,
-    model_id: Option<String>,
-    executor: Option<String>,
-    provider_base_url: Option<String>,
-    action_contract_selected: Option<String>,
-    result_dir: PathBuf,
-    report_path: PathBuf,
-    first_model_turn_started: bool,
-    first_action_emitted: bool,
-    diagnostic_class: Option<String>,
-    implementation_target_lease: Option<String>,
-    first_valid_write_step: Option<usize>,
-    post_write_validation: bool,
-    parser_recovery_count: usize,
-    redundant_read_count: usize,
-    rejected_validation_alias_count: usize,
-    target_redirect_count: usize,
-    syntax_preview_failure_count: usize,
-    preview_created_count: usize,
-    modify_toml_count: usize,
-    replace_range_count: usize,
-    apply_preview_count: usize,
-    wall_clock_ms: u64,
-    total_requests: usize,
-    total_billed_tokens: u64,
-    lines_added: u64,
-    lines_removed: u64,
-    general_tooling_gap: Option<String>,
-}
-
 struct PreparedBatchRuntime {
     base_url_override: Option<String>,
-    stop_after_batch: bool,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1172,7 +317,7 @@ struct ChallengeJudgeContext<'a> {
     changed_files: &'a [String],
     validations: &'a [String],
     metrics: &'a RequestMetricsSummary,
-    usage: &'a crate::quorp::agent_local::HeadlessUsageSummary,
+    usage: &'a crate::quorp::agent_runner::HeadlessUsageSummary,
 }
 
 #[derive(Debug, Clone)]
@@ -1216,16 +361,6 @@ pub fn run_benchmark(options: BenchmarkRunOptions) -> anyhow::Result<()> {
 
     let resolved = resolve_benchmark(&options.path)?;
     let model_id = resolve_benchmark_model_id(options.executor, options.model_id.clone())?;
-    if options.executor == BenchmarkExecutor::Native {
-        ensure_safe_local_model_selection(
-            &model_id,
-            allow_resolved_benchmark_model_without_opt_in(
-                options.model_id.as_deref(),
-                &model_id,
-                options.allow_heavy_local_model,
-            ),
-        )?;
-    }
     let safety_mode_label = benchmark_safety_mode_label(options.executor, &model_id);
     let scenario_label = Some(crate::quorp::provider_config::resolved_scenario_label());
     let mut completion_policy =
@@ -1334,168 +469,7 @@ pub fn resume_benchmark(options: BenchmarkResumeOptions) -> anyhow::Result<()> {
     )
 }
 
-fn normalize_manifest_paths_for_runtime(manifest: &mut BenchmarkManifest, result_dir: &Path) {
-    let in_docker = std::env::var("QUORP_IN_DOCKER")
-        .ok()
-        .is_some_and(|value| value == "1");
-    if !in_docker {
-        return;
-    }
-    let host_result_dir = std::env::var("QUORP_DOCKER_HOST_RESULT_DIR")
-        .ok()
-        .map(PathBuf::from);
-    let host_workspace_root = std::env::var("QUORP_DOCKER_HOST_WORKSPACE_ROOT")
-        .ok()
-        .map(PathBuf::from);
-    let container_workspace_root = std::env::var("QUORP_DOCKER_CONTAINER_WORKSPACE_ROOT")
-        .ok()
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(crate::quorp::docker::CONTAINER_WORKSPACE_ROOT));
-
-    manifest.resolved.benchmark_root = normalize_manifest_path(
-        &manifest.resolved.benchmark_root,
-        host_result_dir.as_deref(),
-        result_dir,
-        host_workspace_root.as_deref(),
-        &container_workspace_root,
-    );
-    manifest.resolved.workspace_source = normalize_manifest_path(
-        &manifest.resolved.workspace_source,
-        host_result_dir.as_deref(),
-        result_dir,
-        host_workspace_root.as_deref(),
-        &container_workspace_root,
-    );
-    manifest.resolved.objective_source = normalize_manifest_path(
-        &manifest.resolved.objective_source,
-        host_result_dir.as_deref(),
-        result_dir,
-        host_workspace_root.as_deref(),
-        &container_workspace_root,
-    );
-    manifest.briefing_file = manifest.briefing_file.as_ref().map(|path| {
-        normalize_manifest_path(
-            path,
-            host_result_dir.as_deref(),
-            result_dir,
-            host_workspace_root.as_deref(),
-            &container_workspace_root,
-        )
-    });
-    manifest.resolved.visible_evaluator =
-        manifest.resolved.visible_evaluator.as_ref().map(|path| {
-            normalize_manifest_path(
-                path,
-                host_result_dir.as_deref(),
-                result_dir,
-                host_workspace_root.as_deref(),
-                &container_workspace_root,
-            )
-        });
-    manifest.resolved.collector_evaluator =
-        manifest.resolved.collector_evaluator.as_ref().map(|path| {
-            normalize_manifest_path(
-                path,
-                host_result_dir.as_deref(),
-                result_dir,
-                host_workspace_root.as_deref(),
-                &container_workspace_root,
-            )
-        });
-    manifest.resolved.context_files = manifest
-        .resolved
-        .context_files
-        .iter()
-        .map(|path| {
-            normalize_manifest_path(
-                path,
-                host_result_dir.as_deref(),
-                result_dir,
-                host_workspace_root.as_deref(),
-                &container_workspace_root,
-            )
-        })
-        .collect();
-    manifest.resolved.repair_artifacts = manifest
-        .resolved
-        .repair_artifacts
-        .iter()
-        .map(|path| {
-            normalize_manifest_path(
-                path,
-                host_result_dir.as_deref(),
-                result_dir,
-                host_workspace_root.as_deref(),
-                &container_workspace_root,
-            )
-        })
-        .collect();
-    if let Some(challenge) = manifest.challenge.as_mut() {
-        challenge.sandbox_root = normalize_manifest_path(
-            &challenge.sandbox_root,
-            host_result_dir.as_deref(),
-            result_dir,
-            host_workspace_root.as_deref(),
-            &container_workspace_root,
-        );
-        challenge.workspace_dir = normalize_manifest_path(
-            &challenge.workspace_dir,
-            host_result_dir.as_deref(),
-            result_dir,
-            host_workspace_root.as_deref(),
-            &container_workspace_root,
-        );
-        challenge.objective_file = normalize_manifest_path(
-            &challenge.objective_file,
-            host_result_dir.as_deref(),
-            result_dir,
-            host_workspace_root.as_deref(),
-            &container_workspace_root,
-        );
-        challenge.success_file = normalize_manifest_path(
-            &challenge.success_file,
-            host_result_dir.as_deref(),
-            result_dir,
-            host_workspace_root.as_deref(),
-            &container_workspace_root,
-        );
-        challenge.reference_file = challenge.reference_file.as_ref().map(|path| {
-            normalize_manifest_path(
-                path,
-                host_result_dir.as_deref(),
-                result_dir,
-                host_workspace_root.as_deref(),
-                &container_workspace_root,
-            )
-        });
-        challenge.capsule_file = normalize_manifest_path(
-            &challenge.capsule_file,
-            host_result_dir.as_deref(),
-            result_dir,
-            host_workspace_root.as_deref(),
-            &container_workspace_root,
-        );
-    }
-}
-
-fn normalize_manifest_path(
-    path: &Path,
-    host_result_dir: Option<&Path>,
-    result_dir: &Path,
-    host_workspace_root: Option<&Path>,
-    container_workspace_root: &Path,
-) -> PathBuf {
-    if let Some(host_result_dir) = host_result_dir
-        && let Ok(relative) = path.strip_prefix(host_result_dir)
-    {
-        return result_dir.join(relative);
-    }
-    if let Some(host_workspace_root) = host_workspace_root
-        && let Ok(relative) = path.strip_prefix(host_workspace_root)
-    {
-        return container_workspace_root.join(relative);
-    }
-    path.to_path_buf()
+fn normalize_manifest_paths_for_runtime(_manifest: &mut BenchmarkManifest, _result_dir: &Path) {
 }
 
 pub fn parse_prompt_compaction_policy(
@@ -1531,154 +505,22 @@ pub fn prepare_benchmark_prompt_bundle(
         &safety_mode_label,
         helper_briefing.as_deref(),
     )?;
-    let prompt_bundle = crate::quorp::codex_executor::build_benchmark_prompt_bundle(
-        workspace_dir,
-        &objective.path,
-        max_steps,
-        max_seconds,
-        max_total_tokens,
-    )?;
+    let prompt = fs::read_to_string(&objective.path)
+        .with_context(|| format!("failed to read {}", objective.path.display()))?;
+    let mut hasher = Sha256::new();
+    hasher.update(prompt.as_bytes());
+    hasher.update(max_steps.to_le_bytes());
+    hasher.update(max_seconds.unwrap_or_default().to_le_bytes());
+    hasher.update(max_total_tokens.unwrap_or_default().to_le_bytes());
     Ok(BenchmarkPromptBundle {
         resolved,
         workspace_dir: workspace_dir.to_path_buf(),
         objective_path: objective.path,
         model_id,
         safety_mode_label,
-        prompt: prompt_bundle.prompt,
-        prompt_fingerprint: prompt_bundle.prompt_fingerprint,
-        prompt_token_estimate: prompt_bundle.prompt_token_estimate,
-    })
-}
-
-fn tui_workspace_entries(path: &Path) -> Vec<String> {
-    match fs::read_dir(path) {
-        Ok(entries) => {
-            let mut items = entries
-                .filter_map(std::result::Result::ok)
-                .filter_map(|entry| {
-                    let file_name = entry.file_name().into_string().ok()?;
-                    let metadata = entry.metadata().ok()?;
-                    Some(if metadata.is_dir() {
-                        format!("{file_name}/")
-                    } else {
-                        file_name
-                    })
-                })
-                .collect::<Vec<_>>();
-            items.sort();
-            items.truncate(24);
-            items
-        }
-        Err(_) => Vec::new(),
-    }
-}
-
-#[allow(clippy::too_many_arguments)]
-pub fn prepare_tui_benchmark_launch(
-    path: &Path,
-    result_dir: &Path,
-    executor: BenchmarkExecutor,
-    model_id: Option<String>,
-    briefing_file: Option<&Path>,
-    max_steps: usize,
-    max_seconds: Option<u64>,
-    max_total_tokens: Option<u64>,
-) -> anyhow::Result<TuiBenchmarkLaunch> {
-    if let Some(challenge) = resolve_challenge_case(path, None)? {
-        let prepared = prepare_challenge_run(result_dir, &challenge)?;
-        let evaluate_command = Some(substitute_condition(
-            &prepared.challenge_metadata.evaluate_command,
-            &prepared.challenge_metadata.condition,
-        ));
-        let workspace_dir = prepared.challenge_metadata.workspace_dir.clone();
-        let objective_file = prepared.challenge_metadata.objective_file.clone();
-        let objective_metadata = serde_json::json!({
-            "workspace_root": workspace_dir,
-            "challenge_root": prepared.challenge_metadata.sandbox_root,
-            "editable_workspace_root": prepared.challenge_metadata.workspace_dir,
-            "editable_workspace_relative_root": serde_json::Value::Null,
-            "objective_file": objective_file,
-            "evaluate_command": evaluate_command,
-            "reset_command": substitute_condition(
-                &prepared.challenge_metadata.reset_command,
-                &prepared.challenge_metadata.condition,
-            ),
-            "selected_condition": prepared.challenge_metadata.condition,
-            "success_file": prepared.challenge_metadata.success_file,
-            "context_files": prepared.resolved.context_files,
-            "repair_artifacts": prepared.resolved.repair_artifacts,
-            "workspace_root_entries": tui_workspace_entries(&prepared.challenge_metadata.workspace_dir),
-            "editable_workspace_entries": tui_workspace_entries(&prepared.challenge_metadata.workspace_dir),
-            "benchmark_root": prepared.resolved.benchmark_root,
-            "benchmark_issue_id": prepared.resolved.issue_id,
-            "benchmark_name": prepared.resolved.benchmark_name,
-            "expected_files_touched": prepared.challenge_metadata.expected_files_touched,
-            "primary_metrics": prepared.challenge_metadata.primary_metrics,
-            "tags": prepared.challenge_metadata.tags,
-            "warpos_capture_scope": "benchmark_task",
-            "warpos_capture_call_class": "task_model_call",
-        });
-        return Ok(TuiBenchmarkLaunch {
-            workspace_dir,
-            objective_file,
-            evaluate_command,
-            objective_metadata,
-        });
-    }
-
-    let workspace_dir = result_dir.join("workspace");
-    let bundle = prepare_benchmark_prompt_bundle(
-        path,
-        &workspace_dir,
-        executor,
-        model_id,
-        briefing_file,
-        max_steps,
-        max_seconds,
-        max_total_tokens,
-    )?;
-    let evaluate_command = bundle
-        .resolved
-        .visible_evaluator
-        .as_ref()
-        .and_then(|path| path.file_name())
-        .and_then(|name| name.to_str())
-        .map(|name| format!("./{name}"));
-    let objective_metadata = serde_json::json!({
-        "workspace_root": bundle.workspace_dir,
-        "challenge_root": bundle.workspace_dir,
-        "editable_workspace_root": bundle.workspace_dir,
-        "editable_workspace_relative_root": serde_json::Value::Null,
-        "objective_file": bundle.objective_path,
-        "evaluate_command": evaluate_command,
-        "reset_command": serde_json::Value::Null,
-        "selected_condition": serde_json::Value::Null,
-        "success_file": serde_json::Value::Null,
-        "context_files": bundle
-            .resolved
-            .context_files
-            .iter()
-            .map(|path| rebase_attempt_path(&bundle.resolved, &bundle.workspace_dir, path))
-            .collect::<Vec<_>>(),
-        "repair_artifacts": bundle
-            .resolved
-            .repair_artifacts
-            .iter()
-            .map(|path| rebase_attempt_path(&bundle.resolved, &bundle.workspace_dir, path))
-            .collect::<Vec<_>>(),
-        "workspace_root_entries": tui_workspace_entries(&bundle.workspace_dir),
-        "editable_workspace_entries": tui_workspace_entries(&bundle.workspace_dir),
-        "benchmark_root": bundle.resolved.benchmark_root,
-        "benchmark_issue_id": bundle.resolved.issue_id,
-        "benchmark_name": bundle.resolved.benchmark_name,
-        "warpos_capture_scope": "benchmark_task",
-        "warpos_capture_call_class": "task_model_call",
-    });
-    Ok(TuiBenchmarkLaunch {
-        workspace_dir: bundle.workspace_dir,
-        objective_file: bundle.objective_path,
-        evaluate_command,
-        objective_metadata,
+        prompt,
+        prompt_fingerprint: format!("{:x}", hasher.finalize()),
+        prompt_token_estimate: objective.prompt_token_estimate,
     })
 }
 
@@ -1826,7 +668,7 @@ pub fn run_benchmark_batch(options: BenchmarkBatchRunOptions) -> anyhow::Result<
         } else if report_summary.as_ref().is_some_and(|summary| {
             summary.action_contract_mode == "native_tool_calls_v1"
                 && summary
-                    .local_agent_final_failure_classification
+                    .agent_final_failure_classification
                     .as_deref()
                     .is_some_and(|classification| classification == "parser_tool_schema")
         }) {
@@ -1898,8 +740,8 @@ pub fn run_benchmark_batch(options: BenchmarkBatchRunOptions) -> anyhow::Result<
                 first_action_emitted: summary.first_action_emitted,
                 final_stop_reason: summary.final_stop_reason,
                 primary_failure: summary.primary_failure.clone(),
-                local_agent_final_failure_classification: summary
-                    .local_agent_final_failure_classification
+                agent_final_failure_classification: summary
+                    .agent_final_failure_classification
                     .clone(),
                 adaptive_action_mode_retry,
                 report_path: report_path.clone(),
@@ -1956,7 +798,7 @@ pub fn run_benchmark_batch(options: BenchmarkBatchRunOptions) -> anyhow::Result<
                 first_action_emitted: false,
                 final_stop_reason: None,
                 primary_failure: Some("launch_failed".to_string()),
-                local_agent_final_failure_classification: Some("launch_failed".to_string()),
+                agent_final_failure_classification: Some("launch_failed".to_string()),
                 adaptive_action_mode_retry,
                 report_path: report_path.clone(),
                 error: error.clone(),
@@ -1976,9 +818,6 @@ pub fn run_benchmark_batch(options: BenchmarkBatchRunOptions) -> anyhow::Result<
             &batch_cases,
             batch_started_at.elapsed().as_millis() as u64,
         )?;
-    }
-    if prepared_runtime.stop_after_batch {
-        SsdMoeRuntimeHandle::shared_handle().stop();
     }
     let rendered = fs::read_to_string(options.result_dir.join("batch-report.md"))
         .unwrap_or_else(|_| "# Batch Report\n- No report generated.".to_string());
@@ -2001,17 +840,17 @@ fn should_retry_case_with_json_actions(
         && !report.success
         && report.action_contract_mode == "native_tool_calls_v1"
         && report
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .first_valid_write_step
             .is_none()
         && report
-            .local_agent_final_failure_classification
+            .agent_final_failure_classification
             .as_deref()
             .is_some_and(|classification| {
                 classification == "parser_tool_schema"
                     || classification == "parser_or_action_contract"
             })
-        && (report.local_agent_scorecard.parser_recovery_count > 0
+        && (report.agent_repair_scorecard.parser_recovery_count > 0
             || report.attempts.last().is_some_and(|attempt| {
                 attempt
                     .agent_error_message
@@ -2038,8 +877,6 @@ fn launch_single_case_run(
         .arg("run")
         .arg("--path")
         .arg(objective_path)
-        .arg("--executor")
-        .arg(options.executor.label())
         .arg("--result-dir")
         .arg(case_result_dir)
         .arg("--log-file")
@@ -2055,16 +892,10 @@ fn launch_single_case_run(
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
 
-    if options.allow_heavy_local_model {
-        command.arg("--allow-heavy-local-model");
-    }
     if options.keep_sandbox {
         command.arg("--keep-sandbox");
     }
 
-    if let Some(model_id) = options.model_id.as_ref() {
-        command.arg("--model").arg(model_id);
-    }
     if let Some(base_url_override) =
         prepared_base_url_override.or(options.base_url_override.as_deref())
     {
@@ -2122,67 +953,14 @@ fn launch_single_case_run(
 fn prepare_batch_runtime(
     options: &BenchmarkBatchRunOptions,
 ) -> anyhow::Result<PreparedBatchRuntime> {
-    if options.executor == BenchmarkExecutor::Codex {
-        return Ok(PreparedBatchRuntime {
-            base_url_override: None,
-            stop_after_batch: false,
-        });
-    }
     if let Some(base_url_override) = options.base_url_override.clone() {
         return Ok(PreparedBatchRuntime {
             base_url_override: Some(base_url_override),
-            stop_after_batch: false,
         });
-    }
-    let model_id = if let Some(model_id) = options.model_id.clone() {
-        model_id
-    } else {
-        safe_benchmark_model_id()?
-    };
-    if native_batch_model_uses_remote_provider(&model_id) {
-        return Ok(PreparedBatchRuntime {
-            base_url_override: None,
-            stop_after_batch: false,
-        });
-    }
-    let Some(model) = crate::quorp::tui::model_registry::local_moe_spec_for_registry_id(&model_id)
-    else {
-        return Err(anyhow::anyhow!(
-            "SSD-MOE broker listed model `{model_id}` as default, but Quorp could not resolve its runtime metadata"
-        ));
-    };
-    let runtime = SsdMoeRuntimeHandle::shared_handle();
-    let timeout = Duration::from_secs(90);
-    runtime.ensure_running(&options.cases_root, &model);
-    if let Err(first_error) = runtime.wait_until_ready(timeout) {
-        runtime.stop();
-        std::thread::sleep(Duration::from_secs(1));
-        runtime.ensure_running(&options.cases_root, &model);
-        runtime.wait_until_ready(timeout).map_err(|second_error| {
-            anyhow::anyhow!(
-                "failed to prewarm shared local runtime for batch; first attempt: {first_error}; second attempt: {second_error}"
-            )
-        })?;
     }
     Ok(PreparedBatchRuntime {
-        base_url_override: Some(runtime.base_url()),
-        stop_after_batch: true,
+        base_url_override: None,
     })
-}
-
-fn native_batch_model_uses_remote_provider(model_id: &str) -> bool {
-    if is_nvidia_kimi_model_id(model_id) || is_nvidia_qwen_coder_model_id(model_id) {
-        return true;
-    }
-    let provider = crate::quorp::tui::model_registry::chat_model_provider(
-        model_id,
-        crate::quorp::executor::interactive_provider_from_env(),
-    );
-    !matches!(
-        provider,
-        crate::quorp::executor::InteractiveProviderKind::Local
-            | crate::quorp::executor::InteractiveProviderKind::Codex
-    )
 }
 
 fn discover_challenge_case_roots(cases_root: &Path) -> anyhow::Result<Vec<PathBuf>> {
@@ -2201,32 +979,6 @@ fn discover_challenge_case_roots(cases_root: &Path) -> anyhow::Result<Vec<PathBu
     }
     case_roots.sort();
     Ok(case_roots)
-}
-
-fn summarize_batch_report(
-    cases_root: PathBuf,
-    result_dir: PathBuf,
-    cases: Vec<BatchCaseReport>,
-) -> BatchReport {
-    let total_requests = cases.iter().map(|case| case.total_requests).sum();
-    let total_billed_tokens = cases.iter().map(|case| case.total_billed_tokens).sum();
-    let lines_added = cases.iter().map(|case| case.lines_added).sum();
-    let lines_removed = cases.iter().map(|case| case.lines_removed).sum();
-    let mistakes_corrected = cases.iter().map(|case| case.mistakes_corrected).sum();
-    let successful_cases = cases.iter().filter(|case| case.success).count();
-    let failed_cases = cases.len().saturating_sub(successful_cases);
-    BatchReport {
-        cases_root,
-        result_dir,
-        cases,
-        total_requests,
-        total_billed_tokens,
-        lines_added,
-        lines_removed,
-        mistakes_corrected,
-        successful_cases,
-        failed_cases,
-    }
 }
 
 fn write_batch_summary_artifacts(
@@ -2254,814 +1006,6 @@ fn write_batch_summary_artifacts(
     Ok(())
 }
 
-fn summarize_run_report(report: &BatchReport) -> RunSummary {
-    RunSummary {
-        cases_root: report.cases_root.clone(),
-        result_dir: report.result_dir.clone(),
-        cases_run: report.cases.len(),
-        successful_cases: report.successful_cases,
-        failed_cases: report.failed_cases,
-        total_requests: report.total_requests,
-        total_billed_tokens: report.total_billed_tokens,
-        cases: report
-            .cases
-            .iter()
-            .map(|case| {
-                let scorecard = read_case_report_scorecard(&case.report_path);
-                RunSummaryCase {
-                    case_id: case.case_id.clone(),
-                    success: case.success,
-                    primary_failure: case.primary_failure.clone(),
-                    local_agent_final_failure_classification: case
-                        .local_agent_final_failure_classification
-                        .clone(),
-                    final_stop_reason: case.final_stop_reason,
-                    first_valid_write_step: scorecard
-                        .as_ref()
-                        .and_then(|scorecard| scorecard.first_valid_write_step),
-                    parser_recovery_count: scorecard
-                        .as_ref()
-                        .map(|scorecard| scorecard.parser_recovery_count)
-                        .unwrap_or_default(),
-                    redundant_read_count: scorecard
-                        .as_ref()
-                        .map(|scorecard| scorecard.redundant_read_count)
-                        .unwrap_or_default(),
-                    rejected_validation_alias_count: scorecard
-                        .as_ref()
-                        .map(|scorecard| scorecard.rejected_validation_alias_count)
-                        .unwrap_or_default(),
-                    target_redirect_count: scorecard
-                        .as_ref()
-                        .map(|scorecard| scorecard.target_redirect_count)
-                        .unwrap_or_default(),
-                    syntax_preview_failure_count: scorecard
-                        .as_ref()
-                        .map(|scorecard| scorecard.syntax_preview_failure_count)
-                        .unwrap_or_default(),
-                    adaptive_action_mode_retry: case.adaptive_action_mode_retry,
-                    report_path: case.report_path.clone(),
-                }
-            })
-            .collect(),
-    }
-}
-
-fn read_case_report_scorecard(report_path: &Path) -> Option<quorp_agent_core::LocalAgentScorecard> {
-    let raw = fs::read_to_string(report_path).ok()?;
-    let value = serde_json::from_str::<serde_json::Value>(&raw).ok()?;
-    value
-        .get("local_agent_scorecard")
-        .and_then(|scorecard| serde_json::from_value(scorecard.clone()).ok())
-}
-
-fn render_run_summary(summary: &RunSummary) -> String {
-    let mut lines = vec![
-        "# Run Summary".to_string(),
-        format!("- Cases root: `{}`", summary.cases_root.display()),
-        format!("- Result dir: `{}`", summary.result_dir.display()),
-        format!("- Cases run: `{}`", summary.cases_run),
-        format!("- Successful cases: `{}`", summary.successful_cases),
-        format!("- Failed cases: `{}`", summary.failed_cases),
-        format!("- Total requests: `{}`", summary.total_requests),
-        format!("- Total billed tokens: `{}`", summary.total_billed_tokens),
-        String::new(),
-        "## Classifications".to_string(),
-    ];
-    for case in &summary.cases {
-        lines.push(format!(
-            "- `{}` success={} primary={} local={} stop={:?} first_write={} parser_recovery={} redundant_reads={} validation_rejects={} target_redirects={} syntax_preview_failures={} adaptive_retry={} report={}",
-            case.case_id,
-            case.success,
-            case.primary_failure
-                .clone()
-                .unwrap_or_else(|| "none".to_string()),
-            case.local_agent_final_failure_classification
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string()),
-            case.final_stop_reason,
-            case.first_valid_write_step
-                .map(|step| step.to_string())
-                .unwrap_or_else(|| "none".to_string()),
-            case.parser_recovery_count,
-            case.redundant_read_count,
-            case.rejected_validation_alias_count,
-            case.target_redirect_count,
-            case.syntax_preview_failure_count,
-            case.adaptive_action_mode_retry,
-            case.report_path.display()
-        ));
-    }
-    lines.join("\n")
-}
-
-pub fn score_benchmark_reports(
-    options: BenchmarkScoreOptions,
-) -> anyhow::Result<BenchmarkScoreArtifacts> {
-    let run_dirs = resolve_score_run_dirs(&options)?;
-    let output_root = options.output_root.clone().unwrap_or_else(|| {
-        options
-            .reports_root
-            .join("scoreboards")
-            .join(options.suite.trim())
-    });
-    let previous_score = read_score_report(&output_root.join("latest.json")).ok();
-    let output_dir = output_root.join(format!("session-{}", current_unix_timestamp_seconds()));
-
-    let mut best_cases = BTreeMap::<String, BenchmarkScoreCase>::new();
-    for run_dir in &run_dirs {
-        for case in load_score_cases_from_run_dir(run_dir, &options.suite)? {
-            match best_cases.get(&case.case_id) {
-                Some(current) if !score_case_is_better(&case, current) => {}
-                _ => {
-                    best_cases.insert(case.case_id.clone(), case);
-                }
-            }
-        }
-    }
-
-    let mut cases = best_cases.into_values().collect::<Vec<_>>();
-    cases.sort_by(|left, right| left.case_id.cmp(&right.case_id));
-    let total_cases = cases.len();
-    let solved_cases = cases.iter().filter(|case| case.success).count();
-    let valid_write_cases = cases
-        .iter()
-        .filter(|case| case.first_valid_write_step.is_some())
-        .count();
-    let post_write_validation_cases = cases
-        .iter()
-        .filter(|case| case.post_write_validation)
-        .count();
-    let diagnostic_classified_cases = cases
-        .iter()
-        .filter(|case| case.progress_score >= 3 || case.success)
-        .count();
-    let tooling_healthy_cases = cases
-        .iter()
-        .filter(|case| case_tooling_is_healthy(&case.failure_classification))
-        .count();
-    let total_requests = cases.iter().map(|case| case.total_requests).sum();
-    let total_billed_tokens = cases.iter().map(|case| case.total_billed_tokens).sum();
-    let blocker_counts = count_blockers(&cases);
-    let common_blocker = blocker_counts
-        .iter()
-        .max_by(|left, right| left.1.cmp(right.1).then_with(|| right.0.cmp(left.0)))
-        .map(|(classification, _)| classification.clone());
-    let generated_at_unix_seconds = current_unix_timestamp_seconds();
-    let mut score = BenchmarkScoreReport {
-        suite: options.suite.clone(),
-        generated_at_unix_seconds,
-        output_dir: output_dir.clone(),
-        run_dirs,
-        total_cases,
-        solved_cases,
-        valid_write_cases,
-        post_write_validation_cases,
-        diagnostic_classified_cases,
-        tooling_healthy_cases,
-        total_requests,
-        total_billed_tokens,
-        common_blocker,
-        blocker_counts,
-        regressions: Vec::new(),
-        cases,
-    };
-    score.regressions = detect_score_regressions(previous_score.as_ref(), &score);
-    let markdown = render_scoreboard(&score);
-
-    write_json(&output_dir.join("scoreboard.json"), &score)?;
-    fs::write(output_dir.join("scoreboard.md"), &markdown)?;
-    write_json(&output_root.join("latest.json"), &score)?;
-    fs::write(output_root.join("latest.md"), &markdown)?;
-
-    Ok(BenchmarkScoreArtifacts {
-        output_dir,
-        markdown,
-    })
-}
-
-fn resolve_score_run_dirs(options: &BenchmarkScoreOptions) -> anyhow::Result<Vec<PathBuf>> {
-    if !options.run_dirs.is_empty() {
-        return Ok(options.run_dirs.clone());
-    }
-    let discovered = discover_score_run_dirs(&options.reports_root, &options.suite)?;
-    if discovered.is_empty() {
-        anyhow::bail!(
-            "no benchmark reports found for suite `{}` under {}",
-            options.suite,
-            options.reports_root.display()
-        );
-    }
-    Ok(discovered)
-}
-
-fn discover_score_run_dirs(reports_root: &Path, suite: &str) -> anyhow::Result<Vec<PathBuf>> {
-    let mut stack = vec![reports_root.to_path_buf()];
-    let mut run_dirs = Vec::new();
-    while let Some(dir) = stack.pop() {
-        let entries = match fs::read_dir(&dir) {
-            Ok(entries) => entries,
-            Err(error) if error.kind() == ErrorKind::NotFound => continue,
-            Err(error) => {
-                return Err(error).with_context(|| format!("failed to read {}", dir.display()));
-            }
-        };
-        for entry in entries {
-            let entry = entry?;
-            let path = entry.path();
-            let file_type = entry.file_type()?;
-            if file_type.is_dir() {
-                if path.join("batch-report.json").exists()
-                    && run_dir_has_suite_cases(&path, suite).unwrap_or(false)
-                {
-                    run_dirs.push(path);
-                } else {
-                    stack.push(path);
-                }
-            }
-        }
-    }
-    run_dirs.sort_by(|left, right| {
-        path_modified_unix_seconds(right)
-            .cmp(&path_modified_unix_seconds(left))
-            .then_with(|| left.cmp(right))
-    });
-    Ok(run_dirs)
-}
-
-fn run_dir_has_suite_cases(run_dir: &Path, suite: &str) -> anyhow::Result<bool> {
-    Ok(load_score_cases_from_run_dir(run_dir, suite)?
-        .into_iter()
-        .next()
-        .is_some())
-}
-
-fn load_score_cases_from_run_dir(
-    run_dir: &Path,
-    suite: &str,
-) -> anyhow::Result<Vec<BenchmarkScoreCase>> {
-    let batch_report_path = run_dir.join("batch-report.json");
-    if batch_report_path.exists() {
-        let raw = fs::read_to_string(&batch_report_path)
-            .with_context(|| format!("failed to read {}", batch_report_path.display()))?;
-        let report: BatchReport = serde_json::from_str(&raw)
-            .with_context(|| format!("failed to parse {}", batch_report_path.display()))?;
-        return report
-            .cases
-            .iter()
-            .filter_map(|case| match load_score_case_from_batch_case(case, suite) {
-                Ok(Some(score_case)) => Some(Ok(score_case)),
-                Ok(None) => None,
-                Err(error) => Some(Err(error)),
-            })
-            .collect();
-    }
-
-    let benchmark_report_path = run_dir.join("benchmark-report.json");
-    if benchmark_report_path.exists() {
-        let case = load_single_score_case(&benchmark_report_path, suite)?;
-        return Ok(case.into_iter().collect());
-    }
-
-    anyhow::bail!(
-        "no batch-report.json or benchmark-report.json found in {}",
-        run_dir.display()
-    )
-}
-
-fn load_score_case_from_batch_case(
-    case: &BatchCaseReport,
-    suite: &str,
-) -> anyhow::Result<Option<BenchmarkScoreCase>> {
-    let report_path = if case.report_path.exists() {
-        case.report_path.clone()
-    } else {
-        case.result_dir.join("benchmark-report.json")
-    };
-    let report = read_benchmark_report(&report_path).ok();
-    if !score_case_matches_suite(case, report.as_ref(), suite) {
-        return Ok(None);
-    }
-    Ok(Some(score_case_from_parts(
-        case,
-        report.as_ref(),
-        report_path,
-    )))
-}
-
-fn load_single_score_case(
-    report_path: &Path,
-    suite: &str,
-) -> anyhow::Result<Option<BenchmarkScoreCase>> {
-    let report = read_benchmark_report(report_path)?;
-    let case = BatchCaseReport {
-        case_id: report.issue_id.clone(),
-        case_root: report
-            .challenge
-            .as_ref()
-            .map(|challenge| challenge.case_root.clone())
-            .unwrap_or_else(|| report.run_dir.clone()),
-        objective_path: PathBuf::new(),
-        result_dir: report.run_dir.clone(),
-        log_file: report.run_dir.join("benchmark.log"),
-        executor: report.executor,
-        success: report.success,
-        exit_code: report.exit_code,
-        wall_clock_ms: report.wall_clock_ms,
-        total_requests: report.total_requests,
-        total_billed_tokens: report.total_billed_tokens,
-        lines_added: report.lines_added,
-        lines_removed: report.lines_removed,
-        mistakes_corrected: report.mistakes_corrected,
-        judge_passed: report.judge.as_ref().map(|judge| judge.passed),
-        deterministic_evaluation_passed: report.deterministic_evaluation_passed,
-        first_request_prompt_token_estimate: report.first_request_prompt_token_estimate,
-        first_request_raw_prompt_token_estimate: report.first_request_raw_prompt_token_estimate,
-        first_request_compacted_prompt_token_estimate: report
-            .first_request_compacted_prompt_token_estimate,
-        first_request_first_token_latency_ms: report.first_request_first_token_latency_ms,
-        first_model_turn_started: report.first_model_turn_started,
-        first_action_emitted: report.first_action_emitted,
-        final_stop_reason: report.final_stop_reason,
-        primary_failure: report.primary_failure.clone(),
-        local_agent_final_failure_classification: report
-            .local_agent_final_failure_classification
-            .clone(),
-        adaptive_action_mode_retry: false,
-        report_path: report_path.to_path_buf(),
-        error: report.run_error.clone(),
-    };
-    if !score_case_matches_suite(&case, Some(&report), suite) {
-        return Ok(None);
-    }
-    Ok(Some(score_case_from_parts(
-        &case,
-        Some(&report),
-        report_path.to_path_buf(),
-    )))
-}
-
-fn score_case_matches_suite(
-    case: &BatchCaseReport,
-    report: Option<&BenchmarkReport>,
-    suite: &str,
-) -> bool {
-    let suite = suite.trim();
-    if suite.is_empty() {
-        return true;
-    }
-    if path_contains(&case.case_root, suite) || path_contains(&case.result_dir, suite) {
-        return true;
-    }
-    if suite == "rust-swebench-top5" && rust_swebench_top5_case_id(&case.case_id) {
-        return true;
-    }
-    report.is_some_and(|report| {
-        report.challenge.as_ref().is_some_and(|challenge| {
-            path_contains(&challenge.case_root, suite)
-                || challenge
-                    .tags
-                    .iter()
-                    .any(|tag| tag == suite || tag == "rust-swebench")
-        })
-    })
-}
-
-fn rust_swebench_top5_case_id(case_id: &str) -> bool {
-    ["01-", "02-", "03-", "04-", "05-"]
-        .iter()
-        .any(|prefix| case_id.starts_with(prefix))
-}
-
-fn path_contains(path: &Path, needle: &str) -> bool {
-    path.to_string_lossy().contains(needle)
-}
-
-fn score_case_from_parts(
-    case: &BatchCaseReport,
-    report: Option<&BenchmarkReport>,
-    report_path: PathBuf,
-) -> BenchmarkScoreCase {
-    let scorecard = report
-        .map(|report| report.local_agent_scorecard.clone())
-        .or_else(|| read_case_report_scorecard(&report_path))
-        .unwrap_or_default();
-    let first_valid_write_step = scorecard.first_valid_write_step;
-    let post_write_validation = first_valid_write_step.is_some()
-        && report.is_some_and(|report| {
-            report.post_fast_loop_validation_rerun_attempted
-                || report.validation_commands_run > 1
-                || report.evaluation_commands_run > 0
-        });
-    let failure_classification = normalize_score_failure_classification(case, report, &scorecard);
-    let progress_score = progress_score_for_case(case, report, &scorecard, post_write_validation);
-    let general_tooling_gap = general_tooling_gap_for_case(case, &failure_classification);
-    BenchmarkScoreCase {
-        case_id: case.case_id.clone(),
-        success: case.success,
-        progress_score,
-        progress_phase: progress_phase_label(progress_score).to_string(),
-        failure_classification,
-        primary_failure: case.primary_failure.clone(),
-        model_id: report.map(|report| report.model_id.clone()),
-        executor: Some(case.executor.label().to_string()),
-        provider_base_url: report.and_then(|report| report.provider_base_url.clone()),
-        action_contract_selected: report.and_then(|report| {
-            (!report.action_contract_selected.trim().is_empty())
-                .then(|| report.action_contract_selected.clone())
-        }),
-        result_dir: case.result_dir.clone(),
-        report_path,
-        first_model_turn_started: case.first_model_turn_started,
-        first_action_emitted: case.first_action_emitted,
-        diagnostic_class: report.and_then(|report| report.diagnostic_class.clone()),
-        implementation_target_lease: report
-            .and_then(|report| report.implementation_target_lease.clone()),
-        first_valid_write_step,
-        post_write_validation,
-        parser_recovery_count: scorecard.parser_recovery_count,
-        redundant_read_count: scorecard.redundant_read_count,
-        rejected_validation_alias_count: scorecard.rejected_validation_alias_count,
-        target_redirect_count: scorecard.target_redirect_count,
-        syntax_preview_failure_count: scorecard.syntax_preview_failure_count,
-        preview_created_count: scorecard.preview_created_count,
-        modify_toml_count: scorecard.modify_toml_count,
-        replace_range_count: scorecard.replace_range_count,
-        apply_preview_count: scorecard.apply_preview_count,
-        wall_clock_ms: case.wall_clock_ms,
-        total_requests: case.total_requests,
-        total_billed_tokens: case.total_billed_tokens,
-        lines_added: case.lines_added,
-        lines_removed: case.lines_removed,
-        general_tooling_gap,
-    }
-}
-
-fn progress_score_for_case(
-    case: &BatchCaseReport,
-    report: Option<&BenchmarkReport>,
-    scorecard: &quorp_agent_core::LocalAgentScorecard,
-    post_write_validation: bool,
-) -> u8 {
-    if case.success {
-        return 6;
-    }
-    if post_write_validation {
-        return 5;
-    }
-    if scorecard.first_valid_write_step.is_some() {
-        return 4;
-    }
-    if report.is_some_and(|report| {
-        report.diagnostic_class.is_some()
-            || report.last_validation_failure.is_some()
-            || !report.failing_test_names.is_empty()
-            || report.primary_failure_path.is_some()
-    }) || case
-        .local_agent_final_failure_classification
-        .as_deref()
-        .is_some_and(|classification| classification != "n/a")
-    {
-        return 3;
-    }
-    if case.first_action_emitted {
-        return 2;
-    }
-    if case.first_model_turn_started || case.total_requests > 0 {
-        return 1;
-    }
-    0
-}
-
-fn progress_phase_label(score: u8) -> &'static str {
-    match score {
-        6 => "solved",
-        5 => "post_write_validation",
-        4 => "valid_implementation_write",
-        3 => "diagnostic_classified",
-        2 => "first_action",
-        1 => "launch_or_first_turn",
-        _ => "no_artifact",
-    }
-}
-
-fn normalize_score_failure_classification(
-    case: &BatchCaseReport,
-    report: Option<&BenchmarkReport>,
-    scorecard: &quorp_agent_core::LocalAgentScorecard,
-) -> String {
-    if case.success {
-        return "success".to_string();
-    }
-    let raw = case
-        .local_agent_final_failure_classification
-        .as_deref()
-        .or_else(|| {
-            report.and_then(|report| report.local_agent_final_failure_classification.as_deref())
-        })
-        .or(case.primary_failure.as_deref())
-        .unwrap_or("unknown_agent_fatal");
-    match raw {
-        "success" => "success",
-        "launch_failed"
-        | "first_token_timeout"
-        | "stream_idle_timeout"
-        | "model_request_timeout"
-        | "runtime_startup_or_inference" => "infra_runtime",
-        "context_wander" => "context_management",
-        "agent_fatal_error" | "agent_error" => {
-            if scorecard.first_valid_write_step.is_some()
-                || scorecard.repeated_failed_edit_count > 0
-                || report.is_some_and(|report| !report.failed_edit_records.is_empty())
-            {
-                "model_edit_strategy"
-            } else if scorecard.parser_recovery_count > 0 {
-                "parser_tool_schema"
-            } else if scorecard.rejected_validation_alias_count > 0 {
-                "validation_governance"
-            } else if case.first_action_emitted || case.first_model_turn_started {
-                "context_management"
-            } else {
-                "infra_runtime"
-            }
-        }
-        other => other,
-    }
-    .to_string()
-}
-
-fn general_tooling_gap_for_case(
-    case: &BatchCaseReport,
-    failure_classification: &str,
-) -> Option<String> {
-    if case.primary_failure.as_deref() == Some("agent_fatal_error")
-        && failure_classification == "agent_fatal_error"
-    {
-        return Some("unknown_agent_fatal_without_typed_classification".to_string());
-    }
-    match failure_classification {
-        "infra_runtime" => Some("runtime_or_host_infrastructure".to_string()),
-        "parser_tool_schema" => Some("action_contract_or_parser_recovery".to_string()),
-        "validation_governance" => Some("validation_command_governance".to_string()),
-        "context_management" => Some("context_selection_or_anti_wander".to_string()),
-        "diagnostic_targeting" => Some("diagnostic_to_target_mapping".to_string()),
-        _ => None,
-    }
-}
-
-fn score_case_is_better(candidate: &BenchmarkScoreCase, current: &BenchmarkScoreCase) -> bool {
-    candidate
-        .progress_score
-        .cmp(&current.progress_score)
-        .then_with(|| candidate.success.cmp(&current.success))
-        .then_with(|| {
-            path_modified_unix_seconds(&candidate.report_path)
-                .cmp(&path_modified_unix_seconds(&current.report_path))
-        })
-        .is_gt()
-}
-
-fn count_blockers(cases: &[BenchmarkScoreCase]) -> BTreeMap<String, usize> {
-    let mut counts = BTreeMap::new();
-    for case in cases.iter().filter(|case| !case.success) {
-        *counts
-            .entry(case.failure_classification.clone())
-            .or_insert(0) += 1;
-    }
-    counts
-}
-
-fn case_tooling_is_healthy(classification: &str) -> bool {
-    matches!(
-        classification,
-        "success"
-            | "model_edit_strategy"
-            | "model_semantic_quality"
-            | "edit_intent_quality"
-            | "syntax_patch_quality"
-            | "toml_edit_quality"
-    )
-}
-
-fn detect_score_regressions(
-    previous: Option<&BenchmarkScoreReport>,
-    current: &BenchmarkScoreReport,
-) -> Vec<String> {
-    let Some(previous) = previous else {
-        return Vec::new();
-    };
-    let mut regressions = Vec::new();
-    if current.solved_cases < previous.solved_cases {
-        regressions.push(format!(
-            "solved cases decreased from {} to {}",
-            previous.solved_cases, current.solved_cases
-        ));
-    }
-    if current.valid_write_cases < previous.valid_write_cases {
-        regressions.push(format!(
-            "valid implementation writes decreased from {} to {}",
-            previous.valid_write_cases, current.valid_write_cases
-        ));
-    }
-    if current.post_write_validation_cases < previous.post_write_validation_cases {
-        regressions.push(format!(
-            "post-write validation cases decreased from {} to {}",
-            previous.post_write_validation_cases, current.post_write_validation_cases
-        ));
-    }
-    let previous_cases = previous
-        .cases
-        .iter()
-        .map(|case| (case.case_id.as_str(), case))
-        .collect::<BTreeMap<_, _>>();
-    for case in &current.cases {
-        if let Some(previous_case) = previous_cases.get(case.case_id.as_str())
-            && case.progress_score < previous_case.progress_score
-        {
-            regressions.push(format!(
-                "{} regressed from {} to {}",
-                case.case_id, previous_case.progress_phase, case.progress_phase
-            ));
-        }
-    }
-    regressions
-}
-
-fn read_score_report(path: &Path) -> anyhow::Result<BenchmarkScoreReport> {
-    let raw =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    serde_json::from_str(&raw).with_context(|| format!("failed to parse {}", path.display()))
-}
-
-fn render_scoreboard(report: &BenchmarkScoreReport) -> String {
-    let mut lines = vec![
-        "# Rust SWE Scoreboard".to_string(),
-        format!("- Suite: `{}`", report.suite),
-        format!("- Generated at: `{}`", report.generated_at_unix_seconds),
-        format!("- Output dir: `{}`", report.output_dir.display()),
-        format!("- Runs scanned: `{}`", report.run_dirs.len()),
-        format!(
-            "- Solved score: `{}/{}`",
-            report.solved_cases, report.total_cases
-        ),
-        format!(
-            "- Valid implementation writes: `{}/{}`",
-            report.valid_write_cases, report.total_cases
-        ),
-        format!(
-            "- Post-write validation: `{}/{}`",
-            report.post_write_validation_cases, report.total_cases
-        ),
-        format!(
-            "- Diagnostic classified: `{}/{}`",
-            report.diagnostic_classified_cases, report.total_cases
-        ),
-        format!(
-            "- Tooling-healthy terminal states: `{}/{}`",
-            report.tooling_healthy_cases, report.total_cases
-        ),
-        format!(
-            "- Most common blocker: `{}`",
-            report
-                .common_blocker
-                .clone()
-                .unwrap_or_else(|| "none".to_string())
-        ),
-        format!("- Total requests: `{}`", report.total_requests),
-        format!("- Total billed tokens: `{}`", report.total_billed_tokens),
-        String::new(),
-        "## Blockers".to_string(),
-    ];
-    if report.blocker_counts.is_empty() {
-        lines.push("- none".to_string());
-    } else {
-        for (classification, count) in &report.blocker_counts {
-            lines.push(format!("- `{classification}`: `{count}`"));
-        }
-    }
-    lines.push(String::new());
-    lines.push("## Regressions".to_string());
-    if report.regressions.is_empty() {
-        lines.push("- none".to_string());
-    } else {
-        for regression in &report.regressions {
-            lines.push(format!("- {regression}"));
-        }
-    }
-    lines.push(String::new());
-    lines.push("## Cases".to_string());
-    for case in &report.cases {
-        lines.push(format!(
-            "- `{}` phase=`{}` progress={} success={} class=`{}` model={} first_write={} post_write_validation={} requests={} tokens={} changed=+{}/-{} gap={} report={}",
-            case.case_id,
-            case.progress_phase,
-            case.progress_score,
-            case.success,
-            case.failure_classification,
-            case.model_id
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string()),
-            case.first_valid_write_step
-                .map(|step| step.to_string())
-                .unwrap_or_else(|| "none".to_string()),
-            case.post_write_validation,
-            case.total_requests,
-            case.total_billed_tokens,
-            case.lines_added,
-            case.lines_removed,
-            case.general_tooling_gap
-                .clone()
-                .unwrap_or_else(|| "none".to_string()),
-            case.report_path.display()
-        ));
-    }
-    lines.join("\n")
-}
-
-fn current_unix_timestamp_seconds() -> u64 {
-    std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default()
-}
-
-fn path_modified_unix_seconds(path: &Path) -> u64 {
-    path.metadata()
-        .and_then(|metadata| metadata.modified())
-        .ok()
-        .and_then(|modified| modified.duration_since(std::time::UNIX_EPOCH).ok())
-        .map(|duration| duration.as_secs())
-        .unwrap_or_default()
-}
-
-fn render_batch_report(report: &BatchReport, elapsed_ms: u64) -> String {
-    let mut lines = vec![
-        format!("# Batch Report"),
-        format!("- Cases root: `{}`", report.cases_root.display()),
-        format!("- Result dir: `{}`", report.result_dir.display()),
-        format!("- Cases run: `{}`", report.cases.len()),
-        format!("- Successful cases: `{}`", report.successful_cases),
-        format!("- Failed cases: `{}`", report.failed_cases),
-        format!("- Total requests: `{}`", report.total_requests),
-        format!("- Total billed tokens: `{}`", report.total_billed_tokens),
-        format!("- Lines added: `{}`", report.lines_added),
-        format!("- Lines removed: `{}`", report.lines_removed),
-        format!("- Mistakes corrected: `{}`", report.mistakes_corrected),
-        format!("- Wall clock ms: `{}`", elapsed_ms),
-        String::new(),
-        "## Cases".to_string(),
-    ];
-    for case in &report.cases {
-        lines.push(format!(
-            "- `{}` executor={} success={} judge={} deterministic={} wall_clock_ms={} first_prompt_est={} compacted_prompt_est={} first_turn_started={} first_action_emitted={} first_token_ms={} requests={} tokens={} added={} removed={} mistakes={} stop={:?} failure={} local={} adaptive_retry={} log={} report={}",
-            case.case_id,
-            case.executor.label(),
-            case.success,
-            case
-                .judge_passed
-                .map(|passed| passed.to_string())
-                .unwrap_or_else(|| "n/a".to_string()),
-            case
-                .deterministic_evaluation_passed
-                .map(|passed| passed.to_string())
-                .unwrap_or_else(|| "n/a".to_string()),
-            case.wall_clock_ms,
-            case
-                .first_request_prompt_token_estimate
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "n/a".to_string()),
-            case
-                .first_request_compacted_prompt_token_estimate
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "n/a".to_string()),
-            case.first_model_turn_started,
-            case.first_action_emitted,
-            case
-                .first_request_first_token_latency_ms
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "n/a".to_string()),
-            case.total_requests,
-            case.total_billed_tokens,
-            case.lines_added,
-            case.lines_removed,
-            case.mistakes_corrected,
-            case.final_stop_reason,
-            case
-                .primary_failure
-                .clone()
-                .unwrap_or_else(|| "none".to_string()),
-            case
-                .local_agent_final_failure_classification
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string()),
-            case.adaptive_action_mode_retry,
-            case.log_file.display(),
-            case.report_path.display(),
-        ));
-    }
-    lines.join("\n")
-}
-
 fn run_benchmark_from_manifest(
     manifest: &BenchmarkManifest,
     result_dir: &Path,
@@ -3080,16 +1024,6 @@ fn run_challenge_benchmark(
     challenge: ResolvedChallengeCase,
 ) -> anyhow::Result<()> {
     let model_id = resolve_benchmark_model_id(options.executor, options.model_id.clone())?;
-    if options.executor == BenchmarkExecutor::Native {
-        ensure_safe_local_model_selection(
-            &model_id,
-            allow_resolved_benchmark_model_without_opt_in(
-                options.model_id.as_deref(),
-                &model_id,
-                options.allow_heavy_local_model,
-            ),
-        )?;
-    }
     let safety_mode_label = benchmark_safety_mode_label(options.executor, &model_id);
     let scenario_label = Some(crate::quorp::provider_config::resolved_scenario_label());
     let mut completion_policy =
@@ -3180,311 +1114,35 @@ fn run_challenge_benchmark(
     outcome
 }
 
-#[derive(Debug, Clone)]
-struct PreparedChallengeRun {
-    resolved: ResolvedBenchmark,
-    challenge_metadata: ChallengeMetadata,
-    reset_outcome: EvaluatorOutcome,
-}
-
 fn prepare_challenge_run(
     result_dir: &Path,
     challenge: &ResolvedChallengeCase,
-) -> anyhow::Result<PreparedChallengeRun> {
-    let sandbox_root = result_dir.join(CHALLENGE_SANDBOX_DIR);
-    if sandbox_root.exists() {
-        fs::remove_dir_all(&sandbox_root)
-            .with_context(|| format!("failed to clean {}", sandbox_root.display()))?;
-    }
-    log_phase(
-        "sandbox",
-        ANSI_BLUE,
-        format!(
-            "copying challenge bundle {} -> {}",
-            challenge.case_root.display(),
-            sandbox_root.display()
-        ),
-    );
-    copy_dir_all(&challenge.case_root, &sandbox_root)?;
-    maybe_materialize_rustbench_workspace(&sandbox_root, &challenge.condition)?;
-    maybe_materialize_flat_challenge_reset_script(result_dir, &sandbox_root)?;
-
-    let objective_path = sandbox_root.join(CHALLENGE_OBJECTIVE_FILE);
-    let sandbox_objective_source = challenge
-        .objective_source
-        .strip_prefix(&challenge.case_root)
-        .map(|relative| sandbox_root.join(relative))
-        .unwrap_or_else(|_| challenge.objective_source.clone());
-    let sandbox_success_source = challenge
-        .success_source
-        .strip_prefix(&challenge.case_root)
-        .map(|relative| sandbox_root.join(relative))
-        .unwrap_or_else(|_| challenge.success_source.clone());
-    let capsule = compile_challenge_capsule(challenge, &sandbox_root)?;
-    write_benchmark_sandbox_cargo_config(&sandbox_root, &challenge.condition)?;
-    let reset_command =
-        substitute_condition(&challenge.manifest.reset_command, &challenge.condition);
-    let reset_outcome = run_shell_command(
-        "reset",
-        &reset_command,
-        &sandbox_root.join("reset.sh"),
-        &sandbox_root,
-    )?;
-
-    let workspace_dir = resolve_challenge_workspace_dir(&sandbox_root, &challenge.condition)?;
-    let workspace_objective_file = workspace_dir.join(
-        sandbox_objective_source
-            .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("START_HERE.md")),
-    );
-    let workspace_success_file = workspace_dir.join(
-        sandbox_success_source
-            .file_name()
-            .unwrap_or_else(|| std::ffi::OsStr::new("SUCCESS.md")),
-    );
-    let workspace_benchmark_file = workspace_dir.join("benchmark.json");
-    let sandbox_reference_source = sandbox_root.join("REFERENCE.md");
-    let workspace_reference_file = sandbox_reference_source
-        .exists()
-        .then(|| workspace_dir.join("REFERENCE.md"));
-    let capsule_file = workspace_dir.join(".quorp").join("challenge-capsule.json");
-
-    fs::create_dir_all(&workspace_dir)
-        .with_context(|| format!("failed to create {}", workspace_dir.display()))?;
-    copy_file_if_different(&sandbox_objective_source, &workspace_objective_file).with_context(
-        || {
-            format!(
-                "failed to mirror challenge objective {} into {}",
-                sandbox_objective_source.display(),
-                workspace_objective_file.display()
-            )
-        },
-    )?;
-    copy_file_if_different(&sandbox_success_source, &workspace_success_file).with_context(
-        || {
-            format!(
-                "failed to mirror challenge success file {} into {}",
-                sandbox_success_source.display(),
-                workspace_success_file.display()
-            )
-        },
-    )?;
-    copy_file_if_different(
-        &sandbox_root.join("benchmark.json"),
-        &workspace_benchmark_file,
+) -> anyhow::Result<quorp_benchmark::PreparedChallengeRun> {
+    prepare_benchmark_challenge_run(
+        result_dir,
+        challenge,
+        CHALLENGE_SANDBOX_DIR,
+        CHALLENGE_OBJECTIVE_FILE,
+        CHALLENGE_CARGO_CACHE_DIR,
+        |message| log_phase("sandbox", ANSI_BLUE, message),
+        write_benchmark_agent_config,
     )
-    .with_context(|| {
-        format!(
-            "failed to mirror challenge manifest into {}",
-            workspace_benchmark_file.display()
-        )
-    })?;
-    if let Some(workspace_reference_file) = workspace_reference_file.as_ref() {
-        copy_file_if_different(&sandbox_reference_source, workspace_reference_file).with_context(
-            || {
-                format!(
-                    "failed to mirror challenge reference file {} into {}",
-                    sandbox_reference_source.display(),
-                    workspace_reference_file.display()
-                )
-            },
-        )?;
-    }
-
-    if let Some(parent) = capsule_file.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    write_json(&capsule_file, &capsule)?;
-
-    let challenge_metadata = ChallengeMetadata {
-        case_root: challenge.case_root.clone(),
-        sandbox_root: sandbox_root.clone(),
-        workspace_dir: workspace_dir.clone(),
-        condition: challenge.condition.clone(),
-        objective_file: workspace_objective_file,
-        success_file: workspace_success_file,
-        reference_file: workspace_reference_file,
-        reset_command: challenge.manifest.reset_command.clone(),
-        evaluate_command: challenge.manifest.evaluate_command.clone(),
-        expected_files_touched: challenge.manifest.expected_files_touched.clone(),
-        allowed_generated_files: challenge.manifest.allowed_generated_files.clone(),
-        primary_metrics: challenge.manifest.primary_metrics.clone(),
-        tags: challenge.manifest.tags.clone(),
-        capsule_file,
-        capsule,
-    };
-    let objective_text = build_challenge_objective(challenge, &challenge_metadata)?;
-    fs::write(&objective_path, objective_text)
-        .with_context(|| format!("failed to write {}", objective_path.display()))?;
-
-    let resolved = ResolvedBenchmark {
-        benchmark_root: sandbox_root.clone(),
-        issue_id: challenge.manifest.id.clone(),
-        benchmark_name: challenge.manifest.title.clone(),
-        issue_dir: None,
-        workspace_source: workspace_dir.clone(),
-        objective_source: objective_path,
-        visible_evaluator: None,
-        collector_evaluator: None,
-        context_files: collect_challenge_context_files(&sandbox_root, &challenge_metadata),
-        repair_artifacts: collect_repair_artifacts(&workspace_dir),
-    };
-
-    if reset_outcome.passed {
-        write_workspace_challenge_command_wrappers(&workspace_dir)?;
-        ensure_git_baseline(&workspace_dir)?;
-        write_benchmark_sandbox_cargo_config(&sandbox_root, &challenge.condition)?;
-        write_benchmark_agent_config(&workspace_dir)?;
-    }
-
-    Ok(PreparedChallengeRun {
-        resolved,
-        challenge_metadata,
-        reset_outcome,
-    })
-}
-
-#[derive(Debug, Deserialize)]
-struct RustbenchUpstreamMetadata {
-    repo: String,
-    base_commit: String,
-}
-
-fn maybe_materialize_rustbench_workspace(
-    sandbox_root: &Path,
-    condition: &str,
-) -> anyhow::Result<()> {
-    let workspace_dir = sandbox_root.join("workspace").join(condition);
-    if workspace_dir.exists() {
-        return Ok(());
-    }
-    let metadata_path = sandbox_root.join("upstream").join("metadata.json");
-    if !metadata_path.exists() {
-        return Ok(());
-    }
-    let metadata: RustbenchUpstreamMetadata = serde_json::from_str(
-        &fs::read_to_string(&metadata_path)
-            .with_context(|| format!("failed to read {}", metadata_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", metadata_path.display()))?;
-    let parent = workspace_dir.parent().ok_or_else(|| {
-        anyhow::anyhow!("workspace path had no parent: {}", workspace_dir.display())
-    })?;
-    fs::create_dir_all(parent).with_context(|| format!("failed to create {}", parent.display()))?;
-    let repo_url = format!("https://github.com/{}.git", metadata.repo);
-    log_phase(
-        "sandbox",
-        ANSI_BLUE,
-        format!(
-            "materializing Rustbench workspace {} @ {} -> {}",
-            metadata.repo,
-            metadata.base_commit,
-            workspace_dir.display()
-        ),
-    );
-    run_git_command(
-        None,
-        &[
-            "clone",
-            "--quiet",
-            "--no-tags",
-            "--filter=blob:none",
-            repo_url.as_str(),
-            workspace_dir.to_str().ok_or_else(|| {
-                anyhow::anyhow!("non-utf8 workspace path {}", workspace_dir.display())
-            })?,
-        ],
-    )?;
-    run_git_command(
-        Some(&workspace_dir),
-        &["checkout", "--quiet", &metadata.base_commit],
-    )?;
-    let test_patch = sandbox_root.join("upstream").join("test.patch");
-    if test_patch.exists() {
-        run_git_command(
-            Some(&workspace_dir),
-            &[
-                "apply",
-                test_patch.to_str().ok_or_else(|| {
-                    anyhow::anyhow!("non-utf8 patch path {}", test_patch.display())
-                })?,
-            ],
-        )?;
-    }
-    run_git_command(Some(&workspace_dir), &["add", "."])?;
-    run_git_command(
-        Some(&workspace_dir),
-        &[
-            "-c",
-            "user.name=quorp",
-            "-c",
-            "user.email=quorp@example.com",
-            "commit",
-            "-qm",
-            "Challenge baseline",
-        ],
-    )?;
-    Ok(())
-}
-
-fn run_git_command(cwd: Option<&Path>, args: &[&str]) -> anyhow::Result<()> {
-    let mut command = Command::new("git");
-    command.args(args);
-    if let Some(cwd) = cwd {
-        command.current_dir(cwd);
-    }
-    let status = command
-        .status()
-        .with_context(|| format!("failed to run git {}", args.join(" ")))?;
-    if status.success() {
-        Ok(())
-    } else {
-        anyhow::bail!("git {} failed with status {status}", args.join(" "))
-    }
 }
 
 fn reset_challenge_workspace_for_attempt(
     manifest: &BenchmarkManifest,
     attempt_number: usize,
 ) -> anyhow::Result<Option<EvaluatorOutcome>> {
-    if attempt_number <= 1 {
-        return Ok(None);
-    }
-
     let Some(challenge_metadata) = manifest.challenge.as_ref() else {
         anyhow::bail!("challenge metadata missing from benchmark manifest");
     };
-    let reset_command = substitute_condition(
-        &challenge_metadata.reset_command,
-        &challenge_metadata.condition,
-    );
-    let reset_outcome = run_shell_command(
-        "reset",
-        &reset_command,
-        &challenge_metadata.sandbox_root.join("reset.sh"),
-        &challenge_metadata.sandbox_root,
-    )?;
-    if !reset_outcome.passed {
-        return Ok(Some(reset_outcome));
-    }
-
-    if let Some(parent) = challenge_metadata.capsule_file.parent() {
-        fs::create_dir_all(parent)?;
-    }
-    write_json(
-        &challenge_metadata.capsule_file,
-        &challenge_metadata.capsule,
-    )?;
-    write_workspace_challenge_command_wrappers(&challenge_metadata.workspace_dir)?;
-    ensure_git_baseline(&challenge_metadata.workspace_dir)?;
-    write_benchmark_sandbox_cargo_config(
-        &challenge_metadata.sandbox_root,
-        &challenge_metadata.condition,
-    )?;
-    if manifest.executor == BenchmarkExecutor::Native {
-        write_benchmark_agent_config(&challenge_metadata.workspace_dir)?;
-    }
-    Ok(Some(reset_outcome))
+    reset_benchmark_challenge_workspace_for_attempt(
+        challenge_metadata,
+        attempt_number,
+        manifest.executor == BenchmarkExecutor::Native,
+        CHALLENGE_CARGO_CACHE_DIR,
+        write_benchmark_agent_config,
+    )
 }
 
 fn maybe_continue_challenge_attempts(
@@ -3656,8 +1314,11 @@ fn maybe_continue_challenge_attempts(
         let Some(challenge_metadata) = manifest.challenge.as_ref() else {
             anyhow::bail!("challenge metadata missing from benchmark manifest");
         };
-        let evaluation_target_dir =
-            challenge_evaluation_target_dir(challenge_metadata, attempt_number);
+        let evaluation_target_dir = challenge_evaluation_target_dir(
+            challenge_metadata,
+            attempt_number,
+            CHALLENGE_EVALUATION_CARGO_CACHE_DIR,
+        );
         if evaluation_target_dir.exists() {
             fs::remove_dir_all(&evaluation_target_dir).with_context(|| {
                 format!(
@@ -3794,7 +1455,7 @@ fn finalize_challenge_attempt(
         None
     };
     let soft_budget_inefficient = validation_state
-        .local_agent_scorecard
+        .agent_repair_scorecard
         .first_valid_write_step
         .is_none()
         && (usage.model_requests > 8 || outcome.total_billed_tokens > 50_000);
@@ -3842,30 +1503,32 @@ fn finalize_challenge_attempt(
         read_count: action_evidence.read_count,
         write_count: action_evidence.write_count,
         command_execution_count: action_evidence.command_execution_count,
-        parser_recovery_count: validation_state.local_agent_scorecard.parser_recovery_count,
+        parser_recovery_count: validation_state
+            .agent_repair_scorecard
+            .parser_recovery_count,
         repair_invalid_action_streak_max: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .repair_invalid_action_streak_max,
         repair_submode_entered: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .repair_submode_entered,
-        repair_submode_turns: validation_state.local_agent_scorecard.repair_submode_turns,
-        repair_write_locked: validation_state.local_agent_scorecard.repair_write_locked,
+        repair_submode_turns: validation_state.agent_repair_scorecard.repair_submode_turns,
+        repair_write_locked: validation_state.agent_repair_scorecard.repair_write_locked,
         write_phase_action_refusal_count: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .write_phase_action_refusal_count,
         patch_scaffold_offered: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .patch_scaffold_offered,
         patch_scaffold_honored: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .patch_scaffold_honored,
-        preview_apply_locked: validation_state.local_agent_scorecard.preview_apply_locked,
+        preview_apply_locked: validation_state.agent_repair_scorecard.preview_apply_locked,
         preview_apply_action_refusal_count: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .preview_apply_action_refusal_count,
         write_phase_write_emitted: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .write_phase_write_emitted,
         bootstrap_phase: bootstrap_progress
             .as_ref()
@@ -3887,10 +1550,10 @@ fn finalize_challenge_attempt(
             .as_ref()
             .and_then(|progress| progress.bootstrap_stall_class.clone()),
         rolled_back_write_count: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .rolled_back_write_count,
         rolled_back_non_support_edit_count: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .rolled_back_non_support_edit_count,
         soft_budget_inefficient,
         fast_loop_command_seen: action_evidence.fast_loop_command_seen,
@@ -3943,474 +1606,42 @@ fn finalize_challenge_attempt(
         recommended_rerun_command: validation_state.recommended_rerun_command,
         fast_loop_rerun_match_kind: validation_state.fast_loop_rerun_match_kind,
         failed_edit_records: validation_state.failed_edit_records,
-        local_model_memory: validation_state.local_model_memory,
-        local_agent_scorecard: validation_state.local_agent_scorecard,
+        agent_repair_memory: validation_state.agent_repair_memory,
+        preview_edit_count: validation_state.agent_repair_scorecard.preview_edit_count,
+        preview_edit_success_count: validation_state
+            .agent_repair_scorecard
+            .preview_edit_success_count,
+        preview_created_count: validation_state
+            .agent_repair_scorecard
+            .preview_created_count,
+        replace_range_count: validation_state.agent_repair_scorecard.replace_range_count,
+        replace_range_hash_mismatch_count: validation_state
+            .agent_repair_scorecard
+            .replace_range_hash_mismatch_count,
+        modify_toml_count: validation_state.agent_repair_scorecard.modify_toml_count,
+        apply_preview_count: validation_state.agent_repair_scorecard.apply_preview_count,
+        apply_preview_hash_mismatch_count: validation_state
+            .agent_repair_scorecard
+            .apply_preview_hash_mismatch_count,
+        syntax_preview_count: validation_state.agent_repair_scorecard.syntax_preview_count,
+        syntax_preview_failure_count: validation_state
+            .agent_repair_scorecard
+            .syntax_preview_failure_count,
+        target_redirect_count: validation_state
+            .agent_repair_scorecard
+            .target_redirect_count,
+        evidence_file_fixation_count: validation_state
+            .agent_repair_scorecard
+            .evidence_file_fixation_count,
+        agent_repair_scorecard: validation_state.agent_repair_scorecard,
+        agent_final_failure_classification: None,
         planner_model: None,
         executor_model: Some(manifest.model_id.clone()),
+        deterministic_evaluation_passed: None,
         judge,
+        primary_failure: None,
         routing,
     })
-}
-
-fn compile_challenge_capsule(
-    challenge: &ResolvedChallengeCase,
-    sandbox_root: &Path,
-) -> anyhow::Result<ChallengeCapsule> {
-    let start_here = fs::read_to_string(&challenge.objective_source)
-        .with_context(|| format!("failed to read {}", challenge.objective_source.display()))?;
-    let local_repro_path = sandbox_root.join("LOCAL_REPRO.md");
-    let local_repro = fs::read_to_string(&local_repro_path)
-        .with_context(|| format!("failed to read {}", local_repro_path.display()))?;
-
-    let start_fast_loop =
-        extract_markdown_code_blocks(&extract_markdown_section(&start_here, "Fast Loop"));
-    let repro_fast_loop =
-        extract_markdown_code_blocks(&extract_markdown_section(&local_repro, "Fast Loop"));
-    let owner_files =
-        extract_path_like_items(&extract_markdown_section(&start_here, "Likely Owners"));
-    let first_reads =
-        extract_path_like_items(&extract_markdown_section(&local_repro, "First Reads"));
-    let expected_touch_targets = challenge.manifest.expected_files_touched.clone();
-    let companion_files_required = expected_touch_targets
-        .iter()
-        .filter(|path| is_companion_file(path))
-        .cloned()
-        .collect::<Vec<_>>();
-    let strong_hints =
-        extract_markdown_bullets(&extract_markdown_section(&start_here, "Strong Hints"));
-    let watch_points =
-        extract_markdown_bullets(&extract_markdown_section(&local_repro, "What To Watch"));
-    let named_tests = watch_points
-        .iter()
-        .chain(strong_hints.iter())
-        .flat_map(|item| extract_inline_code_spans(item))
-        .filter(|item| !looks_like_path(item))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect::<Vec<_>>();
-    let case_class = classify_case_class(&expected_touch_targets, &companion_files_required);
-
-    let capsule = ChallengeCapsule {
-        case_class,
-        owner_files,
-        first_reads,
-        fast_loop_commands: start_fast_loop
-            .into_iter()
-            .chain(repro_fast_loop)
-            .collect::<BTreeSet<_>>()
-            .into_iter()
-            .collect(),
-        expected_touch_targets,
-        companion_files_required,
-        strong_hints,
-        watch_points,
-        named_tests,
-    };
-    Ok(apply_rust_swe_case_profile(capsule, &challenge.manifest.id))
-}
-
-fn rust_swe_case_profile(case_id: &str) -> Option<RustSweCaseProfile> {
-    const PROFILES: &[RustSweCaseProfile] = &[
-        RustSweCaseProfile {
-            case_id: "06-rust-swebench-bincode-serde-decoder-memory",
-            fast_loop_commands: &["cargo test --quiet --features serde --test issues issue_474"],
-            final_eval_command: "./evaluate.sh proof-full",
-            likely_owner_files: &["src/features/serde/de_owned.rs"],
-            expected_touch_targets: &["src/features/serde/de_owned.rs", "Cargo.toml"],
-        },
-        RustSweCaseProfile {
-            case_id: "07-rust-swebench-chrono-epoch-truncation",
-            fast_loop_commands: &["cargo test --quiet --lib round::tests::"],
-            final_eval_command: "./evaluate.sh proof-full",
-            likely_owner_files: &["src/round.rs"],
-            expected_touch_targets: &["src/round.rs"],
-        },
-        RustSweCaseProfile {
-            case_id: "08-rust-swebench-axum-fallback-merge",
-            fast_loop_commands: &[
-                "cargo test --quiet -p axum --lib --features headers routing::tests::",
-            ],
-            final_eval_command: "./evaluate.sh proof-full",
-            likely_owner_files: &["axum/src/routing/mod.rs"],
-            expected_touch_targets: &[
-                "axum/src/routing/mod.rs",
-                "axum/CHANGELOG.md",
-                "axum/src/docs/routing/fallback.md",
-                "axum/src/docs/routing/merge.md",
-                "axum/src/docs/routing/nest.md",
-            ],
-        },
-        RustSweCaseProfile {
-            case_id: "09-rust-swebench-cargo-dist-create-release",
-            fast_loop_commands: &[
-                "cargo test --quiet -p cargo-dist --test integration-tests axolotlsay_edit_existing -- --exact",
-            ],
-            final_eval_command: "./evaluate.sh proof-full",
-            likely_owner_files: &[
-                "cargo-dist/src/backend/ci/github.rs",
-                "cargo-dist/src/config.rs",
-                "cargo-dist/src/init.rs",
-                "cargo-dist/src/tasks.rs",
-                "cargo-dist/templates/ci/github_ci.yml.j2",
-            ],
-            expected_touch_targets: &[
-                "cargo-dist/src/backend/ci/github.rs",
-                "cargo-dist/src/config.rs",
-                "cargo-dist/src/init.rs",
-                "cargo-dist/src/tasks.rs",
-                "cargo-dist/templates/ci/github_ci.yml.j2",
-            ],
-        },
-        RustSweCaseProfile {
-            case_id: "10-rust-swebench-cc-rs-compile-intermediates",
-            fast_loop_commands: &[
-                "cargo test --quiet compile_intermediates",
-                "cargo test --quiet gnu_smoke",
-                "cargo test --quiet msvc_smoke",
-            ],
-            final_eval_command: "./evaluate.sh proof-full",
-            likely_owner_files: &["src/lib.rs"],
-            expected_touch_targets: &["src/lib.rs"],
-        },
-    ];
-    PROFILES
-        .iter()
-        .find(|profile| profile.case_id == case_id)
-        .copied()
-}
-
-fn apply_rust_swe_case_profile(mut capsule: ChallengeCapsule, case_id: &str) -> ChallengeCapsule {
-    let Some(profile) = rust_swe_case_profile(case_id) else {
-        return capsule;
-    };
-    extend_unique(
-        &mut capsule.fast_loop_commands,
-        profile
-            .fast_loop_commands
-            .iter()
-            .map(|value| (*value).to_string()),
-    );
-    extend_unique(
-        &mut capsule.owner_files,
-        profile
-            .likely_owner_files
-            .iter()
-            .map(|value| (*value).to_string()),
-    );
-    extend_unique(
-        &mut capsule.expected_touch_targets,
-        profile
-            .expected_touch_targets
-            .iter()
-            .map(|value| (*value).to_string()),
-    );
-    capsule
-        .strong_hints
-        .push(format!("Final evaluator: `{}`", profile.final_eval_command));
-    capsule
-}
-
-fn extend_unique(target: &mut Vec<String>, values: impl IntoIterator<Item = String>) {
-    let mut seen = target.iter().cloned().collect::<BTreeSet<_>>();
-    for value in values {
-        if seen.insert(value.clone()) {
-            target.push(value);
-        }
-    }
-}
-
-fn extract_markdown_section(markdown: &str, heading: &str) -> String {
-    let mut capturing = false;
-    let mut lines = Vec::new();
-    for line in markdown.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("## ") {
-            if trimmed.trim_start_matches("## ").trim() == heading {
-                capturing = true;
-                continue;
-            }
-            if capturing {
-                break;
-            }
-        }
-        if capturing {
-            lines.push(line);
-        }
-    }
-    lines.join("\n").trim().to_string()
-}
-
-fn extract_markdown_bullets(section: &str) -> Vec<String> {
-    section
-        .lines()
-        .map(str::trim)
-        .filter_map(|line| line.strip_prefix("- ").map(str::trim))
-        .filter(|line| !line.is_empty())
-        .map(ToOwned::to_owned)
-        .collect()
-}
-
-fn extract_markdown_code_blocks(section: &str) -> Vec<String> {
-    let mut blocks = Vec::new();
-    let mut capturing = false;
-    let mut current = Vec::new();
-    for line in section.lines() {
-        let trimmed = line.trim();
-        if trimmed.starts_with("```") {
-            if capturing {
-                let block = current.join("\n").trim().to_string();
-                if !block.is_empty() {
-                    blocks.push(block);
-                }
-                current.clear();
-                capturing = false;
-            } else {
-                capturing = true;
-            }
-            continue;
-        }
-        if capturing {
-            current.push(trimmed.to_string());
-        }
-    }
-    blocks
-}
-
-fn extract_path_like_items(section: &str) -> Vec<String> {
-    let mut items = Vec::new();
-    for bullet in extract_markdown_bullets(section) {
-        let inline_paths = extract_inline_code_spans(&bullet)
-            .into_iter()
-            .filter(|item| looks_like_path(item))
-            .collect::<Vec<_>>();
-        if !inline_paths.is_empty() {
-            items.extend(inline_paths);
-            continue;
-        }
-        if looks_like_path(&bullet) {
-            items.push(normalize_markdown_item(&bullet));
-        }
-    }
-    items
-        .into_iter()
-        .collect::<BTreeSet<_>>()
-        .into_iter()
-        .collect()
-}
-
-fn extract_inline_code_spans(text: &str) -> Vec<String> {
-    let mut spans = Vec::new();
-    let mut start = None;
-    for (index, character) in text.char_indices() {
-        if character == '`' {
-            if let Some(open_index) = start.take() {
-                let value = text[open_index + 1..index].trim();
-                if !value.is_empty() {
-                    spans.push(value.to_string());
-                }
-            } else {
-                start = Some(index);
-            }
-        }
-    }
-    spans
-}
-
-fn looks_like_path(value: &str) -> bool {
-    let trimmed = normalize_markdown_item(value);
-    trimmed.contains('/')
-        || trimmed.ends_with(".rs")
-        || trimmed.ends_with(".md")
-        || trimmed.ends_with(".toml")
-        || trimmed.ends_with(".j2")
-        || trimmed.ends_with(".json")
-        || trimmed.ends_with(".yml")
-}
-
-fn normalize_markdown_item(value: &str) -> String {
-    value
-        .trim()
-        .trim_matches('`')
-        .trim_matches('.')
-        .trim_matches(',')
-        .trim()
-        .to_string()
-}
-
-fn is_companion_file(path: &str) -> bool {
-    path.contains("CHANGELOG")
-        || path.contains("book/")
-        || path.contains("docs/")
-        || path.contains("templates/")
-        || path.ends_with(".j2")
-        || path.ends_with(".md")
-}
-
-fn classify_case_class(
-    expected_touch_targets: &[String],
-    companion_files_required: &[String],
-) -> String {
-    if expected_touch_targets.len() <= 2 && companion_files_required.is_empty() {
-        "narrow-owner-first".to_string()
-    } else if !companion_files_required.is_empty() && expected_touch_targets.len() >= 5 {
-        "breadth-heavy-companion".to_string()
-    } else if !companion_files_required.is_empty() {
-        "companion-sensitive".to_string()
-    } else {
-        "multi-layer".to_string()
-    }
-}
-
-fn build_challenge_objective(
-    challenge: &ResolvedChallengeCase,
-    metadata: &ChallengeMetadata,
-) -> anyhow::Result<String> {
-    let objective = fs::read_to_string(&challenge.objective_source)
-        .with_context(|| format!("failed to read {}", challenge.objective_source.display()))?;
-    let success = fs::read_to_string(&challenge.success_source)
-        .with_context(|| format!("failed to read {}", challenge.success_source.display()))?;
-    let objective_display =
-        workspace_relative_display_path(&metadata.workspace_dir, &metadata.objective_file);
-    let success_display =
-        workspace_relative_display_path(&metadata.workspace_dir, &metadata.success_file);
-    let mirrored_briefing_files = [
-        Some(objective_display.clone()),
-        Some(success_display.clone()),
-        metadata
-            .reference_file
-            .as_ref()
-            .map(|path| workspace_relative_display_path(&metadata.workspace_dir, path)),
-        Some("benchmark.json".to_string()),
-    ]
-    .into_iter()
-    .flatten()
-    .collect::<Vec<_>>()
-    .join(", ");
-    let mut sections = vec![
-        format!(
-            "# Quorp Challenge Objective\n\nYou are running challenge `{}`: {}.\nKeep working until the case evaluator passes or you hit a budget stop.",
-            challenge.manifest.id, challenge.manifest.title
-        ),
-        format!(
-            "## Workspace\n- Editable workspace root: `.`\n- Condition: `{}`\n- Mirrored briefing files: {}\n- Do not modify files outside the workspace root.",
-            metadata.condition, mirrored_briefing_files
-        ),
-        format!(
-            "## Workspace Path Rules\n- All tool paths must be relative to the workspace root.\n- Do not use absolute paths in tool calls.\n- If you need orientation, start with `ListDirectory` on `.`.\n- Prefer the expected touch targets before top-level metadata files.\n- Avoid rereading `AGENTS.md`, `Cargo.lock`, `README.md`, or other root metadata unless the brief explicitly requires them.\n- Workspace root entries:\n{}",
-            summarize_workspace_root(&metadata.workspace_dir)
-        ),
-        format!(
-            "## Objective\n- File: `{}`\n- Inline summary:\n{}",
-            objective_display,
-            summarize_markdown_brief(&objective)
-        ),
-        format!(
-            "## Success Criteria\n- File: `{}`\n- Inline summary:\n{}",
-            success_display,
-            summarize_markdown_brief(&success)
-        ),
-        format!(
-            "## Commands\n- Reset: `{}`\n- Evaluate: `{}`\n- Stop when the evaluate command reports success.",
-            substitute_condition(&challenge.manifest.reset_command, &challenge.condition),
-            substitute_condition(&challenge.manifest.evaluate_command, &challenge.condition)
-        ),
-        format!(
-            "## Expected Touch Targets\n{}",
-            challenge
-                .manifest
-                .expected_files_touched
-                .iter()
-                .map(|path| format!("- `{}`", path))
-                .collect::<Vec<_>>()
-                .join("\n")
-        ),
-        format!(
-            "## Primary Metrics\n{}",
-            challenge
-                .manifest
-                .primary_metrics
-                .iter()
-                .map(|metric| format!("- `{metric}`"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        ),
-        format!(
-            "## Challenge Capsule\n- Case class: `{}`\n- Primary owner files:\n{}\n- First reads:\n{}\n- Fast loop commands:\n{}\n- Companion files required:\n{}\n- Named tests/assertions to keep in view:\n{}\n- Strong hints:\n{}\n- Watch points:\n{}",
-            metadata.capsule.case_class,
-            render_bullet_list_or_none(&metadata.capsule.owner_files),
-            render_bullet_list_or_none(&metadata.capsule.first_reads),
-            render_bullet_list_or_none(&metadata.capsule.fast_loop_commands),
-            render_bullet_list_or_none(&metadata.capsule.companion_files_required),
-            render_bullet_list_or_none(&metadata.capsule.named_tests),
-            render_bullet_list_or_none(&metadata.capsule.strong_hints),
-            render_bullet_list_or_none(&metadata.capsule.watch_points)
-        ),
-        format!(
-            "## Validation Ladder\n- First prove progress with the fast loop before full evaluation.\n{}\n- After any failed validation, summarize the failing test/assertion, patch or read the next owner file, and rerun the smallest relevant validation before widening.\n- Run `{}` only after the fast loop is green or the failure clearly requires broader validation.",
-            metadata
-                .capsule
-                .fast_loop_commands
-                .iter()
-                .map(|command| format!("- Fast loop: `{command}`"))
-                .collect::<Vec<_>>()
-                .join("\n"),
-            substitute_condition(&challenge.manifest.evaluate_command, &challenge.condition)
-        ),
-    ];
-    if !metadata.capsule.companion_files_required.is_empty() {
-        sections.push(format!(
-            "## Companion File Sentinel\n- This case requires companion-file coverage in addition to code changes.\n{}\n- Do not stop before these surfaces are updated or deliberately ruled out by the brief and tests.",
-            metadata
-                .capsule
-                .companion_files_required
-                .iter()
-                .map(|path| format!("- `{path}`"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        ));
-    }
-    if metadata.capsule.case_class == "narrow-owner-first" {
-        sections.push(
-            "## Narrow-Case Mode\n- Do not widen beyond the primary owner files and named tests until the fast loop proves the local hypothesis wrong."
-                .to_string(),
-        );
-    }
-    if !challenge.manifest.allowed_generated_files.is_empty() {
-        sections.push(format!(
-            "## Allowed Generated Files\n{}",
-            challenge
-                .manifest
-                .allowed_generated_files
-                .iter()
-                .map(|path| format!("- `{}`", path))
-                .collect::<Vec<_>>()
-                .join("\n")
-        ));
-    }
-    if let Some(reference_file) = metadata.reference_file.as_ref() {
-        let reference_display =
-            workspace_relative_display_path(&metadata.workspace_dir, reference_file);
-        let reference = fs::read_to_string(reference_file)
-            .with_context(|| format!("failed to read {}", reference_file.display()))?;
-        sections.push(format!(
-            "## Reference\n- File: `{}`\n- Inline summary:\n{}",
-            reference_display,
-            summarize_markdown_brief(&reference)
-        ));
-    }
-    if !challenge.manifest.tags.is_empty() {
-        sections.push(format!(
-            "## Tags\n{}",
-            challenge
-                .manifest
-                .tags
-                .iter()
-                .map(|tag| format!("- `{tag}`"))
-                .collect::<Vec<_>>()
-                .join("\n")
-        ));
-    }
-    Ok(sections.join("\n\n"))
 }
 
 fn run_challenge_judge(context: &ChallengeJudgeContext<'_>) -> ChallengeJudgeOutcome {
@@ -4531,55 +1762,40 @@ fn request_challenge_judge_completion(
     context: &ChallengeJudgeContext<'_>,
     judge_prompt: &str,
 ) -> Result<(String, serde_json::Value), String> {
-    match context.manifest.executor {
-        BenchmarkExecutor::Native => {
-            let runtime = tokio::runtime::Runtime::new();
-            match runtime {
-                Ok(runtime) => runtime.block_on(async {
-                    let ssd_moe_runtime = SsdMoeRuntimeHandle::shared_handle();
-                    let request = StreamRequest {
-                        request_id: crate::quorp::tui::diagnostics::next_request_id(),
-                        session_id: context.attempt_number,
-                        model_id: context.manifest.model_id.clone(),
-                        agent_mode: quorp_agent_core::agent_protocol::AgentMode::Ask,
-                        latest_input: judge_prompt.to_string(),
-                        messages: vec![ChatServiceMessage {
-                            role: ChatServiceRole::User,
-                            content: judge_prompt.to_string(),
-                        }],
-                        project_root: context.metadata.workspace_dir.clone(),
-                        base_url_override: context.manifest.base_url_override.clone(),
-                        max_completion_tokens: Some(512),
-                        include_repo_capsule: false,
-                        disable_reasoning: true,
-                        native_tool_calls: false,
-                        watchdog: Some(quorp_agent_core::CompletionWatchdogConfig {
-                            first_token_timeout_ms: Some(30_000),
-                            idle_timeout_ms: Some(20_000),
-                            total_timeout_ms: Some(90_000),
-                        }),
-                        safety_mode_label: Some(context.manifest.safety_mode_label.clone()),
-                        prompt_compaction_policy: None,
-                        capture_scope: Some("evaluation".to_string()),
-                        capture_call_class: Some("evaluation".to_string()),
-                    };
-                    request_single_completion_details(&ssd_moe_runtime, &request)
-                        .await
-                        .map(|completion| (completion.content, completion.raw_response))
+    let runtime = tokio::runtime::Runtime::new();
+    match runtime {
+        Ok(runtime) => runtime.block_on(async {
+            let request = StreamRequest {
+                request_id: crate::quorp::tui::diagnostics::next_request_id(),
+                session_id: context.attempt_number,
+                model_id: context.manifest.model_id.clone(),
+                agent_mode: quorp_agent_core::agent_protocol::AgentMode::Ask,
+                latest_input: judge_prompt.to_string(),
+                messages: vec![ChatServiceMessage {
+                    role: ChatServiceRole::User,
+                    content: judge_prompt.to_string(),
+                }],
+                project_root: context.metadata.workspace_dir.clone(),
+                base_url_override: context.manifest.base_url_override.clone(),
+                max_completion_tokens: Some(512),
+                include_repo_capsule: false,
+                disable_reasoning: true,
+                native_tool_calls: false,
+                watchdog: Some(quorp_agent_core::CompletionWatchdogConfig {
+                    first_token_timeout_ms: Some(30_000),
+                    idle_timeout_ms: Some(20_000),
+                    total_timeout_ms: Some(90_000),
                 }),
-                Err(error) => Err(error.to_string()),
-            }
-        }
-        BenchmarkExecutor::Codex => request_codex_completion(CodexCompletionOptions {
-            workspace: context.metadata.workspace_dir.clone(),
-            prompt: judge_prompt.to_string(),
-            model_id: context.manifest.model_id.clone(),
-            max_seconds: Some(180),
-            artifact_dir: context.attempt_dir.join("judge-artifacts"),
-            session_strategy: fresh_session_strategy(),
-        })
-        .map(|completion| (completion.content, completion.raw_response))
-        .map_err(|error| error.to_string()),
+                safety_mode_label: Some(context.manifest.safety_mode_label.clone()),
+                prompt_compaction_policy: None,
+                capture_scope: Some("evaluation".to_string()),
+                capture_call_class: Some("evaluation".to_string()),
+            };
+            request_single_completion_details(&request)
+                .await
+                .map(|completion| (completion.content, completion.raw_response))
+        }),
+        Err(error) => Err(error.to_string()),
     }
 }
 
@@ -4708,156 +1924,11 @@ fn extract_json_object(text: &str) -> Option<&str> {
     Some(&text[start..=end])
 }
 
-fn collect_challenge_context_files(
-    _sandbox_root: &Path,
-    metadata: &ChallengeMetadata,
-) -> Vec<PathBuf> {
-    vec![
-        Some(metadata.workspace_dir.join("benchmark.json")),
-        Some(metadata.objective_file.clone()),
-        Some(metadata.success_file.clone()),
-        metadata.reference_file.clone(),
-        Some(metadata.capsule_file.clone()),
-        Some(metadata.workspace_dir.join("AGENTS.md")),
-        Some(metadata.workspace_dir.join("agent-map.json")),
-        Some(metadata.workspace_dir.join("test-map.json")),
-        Some(
-            metadata
-                .workspace_dir
-                .join(".witness")
-                .join("witness-graph.json"),
-        ),
-    ]
-    .into_iter()
-    .flatten()
-    .filter(|path| path.exists())
-    .collect()
-}
-
-fn workspace_relative_display_path(workspace_dir: &Path, path: &Path) -> String {
-    path.strip_prefix(workspace_dir)
-        .map(|relative| relative.display().to_string())
-        .unwrap_or_else(|_| path.display().to_string())
-}
-
-fn run_shell_command(
-    name: &str,
-    command: &str,
-    script: &Path,
-    current_dir: &Path,
-) -> anyhow::Result<EvaluatorOutcome> {
-    run_shell_command_with_env(name, command, script, current_dir, &[])
-}
-
-fn run_shell_command_with_env(
-    name: &str,
-    command: &str,
-    script: &Path,
-    current_dir: &Path,
-    environment: &[(&str, &std::ffi::OsStr)],
-) -> anyhow::Result<EvaluatorOutcome> {
-    let started_at = std::time::Instant::now();
-    #[allow(clippy::disallowed_methods)]
-    let mut shell = Command::new("bash");
-    shell.arg("-lc").arg(command).current_dir(current_dir);
-    for (key, value) in environment {
-        shell.env(key, value);
-    }
-    let output = shell
-        .output()
-        .with_context(|| format!("failed to run {} command `{}`", name, command))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    Ok(EvaluatorOutcome {
-        name: name.to_string(),
-        script: script.to_path_buf(),
-        command: Some(command.to_string()),
-        duration_ms: started_at.elapsed().as_millis() as u64,
-        exit_code: output.status.code().unwrap_or(-1),
-        passed: evaluator_passed(output.status.success(), &stdout),
-        stdout,
-        stderr,
-    })
-}
-
-fn challenge_evaluation_target_dir(
-    challenge_metadata: &ChallengeMetadata,
-    attempt_number: usize,
-) -> PathBuf {
-    challenge_metadata
-        .sandbox_root
-        .parent()
-        .unwrap_or(&challenge_metadata.sandbox_root)
-        .join(CHALLENGE_EVALUATION_CARGO_CACHE_DIR)
-        .join(&challenge_metadata.condition)
-        .join(format!("attempt-{attempt_number:03}"))
-}
-
-fn challenge_evaluation_env<'a>(
-    challenge_metadata: &ChallengeMetadata,
-    evaluation_target_dir: &'a Path,
-) -> Vec<(&'static str, &'a OsStr)> {
-    let mut env = Vec::new();
-    if challenge_evaluation_needs_sdkroot_override(challenge_metadata) {
-        env.push(("SDKROOT", Path::new("/").as_os_str()));
-    }
-    if challenge_evaluation_is_cargo_dist_snapshot_sensitive(challenge_metadata) {
-        env
-    } else {
-        env.push(("CARGO_TARGET_DIR", evaluation_target_dir.as_os_str()));
-        env
-    }
-}
-
-fn challenge_evaluation_is_cargo_dist_snapshot_sensitive(
-    challenge_metadata: &ChallengeMetadata,
-) -> bool {
-    challenge_metadata
-        .allowed_generated_files
-        .iter()
-        .any(|path| path == "cargo-dist/tests/snapshots/axolotlsay_edit_existing.snap")
-}
-
-fn challenge_evaluation_needs_sdkroot_override(challenge_metadata: &ChallengeMetadata) -> bool {
-    challenge_metadata
-        .case_root
-        .file_name()
-        .and_then(|name| name.to_str())
-        .is_some_and(|name| name == "05-cc-rs-compile-intermediates")
-        || (challenge_metadata.tags.iter().any(|tag| tag == "cc-rs")
-            && challenge_metadata
-                .expected_files_touched
-                .iter()
-                .any(|path| path == "src/lib.rs"))
-}
-
-fn evaluator_passed(exit_success: bool, stdout: &str) -> bool {
-    if let Some(summary) = parse_benchmark_summary_value(stdout)
-        && let Some(success) = summary.get("success").and_then(serde_json::Value::as_bool)
-    {
-        return exit_success && success;
-    }
-    exit_success
-}
-
-fn parse_benchmark_summary_value(stdout: &str) -> Option<serde_json::Value> {
-    let trimmed = stdout.trim();
-    if trimmed.is_empty() {
-        return None;
-    }
-    if let Ok(value) = serde_json::from_str::<serde_json::Value>(trimmed) {
-        return Some(value);
-    }
-    let start = trimmed.find('{')?;
-    let candidate = trimmed.get(start..)?.trim();
-    serde_json::from_str::<serde_json::Value>(candidate).ok()
-}
-
 fn read_headless_usage_summary(
     path: &Path,
-) -> anyhow::Result<crate::quorp::agent_local::HeadlessUsageSummary> {
+) -> anyhow::Result<crate::quorp::agent_runner::HeadlessUsageSummary> {
     if !path.exists() {
-        return Ok(crate::quorp::agent_local::HeadlessUsageSummary::default());
+        return Ok(crate::quorp::agent_runner::HeadlessUsageSummary::default());
     }
     let summary: serde_json::Value = serde_json::from_str(&fs::read_to_string(path)?)
         .with_context(|| format!("failed to parse {}", path.display()))?;
@@ -4868,11 +1939,9 @@ fn read_headless_usage_summary(
     Ok(serde_json::from_value(usage).unwrap_or_default())
 }
 
-fn read_headless_routing_summary(
-    path: &Path,
-) -> anyhow::Result<crate::quorp::agent_local::RoutingSummary> {
+fn read_headless_routing_summary(path: &Path) -> anyhow::Result<RoutingSummary> {
     if !path.exists() {
-        return Ok(crate::quorp::agent_local::RoutingSummary::default());
+        return Ok(RoutingSummary::default());
     }
     let summary: serde_json::Value = serde_json::from_str(&fs::read_to_string(path)?)
         .with_context(|| format!("failed to parse {}", path.display()))?;
@@ -4925,10 +1994,6 @@ fn load_seed_context(path: Option<&Path>) -> anyhow::Result<Vec<TranscriptMessag
     Ok(transcript)
 }
 
-fn substitute_condition(command: &str, condition: &str) -> String {
-    command.replace("<condition>", condition)
-}
-
 fn run_attempt_executor(
     manifest: &BenchmarkManifest,
     workspace: &Path,
@@ -4937,87 +2002,73 @@ fn run_attempt_executor(
     result_dir: PathBuf,
 ) -> anyhow::Result<quorp_agent_core::AgentRunOutcome> {
     let seed_context = load_seed_context(manifest.seed_transcript.as_deref())?;
-    match manifest.executor {
-        BenchmarkExecutor::Native => run_headless_agent(HeadlessRunOptions {
-            workspace: workspace.to_path_buf(),
-            objective_file,
-            executor: crate::quorp::executor::QuorpExecutor::Native,
-            codex_session_strategy: fresh_session_strategy(),
-            model_id: manifest.model_id.clone(),
-            base_url_override: manifest.base_url_override.clone(),
-            max_steps: manifest.max_steps,
-            max_seconds: manifest.max_seconds,
-            max_total_tokens: remaining_budget,
-            result_dir,
-            autonomy_profile: parse_autonomy_profile(&manifest.autonomy_profile)?,
-            completion_policy: manifest.completion_policy.clone(),
-            objective_metadata: serde_json::json!({
-                "benchmark_mode": true,
-                "benchmark_transcript_compression": true,
-                "objective_file": manifest.resolved.objective_source.clone(),
-                "evaluate_command": manifest
-                    .challenge
-                    .as_ref()
-                    .map(|challenge| challenge.evaluate_command.clone())
-                    .or_else(|| manifest.resolved.visible_evaluator.as_ref().map(|path| path.display().to_string())),
-                "context_files": manifest.resolved.context_files.clone(),
-                "repair_artifacts": manifest.resolved.repair_artifacts.clone(),
-                "benchmark_name": manifest.resolved.benchmark_name.clone(),
-                "issue_id": manifest.resolved.issue_id.clone(),
-                "repo_capsule_injected": manifest.completion_policy.include_repo_capsule,
-                "reasoning_enabled": !manifest.completion_policy.disable_reasoning,
-                "action_contract_mode": benchmark_action_contract_mode(&manifest.completion_policy),
-                "prompt_compaction_policy": manifest
-                    .completion_policy
-                    .prompt_compaction_policy
-                    .map(PromptCompactionPolicy::as_str),
-                "benchmark_case_class": manifest
-                    .challenge
-                    .as_ref()
-                    .map(|challenge| challenge.capsule.case_class.clone()),
-                "benchmark_owner_files": manifest
-                    .challenge
-                    .as_ref()
-                    .map(|challenge| challenge.capsule.owner_files.clone())
-                    .unwrap_or_default(),
-                "benchmark_fast_loop_commands": manifest
-                    .challenge
-                    .as_ref()
-                    .map(|challenge| challenge.capsule.fast_loop_commands.clone())
-                    .unwrap_or_default(),
-                "benchmark_expected_touch_targets": manifest
-                    .challenge
-                    .as_ref()
-                    .map(|challenge| challenge.capsule.expected_touch_targets.clone())
-                    .unwrap_or_default(),
-                "benchmark_companion_files_required": manifest
-                    .challenge
-                    .as_ref()
-                    .map(|challenge| challenge.capsule.companion_files_required.clone())
-                    .unwrap_or_default(),
-                "benchmark_named_tests": manifest
-                    .challenge
-                    .as_ref()
-                    .map(|challenge| challenge.capsule.named_tests.clone())
-                    .unwrap_or_default(),
-                "warpos_capture_scope": "benchmark_task",
-                "warpos_capture_call_class": "task_model_call",
-                "planner_model": serde_json::Value::Null,
-                "executor_model": manifest.model_id.clone(),
-            }),
-            seed_context,
+    run_headless_agent(HeadlessRunOptions {
+        workspace: workspace.to_path_buf(),
+        objective_file,
+        model_id: manifest.model_id.clone(),
+        base_url_override: manifest.base_url_override.clone(),
+        max_steps: manifest.max_steps,
+        max_seconds: manifest.max_seconds,
+        max_total_tokens: remaining_budget,
+        result_dir,
+        autonomy_profile: parse_autonomy_profile(&manifest.autonomy_profile)?,
+        completion_policy: manifest.completion_policy.clone(),
+        objective_metadata: serde_json::json!({
+            "benchmark_mode": true,
+            "benchmark_transcript_compression": true,
+            "objective_file": manifest.resolved.objective_source.clone(),
+            "evaluate_command": manifest
+                .challenge
+                .as_ref()
+                .map(|challenge| challenge.evaluate_command.clone())
+                .or_else(|| manifest.resolved.visible_evaluator.as_ref().map(|path| path.display().to_string())),
+            "context_files": manifest.resolved.context_files.clone(),
+            "repair_artifacts": manifest.resolved.repair_artifacts.clone(),
+            "benchmark_name": manifest.resolved.benchmark_name.clone(),
+            "issue_id": manifest.resolved.issue_id.clone(),
+            "repo_capsule_injected": manifest.completion_policy.include_repo_capsule,
+            "reasoning_enabled": !manifest.completion_policy.disable_reasoning,
+            "action_contract_mode": benchmark_action_contract_mode(&manifest.completion_policy),
+            "prompt_compaction_policy": manifest
+                .completion_policy
+                .prompt_compaction_policy
+                .map(PromptCompactionPolicy::as_str),
+            "benchmark_case_class": manifest
+                .challenge
+                .as_ref()
+                .map(|challenge| challenge.capsule.case_class.clone()),
+            "benchmark_owner_files": manifest
+                .challenge
+                .as_ref()
+                .map(|challenge| challenge.capsule.owner_files.clone())
+                .unwrap_or_default(),
+            "benchmark_fast_loop_commands": manifest
+                .challenge
+                .as_ref()
+                .map(|challenge| challenge.capsule.fast_loop_commands.clone())
+                .unwrap_or_default(),
+            "benchmark_expected_touch_targets": manifest
+                .challenge
+                .as_ref()
+                .map(|challenge| challenge.capsule.expected_touch_targets.clone())
+                .unwrap_or_default(),
+            "benchmark_companion_files_required": manifest
+                .challenge
+                .as_ref()
+                .map(|challenge| challenge.capsule.companion_files_required.clone())
+                .unwrap_or_default(),
+            "benchmark_named_tests": manifest
+                .challenge
+                .as_ref()
+                .map(|challenge| challenge.capsule.named_tests.clone())
+                .unwrap_or_default(),
+            "warpos_capture_scope": "benchmark_task",
+            "warpos_capture_call_class": "task_model_call",
+            "planner_model": serde_json::Value::Null,
+            "executor_model": manifest.model_id.clone(),
         }),
-        BenchmarkExecutor::Codex => run_codex_agent(CodexRunOptions {
-            workspace: workspace.to_path_buf(),
-            objective_file,
-            model_id: manifest.model_id.clone(),
-            max_steps: manifest.max_steps,
-            max_seconds: manifest.max_seconds,
-            max_total_tokens: remaining_budget,
-            result_dir,
-            session_strategy: fresh_session_strategy(),
-        }),
-    }
+        seed_context,
+    })
 }
 
 fn events_file_has_first_task_model_request(events_path: &Path) -> anyhow::Result<bool> {
@@ -5161,12 +2212,27 @@ fn attempt_report_for_bootstrap_stall(
         recommended_rerun_command: None,
         fast_loop_rerun_match_kind: None,
         failed_edit_records: Vec::new(),
-        local_model_memory: quorp_agent_core::LocalModelMemory::default(),
-        local_agent_scorecard: quorp_agent_core::LocalAgentScorecard::default(),
+        agent_repair_memory: quorp_agent_core::AgentRepairMemory::default(),
+        agent_repair_scorecard: quorp_agent_core::AgentRepairScorecard::default(),
+        preview_edit_count: 0,
+        preview_edit_success_count: 0,
+        preview_created_count: 0,
+        replace_range_count: 0,
+        replace_range_hash_mismatch_count: 0,
+        modify_toml_count: 0,
+        apply_preview_count: 0,
+        apply_preview_hash_mismatch_count: 0,
+        syntax_preview_count: 0,
+        syntax_preview_failure_count: 0,
+        target_redirect_count: 0,
+        evidence_file_fixation_count: 0,
+        agent_final_failure_classification: Some(bootstrap_stall_class),
         planner_model: None,
         executor_model: Some(manifest.model_id.clone()),
+        deterministic_evaluation_passed: None,
         judge: None,
-        routing: crate::quorp::agent_local::RoutingSummary::default(),
+        primary_failure: None,
+        routing: RoutingSummary::default(),
     }
 }
 
@@ -5384,11 +2450,7 @@ fn maybe_continue_attempts(
         }
         log_phase(
             "preflight",
-            if manifest.safety_mode_label == "heavy_local" {
-                ANSI_YELLOW
-            } else {
-                ANSI_GREEN
-            },
+            ANSI_GREEN,
             format!(
                 "risk={} model={} prompt_est={} max_tokens={} repo_capsule={}",
                 manifest.safety_mode_label,
@@ -5537,15 +2599,29 @@ fn finalize_attempt(
     let workspace_dir = attempt_dir.join("workspace");
     let agent_result_dir = attempt_dir.join("agent");
     let visible_evaluation = match resolved.visible_evaluator.as_ref() {
-        Some(script) => Some(run_visible_evaluator(script, &workspace_dir)?),
+        Some(script) => {
+            log_phase(
+                "visible",
+                ANSI_BLUE,
+                format!("running visible evaluator {}", script.display()),
+            );
+            Some(run_visible_evaluator(script, &workspace_dir)?)
+        }
         None => None,
     };
     let collector_evaluation = match resolved.collector_evaluator.as_ref() {
-        Some(script) => Some(run_collector_evaluator(
-            script,
-            &workspace_dir,
-            attempt_dir,
-        )?),
+        Some(script) => {
+            log_phase(
+                "collector",
+                ANSI_BLUE,
+                format!("running collector evaluator {}", script.display()),
+            );
+            Some(run_collector_evaluator(
+                script,
+                &workspace_dir,
+                attempt_dir,
+            )?)
+        }
         None => None,
     };
     if let Some(outcome) = visible_evaluation.as_ref() {
@@ -5588,7 +2664,7 @@ fn finalize_attempt(
                 count_non_support_changed_files(&changed_files, &ignored_changed_files)
             });
     let soft_budget_inefficient = validation_state
-        .local_agent_scorecard
+        .agent_repair_scorecard
         .first_valid_write_step
         .is_none()
         && (usage.model_requests > 8 || outcome.total_billed_tokens > 50_000);
@@ -5638,30 +2714,32 @@ fn finalize_attempt(
         read_count: action_evidence.read_count,
         write_count: action_evidence.write_count,
         command_execution_count: action_evidence.command_execution_count,
-        parser_recovery_count: validation_state.local_agent_scorecard.parser_recovery_count,
+        parser_recovery_count: validation_state
+            .agent_repair_scorecard
+            .parser_recovery_count,
         repair_invalid_action_streak_max: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .repair_invalid_action_streak_max,
         repair_submode_entered: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .repair_submode_entered,
-        repair_submode_turns: validation_state.local_agent_scorecard.repair_submode_turns,
-        repair_write_locked: validation_state.local_agent_scorecard.repair_write_locked,
+        repair_submode_turns: validation_state.agent_repair_scorecard.repair_submode_turns,
+        repair_write_locked: validation_state.agent_repair_scorecard.repair_write_locked,
         write_phase_action_refusal_count: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .write_phase_action_refusal_count,
         patch_scaffold_offered: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .patch_scaffold_offered,
         patch_scaffold_honored: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .patch_scaffold_honored,
-        preview_apply_locked: validation_state.local_agent_scorecard.preview_apply_locked,
+        preview_apply_locked: validation_state.agent_repair_scorecard.preview_apply_locked,
         preview_apply_action_refusal_count: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .preview_apply_action_refusal_count,
         write_phase_write_emitted: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .write_phase_write_emitted,
         bootstrap_phase: bootstrap_progress
             .as_ref()
@@ -5683,10 +2761,10 @@ fn finalize_attempt(
             .as_ref()
             .and_then(|progress| progress.bootstrap_stall_class.clone()),
         rolled_back_write_count: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .rolled_back_write_count,
         rolled_back_non_support_edit_count: validation_state
-            .local_agent_scorecard
+            .agent_repair_scorecard
             .rolled_back_non_support_edit_count,
         soft_budget_inefficient,
         fast_loop_command_seen: action_evidence.fast_loop_command_seen,
@@ -5739,11 +2817,40 @@ fn finalize_attempt(
         recommended_rerun_command: validation_state.recommended_rerun_command,
         fast_loop_rerun_match_kind: validation_state.fast_loop_rerun_match_kind,
         failed_edit_records: validation_state.failed_edit_records,
-        local_model_memory: validation_state.local_model_memory,
-        local_agent_scorecard: validation_state.local_agent_scorecard,
+        agent_repair_memory: validation_state.agent_repair_memory,
+        preview_edit_count: validation_state.agent_repair_scorecard.preview_edit_count,
+        preview_edit_success_count: validation_state
+            .agent_repair_scorecard
+            .preview_edit_success_count,
+        preview_created_count: validation_state
+            .agent_repair_scorecard
+            .preview_created_count,
+        replace_range_count: validation_state.agent_repair_scorecard.replace_range_count,
+        replace_range_hash_mismatch_count: validation_state
+            .agent_repair_scorecard
+            .replace_range_hash_mismatch_count,
+        modify_toml_count: validation_state.agent_repair_scorecard.modify_toml_count,
+        apply_preview_count: validation_state.agent_repair_scorecard.apply_preview_count,
+        apply_preview_hash_mismatch_count: validation_state
+            .agent_repair_scorecard
+            .apply_preview_hash_mismatch_count,
+        syntax_preview_count: validation_state.agent_repair_scorecard.syntax_preview_count,
+        syntax_preview_failure_count: validation_state
+            .agent_repair_scorecard
+            .syntax_preview_failure_count,
+        target_redirect_count: validation_state
+            .agent_repair_scorecard
+            .target_redirect_count,
+        evidence_file_fixation_count: validation_state
+            .agent_repair_scorecard
+            .evidence_file_fixation_count,
+        agent_repair_scorecard: validation_state.agent_repair_scorecard,
+        agent_final_failure_classification: None,
         planner_model: None,
         executor_model: Some(manifest.model_id.clone()),
+        deterministic_evaluation_passed: None,
         judge: None,
+        primary_failure: None,
         routing,
     })
 }
@@ -5866,11 +2973,11 @@ fn write_report(
                 .iter()
                 .map(|attempt| {
                     attempt
-                        .local_agent_scorecard
+                        .agent_repair_scorecard
                         .preview_edit_count
-                        .saturating_add(attempt.local_agent_scorecard.replace_range_count)
-                        .saturating_add(attempt.local_agent_scorecard.modify_toml_count)
-                        .saturating_add(attempt.local_agent_scorecard.apply_preview_count)
+                        .saturating_add(attempt.agent_repair_scorecard.replace_range_count)
+                        .saturating_add(attempt.agent_repair_scorecard.modify_toml_count)
+                        .saturating_add(attempt.agent_repair_scorecard.apply_preview_count)
                 })
                 .sum::<usize>(),
         );
@@ -5978,7 +3085,7 @@ fn write_report(
         &manifest.model_id,
         manifest.base_url_override.as_deref(),
     );
-    let mut routing_summary = crate::quorp::agent_local::RoutingSummary::default();
+    let mut routing_summary = RoutingSummary::default();
     for attempt in attempts {
         if routing_summary.routing_mode.is_none() {
             routing_summary.routing_mode = attempt.routing.routing_mode.clone();
@@ -6014,7 +3121,7 @@ fn write_report(
         if routing_summary.routing_status.is_none() {
             routing_summary.routing_status = attempt.routing.routing_status.clone();
         }
-        routing_summary.used_local_fallback |= attempt.routing.used_local_fallback;
+        routing_summary.used_fallback |= attempt.routing.used_fallback;
         if routing_summary.fallback_reason.is_none() {
             routing_summary.fallback_reason = attempt.routing.fallback_reason.clone();
         }
@@ -6041,7 +3148,7 @@ fn write_report(
         candidate_models: routing_summary.candidate_models,
         effective_provider: routing_summary.effective_provider,
         effective_model: routing_summary.effective_model,
-        used_local_fallback: routing_summary.used_local_fallback,
+        used_fallback: routing_summary.used_fallback,
         fallback_reason: routing_summary.fallback_reason,
         comparable_run: routing_summary.comparable,
         provider_request_id: routing_summary.provider_request_id,
@@ -6228,57 +3335,57 @@ fn write_report(
         failed_edit_records: last_attempt
             .map(|attempt| attempt.failed_edit_records.clone())
             .unwrap_or_default(),
-        local_model_memory: last_attempt
-            .map(|attempt| attempt.local_model_memory.clone())
+        agent_repair_memory: last_attempt
+            .map(|attempt| attempt.agent_repair_memory.clone())
             .unwrap_or_default(),
-        local_agent_scorecard: last_attempt
-            .map(|attempt| attempt.local_agent_scorecard.clone())
+        agent_repair_scorecard: last_attempt
+            .map(|attempt| attempt.agent_repair_scorecard.clone())
             .unwrap_or_default(),
         preview_edit_count: last_attempt
-            .map(|attempt| attempt.local_agent_scorecard.preview_edit_count)
+            .map(|attempt| attempt.agent_repair_scorecard.preview_edit_count)
             .unwrap_or(0),
         preview_edit_success_count: last_attempt
-            .map(|attempt| attempt.local_agent_scorecard.preview_edit_success_count)
+            .map(|attempt| attempt.agent_repair_scorecard.preview_edit_success_count)
             .unwrap_or(0),
         preview_created_count: last_attempt
-            .map(|attempt| attempt.local_agent_scorecard.preview_created_count)
+            .map(|attempt| attempt.agent_repair_scorecard.preview_created_count)
             .unwrap_or(0),
         replace_range_count: last_attempt
-            .map(|attempt| attempt.local_agent_scorecard.replace_range_count)
+            .map(|attempt| attempt.agent_repair_scorecard.replace_range_count)
             .unwrap_or(0),
         replace_range_hash_mismatch_count: last_attempt
             .map(|attempt| {
                 attempt
-                    .local_agent_scorecard
+                    .agent_repair_scorecard
                     .replace_range_hash_mismatch_count
             })
             .unwrap_or(0),
         modify_toml_count: last_attempt
-            .map(|attempt| attempt.local_agent_scorecard.modify_toml_count)
+            .map(|attempt| attempt.agent_repair_scorecard.modify_toml_count)
             .unwrap_or(0),
         apply_preview_count: last_attempt
-            .map(|attempt| attempt.local_agent_scorecard.apply_preview_count)
+            .map(|attempt| attempt.agent_repair_scorecard.apply_preview_count)
             .unwrap_or(0),
         apply_preview_hash_mismatch_count: last_attempt
             .map(|attempt| {
                 attempt
-                    .local_agent_scorecard
+                    .agent_repair_scorecard
                     .apply_preview_hash_mismatch_count
             })
             .unwrap_or(0),
         syntax_preview_count: last_attempt
-            .map(|attempt| attempt.local_agent_scorecard.syntax_preview_count)
+            .map(|attempt| attempt.agent_repair_scorecard.syntax_preview_count)
             .unwrap_or(0),
         syntax_preview_failure_count: last_attempt
-            .map(|attempt| attempt.local_agent_scorecard.syntax_preview_failure_count)
+            .map(|attempt| attempt.agent_repair_scorecard.syntax_preview_failure_count)
             .unwrap_or(0),
         target_redirect_count: last_attempt
-            .map(|attempt| attempt.local_agent_scorecard.target_redirect_count)
+            .map(|attempt| attempt.agent_repair_scorecard.target_redirect_count)
             .unwrap_or(0),
         evidence_file_fixation_count: last_attempt
-            .map(|attempt| attempt.local_agent_scorecard.evidence_file_fixation_count)
+            .map(|attempt| attempt.agent_repair_scorecard.evidence_file_fixation_count)
             .unwrap_or(0),
-        local_agent_final_failure_classification: None,
+        agent_final_failure_classification: None,
         planner_model,
         executor_model,
         deterministic_evaluation_passed,
@@ -6286,15 +3393,15 @@ fn write_report(
         primary_failure: None,
     };
     let primary_failure = classify_primary_failure(&report);
-    let local_agent_final_failure_classification =
-        classify_local_agent_failure(&report, primary_failure.as_deref());
-    let last_failure_class = local_agent_final_failure_classification
+    let agent_final_failure_classification =
+        classify_agent_failure(&report, primary_failure.as_deref());
+    let last_failure_class = agent_final_failure_classification
         .clone()
         .or_else(|| primary_failure.clone());
     let report = BenchmarkReport {
         primary_failure,
         last_failure_class,
-        local_agent_final_failure_classification,
+        agent_final_failure_classification,
         ..report
     };
     write_json(&result_dir.join("benchmark-report.json"), &report)?;
@@ -6302,6 +3409,7 @@ fn write_report(
         result_dir.join("benchmark-report.md"),
         render_report_markdown(&report),
     )?;
+    write_benchmark_proof_receipt(result_dir, &report)?;
     log_phase(
         "report",
         if report.success {
@@ -6348,7 +3456,7 @@ fn write_synthetic_failure_report(
         candidate_models: Vec::new(),
         effective_provider: None,
         effective_model: None,
-        used_local_fallback: false,
+        used_fallback: false,
         fallback_reason: None,
         comparable_run: None,
         provider_request_id: None,
@@ -6467,8 +3575,8 @@ fn write_synthetic_failure_report(
         recommended_rerun_command: None,
         fast_loop_rerun_match_kind: None,
         failed_edit_records: Vec::new(),
-        local_model_memory: quorp_agent_core::LocalModelMemory::default(),
-        local_agent_scorecard: quorp_agent_core::LocalAgentScorecard::default(),
+        agent_repair_memory: quorp_agent_core::AgentRepairMemory::default(),
+        agent_repair_scorecard: quorp_agent_core::AgentRepairScorecard::default(),
         preview_edit_count: 0,
         preview_edit_success_count: 0,
         preview_created_count: 0,
@@ -6481,7 +3589,7 @@ fn write_synthetic_failure_report(
         syntax_preview_failure_count: 0,
         target_redirect_count: 0,
         evidence_file_fixation_count: 0,
-        local_agent_final_failure_classification: Some(
+        agent_final_failure_classification: Some(
             setup_failure_class
                 .clone()
                 .unwrap_or_else(|| "launch_failed".to_string()),
@@ -6497,7 +3605,122 @@ fn write_synthetic_failure_report(
         result_dir.join("benchmark-report.md"),
         render_report_markdown(&report),
     )?;
+    write_benchmark_proof_receipt(result_dir, &report)?;
     Ok(())
+}
+
+fn write_benchmark_proof_receipt(
+    result_dir: &Path,
+    report: &BenchmarkReport,
+) -> anyhow::Result<()> {
+    let mut receipt = ProofReceipt::new(format!("{}:{}", report.benchmark_name, report.issue_id));
+    receipt.sandbox_path = report.sandbox_root.clone();
+    receipt.changed_files = report.changed_files.iter().map(PathBuf::from).collect();
+    receipt.evaluator_result = Some(if report.success {
+        "success".to_string()
+    } else {
+        format!("failed exit_code={}", report.exit_code)
+    });
+    receipt.provider = report
+        .effective_provider
+        .clone()
+        .or(Some(report.provider_kind.clone()));
+    receipt.model = report
+        .effective_model
+        .clone()
+        .or(Some(report.model_id.clone()));
+    receipt.usage.insert(
+        "total_billed_tokens".to_string(),
+        report.total_billed_tokens,
+    );
+    receipt
+        .usage
+        .insert("prompt_tokens".to_string(), report.prompt_tokens);
+    receipt
+        .usage
+        .insert("completion_tokens".to_string(), report.completion_tokens);
+    receipt
+        .usage
+        .insert("reasoning_tokens".to_string(), report.reasoning_tokens);
+    receipt.usage.insert(
+        "cache_read_input_tokens".to_string(),
+        report.cache_read_input_tokens,
+    );
+    receipt.usage.insert(
+        "cache_write_input_tokens".to_string(),
+        report.cache_write_input_tokens,
+    );
+    for attempt in &report.attempts {
+        let attempt_events = attempt.agent_result_dir.join("events.jsonl");
+        let attempt_events_hash = sha256_file_if_exists(&attempt_events)?;
+        for command in &attempt.validations {
+            receipt.validation.push(ValidationRecord {
+                command: command.clone(),
+                cwd: attempt.workspace_dir.clone(),
+                exit_code: if report.success { 0 } else { report.exit_code },
+                raw_log_path: attempt_events.exists().then(|| attempt_events.clone()),
+                raw_log_sha256: attempt_events_hash.clone(),
+            });
+        }
+        for evaluation in [
+            attempt.visible_evaluation.as_ref(),
+            attempt.collector_evaluation.as_ref(),
+            attempt.evaluation.as_ref(),
+        ]
+        .into_iter()
+        .flatten()
+        {
+            receipt.validation.push(ValidationRecord {
+                command: evaluation
+                    .command
+                    .clone()
+                    .unwrap_or_else(|| evaluation.name.clone()),
+                cwd: attempt.workspace_dir.clone(),
+                exit_code: evaluation.exit_code,
+                raw_log_path: None,
+                raw_log_sha256: None,
+            });
+        }
+    }
+    for (name, path) in [
+        (
+            "benchmark_report_json",
+            result_dir.join("benchmark-report.json"),
+        ),
+        (
+            "benchmark_report_markdown",
+            result_dir.join("benchmark-report.md"),
+        ),
+        ("event_log", result_dir.join("events.jsonl")),
+    ] {
+        if path.exists() {
+            receipt.raw_artifacts.insert(
+                name.to_string(),
+                RawArtifact {
+                    sha256: sha256_file_if_exists(&path)?,
+                    path,
+                },
+            );
+        }
+    }
+    if !report.success {
+        receipt.residual_risks.push(
+            "benchmark did not pass; inspect benchmark-report.json and events.jsonl".to_string(),
+        );
+    }
+    write_json(&result_dir.join("proof-receipt.json"), &receipt)
+}
+
+fn sha256_file_if_exists(path: &Path) -> anyhow::Result<Option<String>> {
+    match fs::read(path) {
+        Ok(bytes) => {
+            let mut hasher = Sha256::new();
+            hasher.update(bytes);
+            Ok(Some(format!("{:x}", hasher.finalize())))
+        }
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+        Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
 }
 
 fn classify_primary_failure(report: &BenchmarkReport) -> Option<String> {
@@ -6612,7 +3835,7 @@ fn classify_primary_failure(report: &BenchmarkReport) -> Option<String> {
     None
 }
 
-fn classify_local_agent_failure(
+fn classify_agent_failure(
     report: &BenchmarkReport,
     primary_failure: Option<&str>,
 ) -> Option<String> {
@@ -6622,7 +3845,7 @@ fn classify_local_agent_failure(
     if report.pre_model_bootstrap_stalled {
         return Some("infra_runtime".to_string());
     }
-    let scorecard = &report.local_agent_scorecard;
+    let scorecard = &report.agent_repair_scorecard;
     if matches!(
         primary_failure,
         Some("first_token_timeout" | "stream_idle_timeout" | "model_request_timeout")
@@ -6740,49 +3963,6 @@ fn classify_local_agent_failure(
         .or_else(|| Some("model_semantic_quality".to_string()))
 }
 
-fn truncate_report_text(value: &str, char_limit: usize) -> String {
-    let mut output = String::new();
-    let mut characters = value.chars();
-    for _ in 0..char_limit {
-        let Some(character) = characters.next() else {
-            return value.to_string();
-        };
-        output.push(character);
-    }
-    if characters.next().is_some() {
-        output.push_str("...");
-    }
-    output
-}
-
-fn render_failed_edit_records_for_report(records: &[quorp_agent_core::FailedEditRecord]) -> String {
-    records
-        .iter()
-        .rev()
-        .take(4)
-        .map(|record| {
-            let lines = if record.matching_line_numbers.is_empty() {
-                "lines=unknown".to_string()
-            } else {
-                format!(
-                    "lines={}",
-                    record
-                        .matching_line_numbers
-                        .iter()
-                        .map(usize::to_string)
-                        .collect::<Vec<_>>()
-                        .join(",")
-                )
-            };
-            format!(
-                "{} {} attempts={} {}",
-                record.action_kind, record.path, record.attempts, lines
-            )
-        })
-        .collect::<Vec<_>>()
-        .join(" | ")
-}
-
 fn attempt_passed(attempt: &AttemptReport) -> bool {
     let agent_succeeded = matches!(
         attempt.agent_stop_reason,
@@ -6888,382 +4068,6 @@ fn git_numstat(workspace_dir: &Path) -> anyhow::Result<(u64, u64)> {
     Ok((lines_added, lines_removed))
 }
 
-fn resolve_benchmark(path: &Path) -> anyhow::Result<ResolvedBenchmark> {
-    let canonical = fs::canonicalize(path)
-        .with_context(|| format!("failed to resolve benchmark path {}", path.display()))?;
-    if looks_like_warpos_staged_workspace(&canonical) {
-        return resolve_from_warpos_staged_workspace(&canonical);
-    }
-    if looks_like_proof_full_workspace(&canonical) {
-        return resolve_from_workspace_root(&canonical);
-    }
-    if looks_like_issue_dir(&canonical) {
-        return resolve_from_issue_dir(&canonical);
-    }
-    anyhow::bail!(
-        "benchmark path `{}` was not recognized as an issue brief directory or proof-full workspace root",
-        canonical.display()
-    );
-}
-
-fn resolve_challenge_case(
-    path: &Path,
-    explicit_condition: Option<&str>,
-) -> anyhow::Result<Option<ResolvedChallengeCase>> {
-    let canonical = fs::canonicalize(path)
-        .with_context(|| format!("failed to resolve challenge path {}", path.display()))?;
-    let Some(case_root) = find_ancestor_with_file(&canonical, "benchmark.json") else {
-        return Ok(None);
-    };
-    let manifest_path = case_root.join("benchmark.json");
-    let manifest: ChallengeManifest = serde_json::from_str(
-        &fs::read_to_string(&manifest_path)
-            .with_context(|| format!("failed to read {}", manifest_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", manifest_path.display()))?;
-    let condition =
-        resolve_challenge_condition(&canonical, &case_root, &manifest, explicit_condition)?;
-    let declared_objective = case_root.join(&manifest.objective_file);
-    let objective_source = if canonical == declared_objective {
-        canonical.clone()
-    } else if canonical.is_dir()
-        || canonical.starts_with(case_root.join("workspace"))
-        || looks_like_proof_full_workspace(&case_root)
-    {
-        declared_objective.clone()
-    } else if canonical.starts_with(&case_root) {
-        anyhow::bail!(
-            "provided challenge path {} does not match the declared objective file {}; pass the case root, the objective markdown, or a workspace file",
-            canonical.display(),
-            declared_objective.display()
-        );
-    } else {
-        declared_objective.clone()
-    };
-    if !objective_source.exists() {
-        anyhow::bail!(
-            "failed to locate challenge objective file at {}",
-            objective_source.display()
-        );
-    }
-    let success_source = case_root.join(&manifest.success_file);
-    if !success_source.exists() {
-        anyhow::bail!(
-            "failed to locate challenge success file at {}",
-            success_source.display()
-        );
-    }
-    Ok(Some(ResolvedChallengeCase {
-        case_root,
-        manifest,
-        condition,
-        objective_source,
-        success_source,
-    }))
-}
-
-fn resolve_challenge_condition(
-    canonical: &Path,
-    case_root: &Path,
-    manifest: &ChallengeManifest,
-    explicit_condition: Option<&str>,
-) -> anyhow::Result<String> {
-    if let Some(explicit) = explicit_condition {
-        if manifest
-            .repo_condition
-            .iter()
-            .any(|condition| condition == explicit)
-        {
-            return Ok(explicit.to_string());
-        }
-        anyhow::bail!(
-            "challenge condition `{}` is not listed in benchmark.json repo_condition",
-            explicit
-        );
-    }
-
-    if let Some(inferred) = infer_condition_from_workspace_path(canonical, case_root, manifest) {
-        return Ok(inferred);
-    }
-
-    if manifest
-        .repo_condition
-        .iter()
-        .any(|condition| condition == "proof-full")
-    {
-        return Ok("proof-full".to_string());
-    }
-
-    manifest
-        .repo_condition
-        .first()
-        .cloned()
-        .ok_or_else(|| anyhow::anyhow!("benchmark.json did not list any repo_condition values"))
-}
-
-fn infer_condition_from_workspace_path(
-    canonical: &Path,
-    case_root: &Path,
-    manifest: &ChallengeManifest,
-) -> Option<String> {
-    let workspace_root = case_root.join("workspace");
-    if !canonical.starts_with(&workspace_root) {
-        return None;
-    }
-    let relative = canonical.strip_prefix(&workspace_root).ok()?;
-    let inferred = relative
-        .components()
-        .next()?
-        .as_os_str()
-        .to_str()?
-        .to_string();
-    manifest
-        .repo_condition
-        .iter()
-        .any(|condition| condition == &inferred)
-        .then_some(inferred)
-}
-
-fn find_ancestor_with_file(path: &Path, file_name: &str) -> Option<PathBuf> {
-    for ancestor in path.ancestors() {
-        if ancestor.join(file_name).exists() {
-            return Some(ancestor.to_path_buf());
-        }
-    }
-    None
-}
-
-fn resolve_from_warpos_staged_workspace(
-    workspace_root: &Path,
-) -> anyhow::Result<ResolvedBenchmark> {
-    let marker = read_warpos_benchmark_root_marker(workspace_root)?;
-    let handoff_root = resolve_marker_handoff_root(workspace_root, &marker);
-    let benchmark_root = find_warpos_benchmarks_root(&handoff_root).unwrap_or(handoff_root.clone());
-    let issue_dir = find_warpos_issue_dir(&benchmark_root, &marker.issue);
-    Ok(ResolvedBenchmark {
-        benchmark_root,
-        issue_id: marker.issue.clone(),
-        benchmark_name: marker
-            .benchmark
-            .clone()
-            .unwrap_or_else(|| marker.issue.clone()),
-        issue_dir: issue_dir.clone(),
-        workspace_source: workspace_root.to_path_buf(),
-        objective_source: [
-            workspace_root.join("START_HERE.md"),
-            workspace_root.join("README.md"),
-        ]
-        .into_iter()
-        .find(|path| path.exists())
-        .ok_or_else(|| anyhow::anyhow!("failed to locate benchmark objective file"))?,
-        visible_evaluator: [
-            workspace_root.join("evaluate.sh"),
-            workspace_root.join("evaluate_visible.sh"),
-        ]
-        .into_iter()
-        .find(|path| path.exists()),
-        collector_evaluator: issue_dir
-            .as_ref()
-            .and_then(|path| find_collector_script(path)),
-        context_files: collect_context_files(workspace_root),
-        repair_artifacts: collect_repair_artifacts(workspace_root),
-    })
-}
-
-fn read_warpos_benchmark_root_marker(
-    workspace_root: &Path,
-) -> anyhow::Result<WarposBenchmarkRootMarker> {
-    let marker_path = workspace_root.join(".benchmark-root.json");
-    serde_json::from_str::<WarposBenchmarkRootMarker>(
-        &fs::read_to_string(&marker_path)
-            .with_context(|| format!("failed to read {}", marker_path.display()))?,
-    )
-    .with_context(|| format!("failed to parse {}", marker_path.display()))
-}
-
-fn resolve_marker_handoff_root(
-    workspace_root: &Path,
-    marker: &WarposBenchmarkRootMarker,
-) -> PathBuf {
-    let handoff_root = if marker.handoff_root.is_absolute() {
-        marker.handoff_root.clone()
-    } else {
-        workspace_root.join(&marker.handoff_root)
-    };
-    fs::canonicalize(&handoff_root).unwrap_or(handoff_root)
-}
-
-fn find_warpos_benchmarks_root(path: &Path) -> Option<PathBuf> {
-    path.ancestors().find_map(|ancestor| {
-        (ancestor.file_name().and_then(|name| name.to_str()) == Some("benchmarks"))
-            .then(|| ancestor.to_path_buf())
-    })
-}
-
-fn find_warpos_issue_dir(benchmarks_root: &Path, issue_id: &str) -> Option<PathBuf> {
-    [
-        benchmarks_root.join("issues").join(issue_id),
-        benchmarks_root
-            .join("exhaustive")
-            .join("issues")
-            .join(issue_id),
-    ]
-    .into_iter()
-    .find(|path| path.exists())
-}
-
-fn resolve_from_workspace_root(workspace_root: &Path) -> anyhow::Result<ResolvedBenchmark> {
-    let issue_id = workspace_root
-        .parent()
-        .and_then(Path::file_name)
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| {
-            anyhow::anyhow!("failed to infer issue id from {}", workspace_root.display())
-        })?
-        .to_string();
-    let benchmark_root = find_benchmark_root(workspace_root)?;
-    let issue_dir = benchmark_root
-        .join("exhaustive")
-        .join("issues")
-        .join(&issue_id);
-    let issue_dir = issue_dir.exists().then_some(issue_dir);
-    Ok(ResolvedBenchmark {
-        benchmark_root: benchmark_root.clone(),
-        issue_id: issue_id.clone(),
-        benchmark_name: issue_id.clone(),
-        issue_dir: issue_dir.clone(),
-        workspace_source: workspace_root.to_path_buf(),
-        objective_source: issue_dir
-            .as_ref()
-            .map(|dir| dir.join("README.md"))
-            .filter(|path| path.exists())
-            .or_else(|| {
-                [
-                    workspace_root.join("START_HERE.md"),
-                    workspace_root.join("README.md"),
-                ]
-                .into_iter()
-                .find(|path| path.exists())
-            })
-            .ok_or_else(|| anyhow::anyhow!("failed to locate benchmark objective file"))?,
-        visible_evaluator: [
-            workspace_root.join("evaluate.sh"),
-            workspace_root.join("evaluate_visible.sh"),
-        ]
-        .into_iter()
-        .find(|path| path.exists()),
-        collector_evaluator: issue_dir
-            .as_ref()
-            .and_then(|path| find_collector_script(path)),
-        context_files: collect_context_files(workspace_root),
-        repair_artifacts: collect_repair_artifacts(workspace_root),
-    })
-}
-
-fn resolve_from_issue_dir(issue_dir: &Path) -> anyhow::Result<ResolvedBenchmark> {
-    let issue_id = issue_dir
-        .file_name()
-        .and_then(|name| name.to_str())
-        .ok_or_else(|| anyhow::anyhow!("failed to infer issue id from {}", issue_dir.display()))?
-        .to_string();
-    let benchmark_root = find_benchmark_root(issue_dir)?;
-    let handoffs_root = benchmark_root.join("handoffs");
-    let workspace_source =
-        find_workspace_for_issue(&handoffs_root, &issue_id)?.ok_or_else(|| {
-            anyhow::anyhow!(
-                "failed to find proof-full workspace for issue `{}` under {}",
-                issue_id,
-                handoffs_root.display()
-            )
-        })?;
-    Ok(ResolvedBenchmark {
-        benchmark_root,
-        issue_id: issue_id.clone(),
-        benchmark_name: issue_id.clone(),
-        issue_dir: Some(issue_dir.to_path_buf()),
-        workspace_source: workspace_source.clone(),
-        objective_source: issue_dir.join("README.md"),
-        visible_evaluator: [
-            workspace_source.join("evaluate.sh"),
-            workspace_source.join("evaluate_visible.sh"),
-        ]
-        .into_iter()
-        .find(|path| path.exists()),
-        collector_evaluator: find_collector_script(issue_dir),
-        context_files: collect_context_files(&workspace_source),
-        repair_artifacts: collect_repair_artifacts(&workspace_source),
-    })
-}
-
-fn find_collector_script(issue_dir: &Path) -> Option<PathBuf> {
-    [
-        issue_dir.join("evaluate.sh"),
-        issue_dir.join(".hidden").join("evaluate_hidden.sh"),
-        issue_dir.join("hidden").join("check.sh"),
-    ]
-    .into_iter()
-    .find(|path| path.exists())
-}
-
-fn find_workspace_for_issue(
-    handoffs_root: &Path,
-    issue_id: &str,
-) -> anyhow::Result<Option<PathBuf>> {
-    if !handoffs_root.exists() {
-        return Ok(None);
-    }
-    for entry in fs::read_dir(handoffs_root)? {
-        let entry = entry?;
-        if !entry.file_type()?.is_dir() {
-            continue;
-        }
-        let candidate = entry.path().join(issue_id).join("proof-full");
-        if candidate.exists() {
-            return Ok(Some(candidate));
-        }
-    }
-    Ok(None)
-}
-
-fn collect_context_files(workspace_root: &Path) -> Vec<PathBuf> {
-    [
-        workspace_root.join(".benchmark-root.json"),
-        workspace_root.join("issue.json"),
-        workspace_root.join("START_HERE.md"),
-        workspace_root.join("YOU_ARE_HERE.txt"),
-    ]
-    .into_iter()
-    .filter(|path| path.exists())
-    .collect()
-}
-
-fn collect_repair_artifacts(workspace_root: &Path) -> Vec<PathBuf> {
-    [
-        workspace_root
-            .join("target")
-            .join("agent")
-            .join("repair-bundle.json"),
-        workspace_root
-            .join("target")
-            .join("agent")
-            .join("last-failure.json"),
-    ]
-    .into_iter()
-    .filter(|path| path.exists())
-    .collect()
-}
-
-fn rebase_attempt_path(
-    resolved: &ResolvedBenchmark,
-    workspace_dir: &Path,
-    original_path: &Path,
-) -> PathBuf {
-    original_path
-        .strip_prefix(&resolved.workspace_source)
-        .map(|relative| workspace_dir.join(relative))
-        .unwrap_or_else(|_| original_path.to_path_buf())
-}
-
 fn prepare_attempt_workspace(
     resolved: &ResolvedBenchmark,
     workspace_dir: &Path,
@@ -7323,7 +4127,7 @@ fn build_benchmark_objective(
             summarize_markdown_brief(&objective)
         ),
         "## First Turn Requirements\n- First turn must produce a short execution plan before edits.\n- Name the likely target files or crates, the first search/query steps, and the validation plan.\n- Use `task_updates` and `verifier_plan` to record that plan.\n- If the brief mentions a symbol or field, search for it before opening guessed file paths.\n- Keep the first turn compact: no repeated reads, and inspect at most four files before either editing or validating.".to_string(),
-        "## Required Operating Rules\n- Start from the owning crate or nearest local owner.\n- Validate locally first and widen only when forced by the dependency graph or public contract.\n- Continue after the first visible green run when collector validation still fails.\n- Include files changed, validation commands, widening, and attempt count in the final report.".to_string(),
+        "## Required Operating Rules\n- Start from the owning crate or nearest nearest owner.\n- Validate locally first and widen only when forced by the dependency graph or public contract.\n- Continue after the first visible green run when collector validation still fails.\n- Include files changed, validation commands, widening, and attempt count in the final report.".to_string(),
         format!(
             "## Validation Commands\n{}",
             [
@@ -7434,35 +4238,6 @@ fn select_benchmark_briefing_text(value: &serde_json::Value, issue_id: &str) -> 
                     .map(ToOwned::to_owned)
             }),
         _ => None,
-    }
-}
-
-fn summarize_markdown_brief(markdown: &str) -> String {
-    markdown
-        .lines()
-        .map(str::trim)
-        .filter(|line| !line.is_empty())
-        .take(12)
-        .map(|line| {
-            if line.starts_with('#') || line.starts_with('-') {
-                format!("- {}", line.trim_start_matches('#').trim())
-            } else {
-                format!("- {line}")
-            }
-        })
-        .collect::<Vec<_>>()
-        .join("\n")
-}
-
-fn render_bullet_list_or_none(items: &[String]) -> String {
-    if items.is_empty() {
-        "- [none]".to_string()
-    } else {
-        items
-            .iter()
-            .map(|item| format!("- `{}`", item))
-            .collect::<Vec<_>>()
-            .join("\n")
     }
 }
 
@@ -7730,7 +4505,7 @@ extra_instructions = [
   "Benchmark mode. Act, do not narrate.",
   "Read `.quorp/challenge-capsule.json` first. Keep owner files, fast loop, touch targets, and named tests in mind.",
   "Use the smallest tool that works. Search first, then read the owner slice, then patch.",
-  "Stay on owner files and named tests until the fast loop says the local guess is wrong.",
+  "Stay on owner files and named tests until the fast loop says the current guess is wrong.",
   "After a failed fast loop, reread the failure anchor, patch an owner file, or rerun the exact fast loop. Do not spend a turn planning.",
   "Use workspace-relative paths only.",
   "Prefer ReplaceBlock for tiny edits, ApplyPatch for multi-file changes, WriteFile for new files, and SetExecutable for scripts.",
@@ -7742,133 +4517,6 @@ extra_instructions = [
 "#,
     )?;
     Ok(())
-}
-
-fn write_benchmark_sandbox_cargo_config(
-    sandbox_root: &Path,
-    condition: &str,
-) -> anyhow::Result<()> {
-    let cargo_dir = sandbox_root.join(".cargo");
-    fs::create_dir_all(&cargo_dir)?;
-    fs::write(
-        cargo_dir.join("config.toml"),
-        format!(
-            "[build]\ntarget-dir = \"../{}/{}\"\n",
-            CHALLENGE_CARGO_CACHE_DIR, condition
-        ),
-    )?;
-    Ok(())
-}
-
-fn write_workspace_challenge_command_wrappers(workspace_dir: &Path) -> anyhow::Result<()> {
-    for file_name in ["evaluate.sh", "reset.sh"] {
-        let wrapper_path = workspace_dir.join(file_name);
-        if wrapper_path.exists() {
-            continue;
-        }
-        fs::write(
-            &wrapper_path,
-            format!(
-                "#!/usr/bin/env bash\nset -euo pipefail\ncd \"$(dirname \"$0\")/../..\"\nexec ./{file_name} \"$@\"\n"
-            ),
-        )?;
-        #[cfg(unix)]
-        {
-            let mut permissions = fs::metadata(&wrapper_path)?.permissions();
-            permissions.set_mode(0o755);
-            fs::set_permissions(&wrapper_path, permissions)?;
-        }
-    }
-    Ok(())
-}
-
-fn summarize_workspace_root(workspace_dir: &Path) -> String {
-    match fs::read_dir(workspace_dir) {
-        Ok(entries) => {
-            let mut names = entries
-                .filter_map(Result::ok)
-                .filter_map(|entry| {
-                    let mut name = entry.file_name().into_string().ok()?;
-                    let metadata = entry.metadata().ok()?;
-                    if metadata.is_dir() {
-                        name.push('/');
-                    }
-                    Some(name)
-                })
-                .collect::<Vec<_>>();
-            names.sort();
-            if names.is_empty() {
-                "- [empty]".to_string()
-            } else {
-                names
-                    .into_iter()
-                    .take(12)
-                    .map(|name| format!("- `{name}`"))
-                    .collect::<Vec<_>>()
-                    .join("\n")
-            }
-        }
-        Err(_) => "- [unavailable]".to_string(),
-    }
-}
-
-fn run_visible_evaluator(script: &Path, workspace_dir: &Path) -> anyhow::Result<EvaluatorOutcome> {
-    log_phase(
-        "visible",
-        ANSI_BLUE,
-        format!("running visible evaluator {}", script.display()),
-    );
-    let started_at = std::time::Instant::now();
-    #[allow(clippy::disallowed_methods)]
-    let output = Command::new(script)
-        .current_dir(workspace_dir)
-        .output()
-        .with_context(|| format!("failed to run visible evaluator {}", script.display()))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    Ok(EvaluatorOutcome {
-        name: "visible".to_string(),
-        script: script.to_path_buf(),
-        command: Some(script.display().to_string()),
-        duration_ms: started_at.elapsed().as_millis() as u64,
-        exit_code: output.status.code().unwrap_or(-1),
-        passed: evaluator_passed(output.status.success(), &stdout),
-        stdout,
-        stderr,
-    })
-}
-
-fn run_collector_evaluator(
-    script: &Path,
-    workspace_dir: &Path,
-    attempt_dir: &Path,
-) -> anyhow::Result<EvaluatorOutcome> {
-    log_phase(
-        "collector",
-        ANSI_BLUE,
-        format!("running collector evaluator {}", script.display()),
-    );
-    let started_at = std::time::Instant::now();
-    #[allow(clippy::disallowed_methods)]
-    let output = Command::new(script)
-        .arg(workspace_dir)
-        .env("QUORP_BENCHMARK_WORKSPACE", workspace_dir)
-        .env("QUORP_BENCHMARK_ATTEMPT_DIR", attempt_dir)
-        .current_dir(script.parent().unwrap_or_else(|| Path::new("/")))
-        .output()
-        .with_context(|| format!("failed to run collector evaluator {}", script.display()))?;
-    let stdout = String::from_utf8_lossy(&output.stdout).to_string();
-    let stderr = String::from_utf8_lossy(&output.stderr).to_string();
-    Ok(EvaluatorOutcome {
-        name: "collector".to_string(),
-        script: script.to_path_buf(),
-        command: Some(format!("{} {}", script.display(), workspace_dir.display())),
-        duration_ms: started_at.elapsed().as_millis() as u64,
-        exit_code: output.status.code().unwrap_or(-1),
-        passed: evaluator_passed(output.status.success(), &stdout),
-        stdout,
-        stderr,
-    })
 }
 
 fn git_changed_files(workspace_dir: &Path) -> anyhow::Result<Vec<String>> {
@@ -8000,14 +4648,14 @@ fn read_checkpoint_validation_state(
             serde_json::from_value::<Vec<quorp_agent_core::FailedEditRecord>>(value.clone()).ok()
         })
         .unwrap_or_default();
-    let local_model_memory = checkpoint
+    let agent_repair_memory = checkpoint
         .get("snapshot")
-        .and_then(|value| value.get("local_model_memory"))
+        .and_then(|value| value.get("agent_repair_memory"))
         .and_then(|value| {
-            serde_json::from_value::<quorp_agent_core::LocalModelMemory>(value.clone()).ok()
+            serde_json::from_value::<quorp_agent_core::AgentRepairMemory>(value.clone()).ok()
         })
         .unwrap_or_default();
-    let local_agent_scorecard = local_model_memory.scorecard.clone();
+    let agent_repair_scorecard = agent_repair_memory.scorecard.clone();
     let validation_status = ledger
         .and_then(|value| value.get("validation_status"))
         .and_then(serde_json::Value::as_str)
@@ -8048,21 +4696,21 @@ fn read_checkpoint_validation_state(
         .and_then(|value| value.get("diagnostic_class"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
-        .or_else(|| local_model_memory.diagnostic_class.clone());
+        .or_else(|| agent_repair_memory.diagnostic_class.clone());
     let implementation_target_lease = validation_details
         .and_then(|value| value.get("implementation_target_lease"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
-        .or_else(|| local_model_memory.implementation_target_lease.clone());
+        .or_else(|| agent_repair_memory.implementation_target_lease.clone());
     let dependency_candidates = validation_details
         .and_then(|value| value.get("dependency_candidates"))
         .and_then(|value| serde_json::from_value::<Vec<String>>(value.clone()).ok())
-        .unwrap_or_else(|| local_model_memory.dependency_candidates.clone());
+        .unwrap_or_else(|| agent_repair_memory.dependency_candidates.clone());
     let target_dependency_table = validation_details
         .and_then(|value| value.get("target_dependency_table"))
         .and_then(serde_json::Value::as_str)
         .map(str::to_string)
-        .or_else(|| local_model_memory.target_dependency_table.clone());
+        .or_else(|| agent_repair_memory.target_dependency_table.clone());
     let repair_required = validation_details
         .and_then(|value| value.get("repair_required"))
         .and_then(serde_json::Value::as_bool)
@@ -8156,8 +4804,8 @@ fn read_checkpoint_validation_state(
         recommended_rerun_command,
         fast_loop_rerun_match_kind,
         failed_edit_records,
-        local_model_memory,
-        local_agent_scorecard,
+        agent_repair_memory,
+        agent_repair_scorecard,
     })
 }
 
@@ -8451,818 +5099,18 @@ fn detect_widening(changed_files: &[String]) -> bool {
     roots.len() > 1
 }
 
-fn render_report_markdown(report: &BenchmarkReport) -> String {
-    let mut lines = vec![
-        format!("# Benchmark Report: {}", report.benchmark_name),
-        format!("- Issue: `{}`", report.issue_id),
-        format!("- Executor: `{}`", report.executor.label()),
-        format!("- Model: `{}`", report.model_id),
-        format!("- Safety mode: `{}`", report.safety_mode_label),
-        format!(
-            "- Scenario label: `{}`",
-            report
-                .scenario_label
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- Routing mode: `{}`",
-            report
-                .routing_mode
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- Requested provider: `{}`",
-            report
-                .requested_provider
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- Requested model: `{}`",
-            report
-                .requested_model
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- Effective provider: `{}`",
-            report
-                .effective_provider
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- Effective model: `{}`",
-            report
-                .effective_model
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!("- Used local fallback: `{}`", report.used_local_fallback),
-        format!(
-            "- Comparable run: `{}`",
-            report
-                .comparable_run
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- Provider request id: `{}`",
-            report
-                .provider_request_id
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- Routing status: `{}`",
-            report
-                .routing_status
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- Repo capsule injected: `{}`",
-            report.repo_capsule_injected
-        ),
-        format!("- Reasoning enabled: `{}`", report.reasoning_enabled),
-        format!(
-            "- Path resolution failures: `{}`",
-            report.path_resolution_failures
-        ),
-        format!("- Recovery turns: `{}`", report.recovery_turns),
-        format!("- Action contract: `{}`", report.action_contract_mode),
-        format!(
-            "- Action contract selected: `{}`",
-            report.action_contract_selected
-        ),
-        format!(
-            "- Action contract fallback reason: `{}`",
-            report
-                .action_contract_fallback_reason
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- Attempt lineage: `{}`",
-            if report.attempt_lineage.is_empty() {
-                "n/a".to_string()
-            } else {
-                report.attempt_lineage.join(" -> ")
-            }
-        ),
-        format!(
-            "- Preview edits: `{}` / `{}` successful",
-            report.preview_edit_success_count, report.preview_edit_count
-        ),
-        format!(
-            "- Intent edits: replace_range=`{}` (hash_mismatch=`{}`), modify_toml=`{}`, previews_created=`{}`, apply_preview=`{}` (hash_mismatch=`{}`)",
-            report.replace_range_count,
-            report.replace_range_hash_mismatch_count,
-            report.modify_toml_count,
-            report.preview_created_count,
-            report.apply_preview_count,
-            report.apply_preview_hash_mismatch_count
-        ),
-        format!(
-            "- Effective prompt compaction: `{}`",
-            report
-                .effective_prompt_compaction_policy
-                .clone()
-                .unwrap_or_else(|| "none".to_string())
-        ),
-        format!(
-            "- Fast-loop validation status: `{}`",
-            report
-                .fast_loop_validation_status
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!("- Success: `{}`", report.success),
-        format!(
-            "- Attempts run: `{}` / `{}`",
-            report.attempts_run, report.max_attempts
-        ),
-        format!("- Total requests: `{}`", report.total_requests),
-        format!("- Wall clock ms: `{}`", report.wall_clock_ms),
-        format!("- Total billed tokens: `{}`", report.total_billed_tokens),
-        format!(
-            "- Input tokens (provider billed): `{}`",
-            report.prompt_tokens
-        ),
-        format!("- Completion tokens: `{}`", report.completion_tokens),
-        format!("- Reasoning tokens: `{}`", report.reasoning_tokens),
-        format!(
-            "- Cache read input tokens: `{}`",
-            report.cache_read_input_tokens
-        ),
-        format!(
-            "- Cache write input tokens: `{}`",
-            report.cache_write_input_tokens
-        ),
-        format!(
-            "- Max prompt estimate seen: `{}`",
-            report
-                .max_prompt_token_estimate_seen
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- Max completion cap seen: `{}`",
-            report
-                .max_completion_token_cap_seen
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- First request prompt estimate: `{}`",
-            report
-                .first_request_prompt_token_estimate
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- First request raw prompt estimate: `{}`",
-            report
-                .first_request_raw_prompt_token_estimate
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- First request compacted prompt estimate: `{}`",
-            report
-                .first_request_compacted_prompt_token_estimate
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- First request first-token ms: `{}`",
-            report
-                .first_request_first_token_latency_ms
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- First model turn started: `{}`",
-            report.first_model_turn_started
-        ),
-        format!(
-            "- Bootstrap phase: `{}`",
-            report
-                .bootstrap_phase
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- Bootstrap phase detail: `{}`",
-            report
-                .bootstrap_phase_detail
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- First task model request seen: `{}`",
-            report.first_task_model_request_seen
-        ),
-        format!(
-            "- Bootstrap elapsed ms before first task request: `{}`",
-            report
-                .bootstrap_elapsed_ms_before_first_task_request
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!(
-            "- Pre-model bootstrap stalled: `{}`",
-            report.pre_model_bootstrap_stalled
-        ),
-        format!(
-            "- Bootstrap stall class: `{}`",
-            report
-                .bootstrap_stall_class
-                .clone()
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!("- First action emitted: `{}`", report.first_action_emitted),
-        format!(
-            "- Task model call count: `{}`",
-            report.task_model_call_count
-        ),
-        format!("- Tool call count: `{}`", report.tool_call_count),
-        format!("- Edit count: `{}`", report.edit_count),
-        format!("- Read count: `{}`", report.read_count),
-        format!("- Write count: `{}`", report.write_count),
-        format!(
-            "- Rolled-back write count: `{}`",
-            report.rolled_back_write_count
-        ),
-        format!(
-            "- Command execution count: `{}`",
-            report.command_execution_count
-        ),
-        format!(
-            "- Non-support edit count: `{}`",
-            report.non_support_edit_count
-        ),
-        format!(
-            "- Rolled-back non-support edit count: `{}`",
-            report.rolled_back_non_support_edit_count
-        ),
-        format!(
-            "- Fast loop command seen: `{}`",
-            report.fast_loop_command_seen
-        ),
-        format!(
-            "- Agent final evaluate command seen: `{}`",
-            report.agent_final_evaluate_command_seen
-        ),
-        format!(
-            "- Final evaluate command seen: `{}`",
-            report.final_evaluate_command_seen
-        ),
-        format!(
-            "- Evaluation command seen: `{}`",
-            report.evaluation_command_seen
-        ),
-        format!(
-            "- Host evaluation commands run: `{}`",
-            report.host_evaluation_commands_run
-        ),
-        format!(
-            "- Text-only action failure: `{}`",
-            report.text_only_action_failure
-        ),
-        format!("- Watchdog near limit: `{}`", report.watchdog_near_limit),
-        format!("- Watchdog triggered: `{}`", report.watchdog_triggered),
-        format!("- Widening happened: `{}`", report.widening_happened),
-        format!("- Lines added: `{}`", report.lines_added),
-        format!("- Lines removed: `{}`", report.lines_removed),
-        format!("- Mistakes corrected: `{}`", report.mistakes_corrected),
-        format!(
-            "- Validation commands run: `{}`",
-            report.validation_commands_run
-        ),
-        format!(
-            "- Evaluation commands run: `{}`",
-            report.evaluation_commands_run
-        ),
-        format!(
-            "- Deterministic evaluation passed: `{}`",
-            report
-                .deterministic_evaluation_passed
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!("- Run dir: `{}`", report.run_dir.display()),
-        format!(
-            "- Sandbox root: `{}`",
-            report
-                .sandbox_root
-                .as_ref()
-                .map(|path| path.display().to_string())
-                .unwrap_or_else(|| "n/a".to_string())
-        ),
-        format!("- Exit code: `{}`", report.exit_code),
-        format!(
-            "- Primary failure: `{}`",
-            report
-                .primary_failure
-                .clone()
-                .unwrap_or_else(|| "none".to_string())
-        ),
-        format!(
-            "- Setup failure class: `{}`",
-            report
-                .setup_failure_class
-                .clone()
-                .unwrap_or_else(|| "none".to_string())
-        ),
-        format!(
-            "- Last failure class: `{}`",
-            report
-                .last_failure_class
-                .clone()
-                .unwrap_or_else(|| "none".to_string())
-        ),
-    ];
-    if let Some(judge) = &report.judge {
-        lines.push(format!(
-            "- Judge: passed={} model={} summary={}",
-            judge.passed, judge.model_id, judge.summary
-        ));
-        lines.push(format!("- Judge rationale: {}", judge.rationale));
-    }
-    if let Some(reset_outcome) = &report.reset_outcome {
-        lines.push(format!(
-            "- Reset outcome: passed={} exit_code={} duration_ms={}",
-            reset_outcome.passed, reset_outcome.exit_code, reset_outcome.duration_ms
-        ));
-    }
-    if let Some(run_error) = &report.run_error {
-        lines.push(format!("- Run error: `{run_error}`"));
-    }
-    if !report.candidate_models.is_empty() {
-        lines.push(format!(
-            "- Candidate models: `{}`",
-            report.candidate_models.join(", ")
-        ));
-    }
-    if let Some(fallback_reason) = &report.fallback_reason {
-        lines.push(format!("- Fallback reason: `{fallback_reason}`"));
-    }
-    if let Some(challenge) = &report.challenge {
-        lines.push(format!(
-            "- Challenge: `{}` condition=`{}` workspace=`{}`",
-            challenge.case_root.display(),
-            challenge.condition,
-            challenge.workspace_dir.display()
-        ));
-    }
-    if !report.prompt_token_series_by_turn.is_empty() {
-        let series = report
-            .prompt_token_series_by_turn
-            .iter()
-            .map(|sample| {
-                format!(
-                    "step{}={} raw={} compacted={} cap={}",
-                    sample.step,
-                    sample.prompt_token_estimate,
-                    sample
-                        .raw_prompt_token_estimate
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "n/a".to_string()),
-                    sample
-                        .compacted_prompt_token_estimate
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "n/a".to_string()),
-                    sample
-                        .completion_token_cap
-                        .map(|value| value.to_string())
-                        .unwrap_or_else(|| "n/a".to_string())
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" | ");
-        lines.push(format!("- Prompt token series by turn: {series}"));
-    }
-    if !report.read_range_observations.is_empty() {
-        let observations = report
-            .read_range_observations
-            .iter()
-            .map(|observation| {
-                format!(
-                    "{} requested={} honored={}",
-                    observation.path,
-                    observation
-                        .requested_range
-                        .clone()
-                        .unwrap_or_else(|| "none".to_string()),
-                    observation
-                        .honored_range
-                        .clone()
-                        .unwrap_or_else(|| "none".to_string())
-                )
-            })
-            .collect::<Vec<_>>()
-            .join(" | ");
-        lines.push(format!("- Read range observations: {observations}"));
-    }
-    if !report.failing_test_names.is_empty() {
-        lines.push(format!(
-            "- Failing tests: {}",
-            report.failing_test_names.join(", ")
-        ));
-    }
-    if let Some(test_name) = report.primary_failure_test_name.as_ref() {
-        lines.push(format!("- Primary failure test: `{test_name}`"));
-    }
-    if let Some(path) = report.primary_failure_path.as_ref() {
-        let line = report
-            .primary_failure_line
-            .map(|value| format!(":{value}"))
-            .unwrap_or_default();
-        lines.push(format!("- Primary failure location: `{path}{line}`"));
-    }
-    if let Some(assertion_excerpt) = report.assertion_excerpt.as_ref() {
-        lines.push(format!(
-            "- Assertion excerpt: `{}`",
-            truncate_report_text(assertion_excerpt, 180)
-        ));
-    }
-    lines.push(format!("- Repair required: `{}`", report.repair_required));
-    if let Some(phase) = report.repair_phase_terminal.as_ref() {
-        lines.push(format!("- Repair phase terminal: `{phase}`"));
-    }
-    if let Some(diagnostic_class) = report.diagnostic_class.as_ref() {
-        lines.push(format!("- Diagnostic class: `{diagnostic_class}`"));
-    }
-    if let Some(target_lease) = report.implementation_target_lease.as_ref() {
-        lines.push(format!("- Implementation target lease: `{target_lease}`"));
-    }
-    if let Some(target_dependency_table) = report.target_dependency_table.as_ref() {
-        lines.push(format!(
-            "- Target dependency table: `[{target_dependency_table}]`"
-        ));
-    }
-    if !report.dependency_candidates.is_empty() {
-        lines.push(format!(
-            "- Dependency candidates: `{}`",
-            report.dependency_candidates.join(", ")
-        ));
-    }
-    lines.push(format!(
-        "- Failure-anchor reread: attempted=`{}` honored=`{}`",
-        report.failure_anchor_reread_attempted, report.failure_anchor_reread_honored
-    ));
-    lines.push(format!(
-        "- Implementation reread: allowed=`{}` attempted=`{}` honored=`{}`",
-        report.implementation_reread_allowed,
-        report.implementation_reread_attempted,
-        report.implementation_reread_honored
-    ));
-    lines.push(format!(
-        "- Patch packet injected: `{}`",
-        report.patch_packet_injected
-    ));
-    if let Some(range) = report.patch_packet_honored_range.as_ref() {
-        lines.push(format!("- Patch packet honored range: `{range}`"));
-    }
-    if let Some(command) = report.recommended_rerun_command.as_ref() {
-        lines.push(format!(
-            "- Recommended rerun command: `{}`",
-            truncate_report_text(command, 220)
-        ));
-    }
-    if let Some(match_kind) = report.fast_loop_rerun_match_kind.as_ref() {
-        lines.push(format!("- Fast-loop rerun match kind: `{match_kind}`"));
-    }
-    if !report.failed_edit_records.is_empty() {
-        lines.push(format!(
-            "- Failed edit memory: `{}`",
-            render_failed_edit_records_for_report(&report.failed_edit_records)
-        ));
-    }
-    lines.push(format!(
-        "- Local-agent scorecard: parser_recovery=`{}` line_tools=`{}` controller_reads=`{}` redundant_reads=`{}` first_write=`{}` repeated_edits=`{}` validation_rejects=`{}` test_edit_rejects=`{}` target_redirects=`{}` evidence_fixations=`{}` anchors=`{}` syntax_previews=`{}`/`{}` classification=`{}`",
-        report.local_agent_scorecard.parser_recovery_count,
-        report.local_agent_scorecard.line_oriented_parse_count,
-        report.local_agent_scorecard.controller_injected_read_count,
-        report.local_agent_scorecard.redundant_read_count,
-        report
-            .local_agent_scorecard
-            .first_valid_write_step
-            .map(|value| value.to_string())
-            .unwrap_or_else(|| "none".to_string()),
-        report.local_agent_scorecard.repeated_failed_edit_count,
-        report.local_agent_scorecard.rejected_validation_alias_count,
-        report.local_agent_scorecard.test_edit_rejection_count,
-        report.local_agent_scorecard.target_redirect_count,
-        report.local_agent_scorecard.evidence_file_fixation_count,
-        report.local_agent_scorecard.anchor_suggestion_count,
-        report.local_agent_scorecard.syntax_preview_failure_count,
-        report.local_agent_scorecard.syntax_preview_count,
-        report
-            .local_agent_final_failure_classification
-            .clone()
-            .unwrap_or_else(|| "n/a".to_string())
-    ));
-    lines.push(format!(
-        "- Repair submode: entered=`{}` turns=`{}` invalid_streak_max=`{}` write_locked=`{}` write_refusals=`{}` scaffold_offered=`{}` scaffold_honored=`{}` write_emitted=`{}` soft_budget_inefficient=`{}`",
-        report.repair_submode_entered,
-        report.repair_submode_turns,
-        report.repair_invalid_action_streak_max,
-        report.repair_write_locked,
-        report.write_phase_action_refusal_count,
-        report.patch_scaffold_offered,
-        report.patch_scaffold_honored,
-        report.write_phase_write_emitted,
-        report.soft_budget_inefficient
-    ));
-    lines.push(format!(
-        "- Repair-phase invalid action count: `{}`",
-        report.repair_phase_invalid_action_count
-    ));
-    lines.push(format!(
-        "- Post-fast-loop patch attempted: `{}`",
-        report.post_fast_loop_patch_attempted
-    ));
-    lines.push(format!(
-        "- Post-fast-loop validation rerun attempted: `{}`",
-        report.post_fast_loop_validation_rerun_attempted
-    ));
-    lines.push(String::new());
-    lines.push("## Attempts".to_string());
-    for attempt in &report.attempts {
-        lines.push(format!(
-            "- Attempt {}: executor={}, stop={:?}, tokens={}, requests={}, prompt_est={}, max_tokens={}, visible={}, collector={}, evaluation={}, judge={}",
-            attempt.attempt,
-            attempt.executor.label(),
-            attempt.agent_stop_reason,
-            attempt.total_billed_tokens,
-            attempt.model_requests,
-            attempt
-                .max_prompt_token_estimate
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "n/a".to_string()),
-            attempt
-                .max_completion_token_cap
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "n/a".to_string()),
-            attempt
-                .visible_evaluation
-                .as_ref()
-                .map(|outcome| outcome.passed.to_string())
-                .unwrap_or_else(|| "n/a".to_string()),
-            attempt
-                .collector_evaluation
-                .as_ref()
-                .map(|outcome| outcome.passed.to_string())
-                .unwrap_or_else(|| "n/a".to_string()),
-            attempt
-                .evaluation
-                .as_ref()
-                .map(|outcome| outcome.passed.to_string())
-                .unwrap_or_else(|| "n/a".to_string()),
-            attempt
-                .judge
-                .as_ref()
-                .map(|judge| judge.passed.to_string())
-                .unwrap_or_else(|| "n/a".to_string()),
-        ));
-        lines.push(format!(
-            "  - Tokens: input={} output={} reasoning={} cache_read={} cache_write={}",
-            attempt.input_tokens,
-            attempt.output_tokens,
-            attempt.reasoning_tokens,
-            attempt.cache_read_input_tokens,
-            attempt.cache_write_input_tokens
-        ));
-        if !attempt.changed_files.is_empty() {
-            lines.push(format!(
-                "  - Files changed: {}",
-                attempt.changed_files.join(", ")
-            ));
-        }
-        if !attempt.ignored_changed_files.is_empty() {
-            lines.push(format!(
-                "  - Ignored support-file changes: {}",
-                attempt.ignored_changed_files.join(", ")
-            ));
-        }
-        if !attempt.validations.is_empty() {
-            lines.push(format!(
-                "  - Validations: {}",
-                attempt.validations.join(" | ")
-            ));
-        }
-        if let Some(status) = attempt.fast_loop_validation_status.as_ref() {
-            lines.push(format!("  - Fast-loop validation status: {status}"));
-        }
-        if let Some(failure) = attempt.last_validation_failure.as_ref() {
-            lines.push(format!("  - Last validation failure: {failure}"));
-        }
-        if !attempt.failing_test_names.is_empty() {
-            lines.push(format!(
-                "  - Failing tests: {}",
-                attempt.failing_test_names.join(", ")
-            ));
-        }
-        if let Some(test_name) = attempt.primary_failure_test_name.as_ref() {
-            lines.push(format!("  - Primary failure test: {test_name}"));
-        }
-        if let Some(path) = attempt.primary_failure_path.as_ref() {
-            let line = attempt
-                .primary_failure_line
-                .map(|value| format!(":{value}"))
-                .unwrap_or_default();
-            lines.push(format!("  - Primary failure location: {path}{line}"));
-        }
-        if let Some(assertion_excerpt) = attempt.assertion_excerpt.as_ref() {
-            lines.push(format!(
-                "  - Assertion excerpt: {}",
-                truncate_report_text(assertion_excerpt, 180)
-            ));
-        }
-        lines.push(format!("  - Repair required: {}", attempt.repair_required));
-        if let Some(phase) = attempt.repair_phase_terminal.as_ref() {
-            lines.push(format!("  - Repair phase terminal: {phase}"));
-        }
-        lines.push(format!(
-            "  - Failure-anchor reread: attempted={} honored={}",
-            attempt.failure_anchor_reread_attempted, attempt.failure_anchor_reread_honored
-        ));
-        lines.push(format!(
-            "  - Implementation reread: allowed={} attempted={} honored={}",
-            attempt.implementation_reread_allowed,
-            attempt.implementation_reread_attempted,
-            attempt.implementation_reread_honored
-        ));
-        lines.push(format!(
-            "  - Patch packet injected: {}",
-            attempt.patch_packet_injected
-        ));
-        if let Some(range) = attempt.patch_packet_honored_range.as_ref() {
-            lines.push(format!("  - Patch packet honored range: {range}"));
-        }
-        if let Some(command) = attempt.recommended_rerun_command.as_ref() {
-            lines.push(format!(
-                "  - Recommended rerun command: {}",
-                truncate_report_text(command, 220)
-            ));
-        }
-        if let Some(match_kind) = attempt.fast_loop_rerun_match_kind.as_ref() {
-            lines.push(format!("  - Fast-loop rerun match kind: {match_kind}"));
-        }
-        if let Some(diagnostic_class) = attempt.diagnostic_class.as_ref() {
-            lines.push(format!("  - Diagnostic class: {diagnostic_class}"));
-        }
-        if let Some(target_lease) = attempt.implementation_target_lease.as_ref() {
-            lines.push(format!("  - Implementation target lease: {target_lease}"));
-        }
-        if let Some(target_dependency_table) = attempt.target_dependency_table.as_ref() {
-            lines.push(format!(
-                "  - Target dependency table: [{target_dependency_table}]"
-            ));
-        }
-        if !attempt.dependency_candidates.is_empty() {
-            lines.push(format!(
-                "  - Dependency candidates: {}",
-                attempt.dependency_candidates.join(", ")
-            ));
-        }
-        if !attempt.failed_edit_records.is_empty() {
-            lines.push(format!(
-                "  - Failed edit memory: {}",
-                render_failed_edit_records_for_report(&attempt.failed_edit_records)
-            ));
-        }
-        lines.push(format!(
-            "  - Local-agent scorecard: parser_recovery={} line_tools={} controller_reads={} redundant_reads={} first_write={} repeated_edits={} validation_rejects={} test_edit_rejects={} target_redirects={} evidence_fixations={} anchors={} syntax_previews={}/{}",
-            attempt.local_agent_scorecard.parser_recovery_count,
-            attempt.local_agent_scorecard.line_oriented_parse_count,
-            attempt.local_agent_scorecard.controller_injected_read_count,
-            attempt.local_agent_scorecard.redundant_read_count,
-            attempt
-                .local_agent_scorecard
-                .first_valid_write_step
-                .map(|value| value.to_string())
-                .unwrap_or_else(|| "none".to_string()),
-            attempt.local_agent_scorecard.repeated_failed_edit_count,
-            attempt.local_agent_scorecard.rejected_validation_alias_count,
-            attempt.local_agent_scorecard.test_edit_rejection_count,
-            attempt.local_agent_scorecard.target_redirect_count,
-            attempt.local_agent_scorecard.evidence_file_fixation_count,
-            attempt.local_agent_scorecard.anchor_suggestion_count,
-            attempt.local_agent_scorecard.syntax_preview_failure_count,
-            attempt.local_agent_scorecard.syntax_preview_count
-        ));
-        lines.push(format!(
-            "  - Repair submode: entered={} turns={} invalid_streak_max={} write_locked={} write_refusals={} scaffold_offered={} scaffold_honored={} write_emitted={} rolled_back_writes={} rolled_back_non_support={} soft_budget_inefficient={}",
-            attempt.repair_submode_entered,
-            attempt.repair_submode_turns,
-            attempt.repair_invalid_action_streak_max,
-            attempt.repair_write_locked,
-            attempt.write_phase_action_refusal_count,
-            attempt.patch_scaffold_offered,
-            attempt.patch_scaffold_honored,
-            attempt.write_phase_write_emitted,
-            attempt.rolled_back_write_count,
-            attempt.rolled_back_non_support_edit_count,
-            attempt.soft_budget_inefficient
-        ));
-        lines.push(format!(
-            "  - Repair-phase invalid action count: {}",
-            attempt.repair_phase_invalid_action_count
-        ));
-        lines.push(format!(
-            "  - Post-fast-loop patch attempted: {}",
-            attempt.post_fast_loop_patch_attempted
-        ));
-        lines.push(format!(
-            "  - Post-fast-loop validation rerun attempted: {}",
-            attempt.post_fast_loop_validation_rerun_attempted
-        ));
-        if !attempt.prompt_token_series_by_turn.is_empty() {
-            let series = attempt
-                .prompt_token_series_by_turn
-                .iter()
-                .map(|sample| format!("step{}={}", sample.step, sample.prompt_token_estimate))
-                .collect::<Vec<_>>()
-                .join(" | ");
-            lines.push(format!("  - Prompt token series: {series}"));
-        }
-        if !attempt.read_range_observations.is_empty() {
-            let observations = attempt
-                .read_range_observations
-                .iter()
-                .map(|observation| {
-                    format!(
-                        "{} [{} -> {}]",
-                        observation.path,
-                        observation
-                            .requested_range
-                            .clone()
-                            .unwrap_or_else(|| "none".to_string()),
-                        observation
-                            .honored_range
-                            .clone()
-                            .unwrap_or_else(|| "none".to_string())
-                    )
-                })
-                .collect::<Vec<_>>()
-                .join(" | ");
-            lines.push(format!("  - Read ranges: {observations}"));
-        }
-        lines.push(format!(
-            "  - Safety: {} watchdog_near_limit={} watchdog_triggered={}",
-            attempt.safety_mode_label, attempt.watchdog_near_limit, attempt.watchdog_triggered
-        ));
-    }
-    lines.join("\n")
-}
-
-fn ensure_safe_local_model_selection(
-    model_id: &str,
-    allow_heavy_local_model: bool,
-) -> anyhow::Result<()> {
-    if is_heavy_local_model_id(model_id) && !allow_heavy_local_model {
-        anyhow::bail!(
-            "benchmark run refused heavy local model `{}` without --allow-heavy-local-model",
-            model_id
-        );
-    }
-    Ok(())
-}
-
 fn resolve_benchmark_model_id(
-    executor: BenchmarkExecutor,
+    _executor: BenchmarkExecutor,
     requested_model: Option<String>,
 ) -> anyhow::Result<String> {
-    if let Some(model_id) = requested_model {
+    if let Some(model_id) = requested_model.filter(|value| {
+        value.trim() == crate::quorp::provider_config::NVIDIA_QWEN_MODEL
+            || value.trim()
+                == format!("nvidia/{}", crate::quorp::provider_config::NVIDIA_QWEN_MODEL)
+    }) {
         return Ok(model_id);
     }
-    match executor {
-        BenchmarkExecutor::Native => {
-            crate::quorp::tui::model_registry::refresh_catalog_cache_from_broker();
-            let model_id = safe_benchmark_model_id()?;
-            let resolved_provider = crate::quorp::tui::model_registry::chat_model_provider(
-                &model_id,
-                crate::quorp::executor::InteractiveProviderKind::Local,
-            );
-            if !matches!(
-                resolved_provider,
-                crate::quorp::executor::InteractiveProviderKind::Local
-            ) {
-                anyhow::bail!(
-                    "Quorp benchmark/native runs are local-only in this build; resolved provider `{}` for model `{}`",
-                    resolved_provider.label(),
-                    model_id
-                );
-            }
-            Ok(model_id)
-        }
-        BenchmarkExecutor::Codex => Ok(default_codex_model_id()),
-    }
+    Ok(crate::quorp::provider_config::NVIDIA_QWEN_MODEL.to_string())
 }
 
 fn base_url_override_for_executor(
@@ -9271,7 +5119,6 @@ fn base_url_override_for_executor(
 ) -> Option<String> {
     match executor {
         BenchmarkExecutor::Native => base_url_override,
-        BenchmarkExecutor::Codex => None,
     }
 }
 
@@ -9280,73 +5127,13 @@ fn benchmark_provider_summary(
     model_id: &str,
     base_url_override: Option<&str>,
 ) -> BenchmarkProviderSummary {
-    if executor == BenchmarkExecutor::Codex {
-        return BenchmarkProviderSummary {
-            provider_kind: "codex".to_string(),
-            provider_base_url: None,
-            auth_mode: "codex_managed".to_string(),
-            usage_source: "codex_output".to_string(),
-            proxy_visible_remote_egress_expected: false,
-        };
-    }
+    let _ = executor;
 
     let provider = crate::quorp::tui::model_registry::chat_model_provider(
         model_id,
         crate::quorp::executor::interactive_provider_from_env(),
     );
     match provider {
-        crate::quorp::executor::InteractiveProviderKind::Local => BenchmarkProviderSummary {
-            provider_kind: provider.label().to_string(),
-            provider_base_url: base_url_override
-                .map(str::to_string)
-                .or_else(crate::quorp::provider_config::resolved_local_base_url_env),
-            auth_mode: "local_bearer".to_string(),
-            usage_source: "provider_response".to_string(),
-            proxy_visible_remote_egress_expected: base_url_override
-                .map(str::to_string)
-                .or_else(crate::quorp::provider_config::resolved_local_base_url_env)
-                .is_some_and(|base_url| {
-                    !crate::quorp::provider_config::is_loopback_base_url(&base_url)
-                }),
-        },
-        crate::quorp::executor::InteractiveProviderKind::Ollama => {
-            let normalized = base_url_override.and_then(|value| {
-                crate::quorp::provider_config::normalize_remote_base_url(value, true).ok()
-            });
-            let proxy_visible = normalized.as_deref().is_some_and(|base_url| {
-                !crate::quorp::provider_config::is_loopback_base_url(base_url)
-            });
-            BenchmarkProviderSummary {
-                provider_kind: provider.label().to_string(),
-                provider_base_url: normalized,
-                auth_mode: "none".to_string(),
-                usage_source: "provider_response".to_string(),
-                proxy_visible_remote_egress_expected: proxy_visible,
-            }
-        }
-        crate::quorp::executor::InteractiveProviderKind::OpenAiCompatible => {
-            match crate::quorp::provider_config::resolve_openai_compatible_runtime(
-                base_url_override,
-            ) {
-                Ok(config) => BenchmarkProviderSummary {
-                    provider_kind: provider.label().to_string(),
-                    provider_base_url: Some(config.base_url),
-                    auth_mode: config.auth_mode,
-                    usage_source: "provider_response".to_string(),
-                    proxy_visible_remote_egress_expected: config
-                        .proxy_visible_remote_egress_expected,
-                },
-                Err(_) => BenchmarkProviderSummary {
-                    provider_kind: provider.label().to_string(),
-                    provider_base_url: base_url_override.map(str::to_string),
-                    auth_mode: "missing".to_string(),
-                    usage_source: "provider_response".to_string(),
-                    proxy_visible_remote_egress_expected: base_url_override.is_some_and(
-                        |base_url| !crate::quorp::provider_config::is_loopback_base_url(base_url),
-                    ),
-                },
-            }
-        }
         crate::quorp::executor::InteractiveProviderKind::Nvidia => {
             match crate::quorp::provider_config::resolve_nvidia_runtime(base_url_override) {
                 Ok(config) => BenchmarkProviderSummary {
@@ -9368,35 +5155,16 @@ fn benchmark_provider_summary(
                 },
             }
         }
-        crate::quorp::executor::InteractiveProviderKind::Codex => BenchmarkProviderSummary {
-            provider_kind: provider.label().to_string(),
-            provider_base_url: None,
-            auth_mode: "codex_managed".to_string(),
-            usage_source: "codex_output".to_string(),
-            proxy_visible_remote_egress_expected: false,
-        },
     }
 }
 
 fn benchmark_safety_mode_label(executor: BenchmarkExecutor, model_id: &str) -> String {
     match executor {
-        BenchmarkExecutor::Codex => "codex".to_string(),
-        BenchmarkExecutor::Native if is_nvidia_kimi_model_id(model_id) => {
-            "nvidia_kimi_benchmark".to_string()
-        }
         BenchmarkExecutor::Native if is_nvidia_qwen_coder_model_id(model_id) => {
             "nvidia_qwen_benchmark".to_string()
         }
-        BenchmarkExecutor::Native if is_heavy_local_model_id(model_id) => "heavy_local".to_string(),
-        BenchmarkExecutor::Native => "safe_local".to_string(),
+        BenchmarkExecutor::Native => "remote_api".to_string(),
     }
-}
-
-fn is_nvidia_kimi_model_id(model_id: &str) -> bool {
-    let normalized = model_id.to_ascii_lowercase();
-    normalized == "nvidia/moonshotai/kimi-k2.5"
-        || normalized == "moonshotai/kimi-k2.5"
-        || normalized.starts_with("nvidia/moonshotai/kimi-k2.")
 }
 
 fn is_nvidia_qwen_coder_model_id(model_id: &str) -> bool {
@@ -9405,57 +5173,25 @@ fn is_nvidia_qwen_coder_model_id(model_id: &str) -> bool {
         || normalized == "qwen/qwen3-coder-480b-a35b-instruct"
 }
 
-fn is_heavy_local_model_id(model_id: &str) -> bool {
-    crate::quorp::tui::local_model_program::local_model_program(model_id).is_some()
-}
-
 fn benchmark_completion_policy(
     executor: BenchmarkExecutor,
-    safety_mode_label: &str,
+    _safety_mode_label: &str,
     model_id: Option<&str>,
 ) -> quorp_agent_core::CompletionPolicy {
-    let mut completion_policy = if executor == BenchmarkExecutor::Codex {
-        quorp_agent_core::CompletionPolicy {
-            include_repo_capsule: false,
-            first_turn_max_completion_tokens: None,
-            later_turn_max_completion_tokens: None,
-            disable_reasoning: true,
-            native_tool_calls: false,
-            watchdog: None,
-            safety_mode_label: Some("codex".to_string()),
-            prompt_compaction_policy: None,
-        }
-    } else {
-        match safety_mode_label {
-            "heavy_local" => quorp_agent_core::CompletionPolicy {
-                include_repo_capsule: true,
-                first_turn_max_completion_tokens: Some(6144),
-                later_turn_max_completion_tokens: Some(4096),
-                disable_reasoning: false,
-                native_tool_calls: true,
-                watchdog: Some(quorp_agent_core::CompletionWatchdogConfig {
-                    first_token_timeout_ms: Some(180_000),
-                    idle_timeout_ms: Some(30_000),
-                    total_timeout_ms: Some(420_000),
-                }),
-                safety_mode_label: Some("heavy_local".to_string()),
-                prompt_compaction_policy: Some(PromptCompactionPolicy::CurrentDefault),
-            },
-            _ => quorp_agent_core::CompletionPolicy {
-                include_repo_capsule: true,
-                first_turn_max_completion_tokens: Some(1536),
-                later_turn_max_completion_tokens: Some(2048),
-                disable_reasoning: false,
-                native_tool_calls: true,
-                watchdog: Some(quorp_agent_core::CompletionWatchdogConfig {
-                    first_token_timeout_ms: Some(120_000),
-                    idle_timeout_ms: Some(30_000),
-                    total_timeout_ms: Some(360_000),
-                }),
-                safety_mode_label: Some("safe_local".to_string()),
-                prompt_compaction_policy: Some(PromptCompactionPolicy::BenchmarkStatePacket),
-            },
-        }
+    let _ = executor;
+    let mut completion_policy = quorp_agent_core::CompletionPolicy {
+        include_repo_capsule: true,
+        first_turn_max_completion_tokens: Some(1536),
+        later_turn_max_completion_tokens: Some(2048),
+        disable_reasoning: false,
+        native_tool_calls: true,
+        watchdog: Some(quorp_agent_core::CompletionWatchdogConfig {
+            first_token_timeout_ms: Some(120_000),
+            idle_timeout_ms: Some(30_000),
+            total_timeout_ms: Some(360_000),
+        }),
+        safety_mode_label: Some("remote_api".to_string()),
+        prompt_compaction_policy: Some(PromptCompactionPolicy::BenchmarkStatePacket),
     };
     apply_model_specific_benchmark_policy_defaults(model_id, &mut completion_policy);
     apply_benchmark_completion_policy_env_overrides(&mut completion_policy);
@@ -9469,28 +5205,12 @@ fn apply_model_specific_benchmark_policy_defaults(
     let Some(model_id) = model_id else {
         return;
     };
-    if is_nvidia_kimi_model_id(model_id) {
-        completion_policy.include_repo_capsule = true;
-        completion_policy.disable_reasoning = true;
-        completion_policy.native_tool_calls = false;
-        completion_policy.first_turn_max_completion_tokens = Some(768);
-        completion_policy.later_turn_max_completion_tokens = Some(1536);
-        completion_policy.prompt_compaction_policy =
-            Some(PromptCompactionPolicy::BenchmarkStatePacket);
-        completion_policy.watchdog = Some(quorp_agent_core::CompletionWatchdogConfig {
-            first_token_timeout_ms: Some(120_000),
-            idle_timeout_ms: Some(30_000),
-            total_timeout_ms: Some(360_000),
-        });
-        completion_policy.safety_mode_label = Some("nvidia_kimi_benchmark".to_string());
-        return;
-    }
     if is_nvidia_qwen_coder_model_id(model_id) {
         completion_policy.include_repo_capsule = true;
         completion_policy.disable_reasoning = true;
         completion_policy.native_tool_calls = false;
         completion_policy.first_turn_max_completion_tokens = Some(4096);
-        completion_policy.later_turn_max_completion_tokens = Some(3072);
+        completion_policy.later_turn_max_completion_tokens = Some(4096);
         completion_policy.prompt_compaction_policy =
             Some(PromptCompactionPolicy::BenchmarkStatePacket);
         completion_policy.watchdog = Some(quorp_agent_core::CompletionWatchdogConfig {
@@ -9499,33 +5219,6 @@ fn apply_model_specific_benchmark_policy_defaults(
             total_timeout_ms: Some(360_000),
         });
         completion_policy.safety_mode_label = Some("nvidia_qwen_benchmark".to_string());
-        return;
-    }
-    let Some(model_spec) =
-        crate::quorp::tui::model_registry::local_moe_spec_for_registry_id(model_id)
-    else {
-        return;
-    };
-    if model_spec.id.eq_ignore_ascii_case("ssd_moe/qwen35-27b")
-        || model_spec.id.eq_ignore_ascii_case("ssd_moe/qwen36-27b")
-    {
-        completion_policy.disable_reasoning = true;
-        completion_policy.native_tool_calls = false;
-        completion_policy.prompt_compaction_policy = Some(PromptCompactionPolicy::Last6Ledger768);
-    }
-    if model_spec
-        .id
-        .eq_ignore_ascii_case("ssd_moe/qwen3-coder-30b-a3b")
-    {
-        completion_policy.disable_reasoning = true;
-        completion_policy.native_tool_calls = false;
-        completion_policy.first_turn_max_completion_tokens = Some(4096);
-        completion_policy.later_turn_max_completion_tokens = Some(3072);
-        completion_policy.prompt_compaction_policy = Some(PromptCompactionPolicy::Last6Ledger768);
-    }
-    if model_spec.id.eq_ignore_ascii_case("ssd_moe/qwen36-27b") {
-        completion_policy.first_turn_max_completion_tokens = Some(3072);
-        completion_policy.later_turn_max_completion_tokens = Some(1536);
     }
 }
 
@@ -9604,7 +5297,7 @@ fn estimate_token_count(text: &str) -> u64 {
 }
 
 fn default_safe_mode_label() -> String {
-    "safe_local".to_string()
+    "remote_api".to_string()
 }
 
 fn discover_completed_attempts(result_dir: &Path) -> anyhow::Result<usize> {
@@ -9643,209 +5336,6 @@ fn load_existing_attempts(result_dir: &Path) -> anyhow::Result<Vec<AttemptReport
     }
     attempts.sort_by_key(|attempt| attempt.attempt);
     Ok(attempts)
-}
-
-fn looks_like_proof_full_workspace(path: &Path) -> bool {
-    path.join("AGENTS.md").exists()
-        && path.join("agent-map.json").exists()
-        && path.join("test-map.json").exists()
-}
-
-fn looks_like_warpos_staged_workspace(path: &Path) -> bool {
-    path.join(".benchmark-root.json").exists()
-        && path.join("issue.json").exists()
-        && path.join("Cargo.toml").exists()
-        && path.join("evaluate.sh").exists()
-        && (path.join("START_HERE.md").exists() || path.join("README.md").exists())
-}
-
-fn looks_like_flat_challenge_workspace(path: &Path) -> bool {
-    path.join("benchmark.json").is_file()
-        && path.join("evaluate.sh").is_file()
-        && (path.join("START_HERE.md").is_file() || path.join("README.md").is_file())
-        && (path.join("SUCCESS.md").is_file() || path.join("expected").exists())
-}
-
-fn resolve_challenge_workspace_dir(
-    sandbox_root: &Path,
-    condition: &str,
-) -> anyhow::Result<PathBuf> {
-    let legacy_workspace = sandbox_root.join("workspace").join(condition);
-    if legacy_workspace.exists() {
-        return Ok(legacy_workspace);
-    }
-    if looks_like_flat_challenge_workspace(sandbox_root)
-        || looks_like_warpos_staged_workspace(sandbox_root)
-    {
-        return Ok(sandbox_root.to_path_buf());
-    }
-    anyhow::bail!(
-        "failed to locate challenge workspace for condition `{condition}`; expected `{}` or a flat WarpOS challenge bundle at `{}`",
-        legacy_workspace.display(),
-        sandbox_root.display()
-    )
-}
-
-fn maybe_materialize_flat_challenge_reset_script(
-    result_dir: &Path,
-    sandbox_root: &Path,
-) -> anyhow::Result<()> {
-    if sandbox_root.join("reset.sh").exists() || !looks_like_flat_challenge_workspace(sandbox_root)
-    {
-        return Ok(());
-    }
-
-    let baseline_root = result_dir.join(".quorp-flat-baseline");
-    if baseline_root.exists() {
-        fs::remove_dir_all(&baseline_root)
-            .with_context(|| format!("failed to clear {}", baseline_root.display()))?;
-    }
-    let quoted_baseline = shell_single_quote(&baseline_root.display().to_string());
-    let reset_script = format!(
-        "#!/usr/bin/env bash\n\
-         set -euo pipefail\n\
-         baseline={quoted_baseline}\n\
-         if [[ ! -d \"${{baseline}}\" ]]; then\n\
-           echo \"missing flat challenge reset baseline: ${{baseline}}\" >&2\n\
-           exit 1\n\
-         fi\n\
-         find . -mindepth 1 -maxdepth 1 -exec rm -rf -- {{}} +\n\
-         cp -a \"${{baseline}}/.\" .\n"
-    );
-    let reset_path = sandbox_root.join("reset.sh");
-    fs::write(&reset_path, reset_script)
-        .with_context(|| format!("failed to write {}", reset_path.display()))?;
-    #[cfg(unix)]
-    {
-        let mut permissions = fs::metadata(&reset_path)?.permissions();
-        permissions.set_mode(0o755);
-        fs::set_permissions(&reset_path, permissions)?;
-    }
-    copy_dir_all(sandbox_root, &baseline_root).with_context(|| {
-        format!(
-            "failed to snapshot flat challenge baseline {} -> {}",
-            sandbox_root.display(),
-            baseline_root.display()
-        )
-    })?;
-    Ok(())
-}
-
-fn shell_single_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\"'\"'"))
-}
-
-fn looks_like_issue_dir(path: &Path) -> bool {
-    path.join("README.md").exists()
-        && path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with("ISSUE-"))
-}
-
-fn find_benchmark_root(path: &Path) -> anyhow::Result<PathBuf> {
-    for ancestor in path.ancestors() {
-        if ancestor.file_name().and_then(|name| name.to_str()) == Some("benchmark") {
-            return Ok(ancestor.to_path_buf());
-        }
-    }
-    anyhow::bail!(
-        "failed to find enclosing `benchmark` directory for {}",
-        path.display()
-    )
-}
-
-fn copy_dir_all(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    fs::create_dir_all(dst)?;
-    for entry in fs::read_dir(src)? {
-        let entry = entry?;
-        let file_type = entry.file_type()?;
-        let destination = dst.join(entry.file_name());
-        if file_type.is_dir() {
-            copy_dir_all(&entry.path(), &destination)?;
-        } else if file_type.is_file() {
-            fs::copy(entry.path(), &destination)?;
-            let permissions = fs::metadata(entry.path())?.permissions();
-            fs::set_permissions(&destination, permissions)?;
-        } else if file_type.is_symlink() {
-            let target = fs::read_link(entry.path())?;
-            #[cfg(unix)]
-            std::os::unix::fs::symlink(target, &destination)?;
-        }
-    }
-    Ok(())
-}
-
-fn copy_file_if_different(src: &Path, dst: &Path) -> anyhow::Result<()> {
-    if src == dst {
-        return Ok(());
-    }
-    if src.exists()
-        && dst.exists()
-        && let (Ok(src_canonical), Ok(dst_canonical)) =
-            (fs::canonicalize(src), fs::canonicalize(dst))
-        && src_canonical == dst_canonical
-    {
-        return Ok(());
-    }
-    if let Some(parent) = dst.parent() {
-        fs::create_dir_all(parent)
-            .with_context(|| format!("failed to create {}", parent.display()))?;
-    }
-    fs::copy(src, dst)
-        .with_context(|| format!("failed to copy {} to {}", src.display(), dst.display()))?;
-    Ok(())
-}
-
-fn ensure_git_baseline(workspace_dir: &Path) -> anyhow::Result<()> {
-    if workspace_dir.join(".git").exists() {
-        return Ok(());
-    }
-    #[allow(clippy::disallowed_methods)]
-    let init_status = Command::new("git")
-        .arg("init")
-        .current_dir(workspace_dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()?;
-    if !init_status.success() {
-        anyhow::bail!("failed to initialize git in {}", workspace_dir.display());
-    }
-    #[allow(clippy::disallowed_methods)]
-    let add_status = Command::new("git")
-        .args(["add", "."])
-        .current_dir(workspace_dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()?;
-    if !add_status.success() {
-        anyhow::bail!(
-            "failed to stage sandbox baseline in {}",
-            workspace_dir.display()
-        );
-    }
-    #[allow(clippy::disallowed_methods)]
-    let commit_status = Command::new("git")
-        .args([
-            "-c",
-            "user.name=quorp",
-            "-c",
-            "user.email=quorp@example.com",
-            "commit",
-            "-qm",
-            "Benchmark baseline",
-        ])
-        .current_dir(workspace_dir)
-        .stdout(std::process::Stdio::null())
-        .stderr(std::process::Stdio::null())
-        .status()?;
-    if !commit_status.success() {
-        anyhow::bail!(
-            "failed to commit sandbox baseline in {}",
-            workspace_dir.display()
-        );
-    }
-    Ok(())
 }
 
 fn parse_autonomy_profile(value: &str) -> anyhow::Result<quorp_agent_core::AutonomyProfile> {
@@ -10010,7 +5500,7 @@ impl BenchmarkRunLock {
                 let detail =
                     fs::read_to_string(&path).unwrap_or_else(|_| "<unreadable lock>".to_string());
                 anyhow::bail!(
-                    "another headless benchmark run already holds the local benchmark lock at {}: {}",
+                    "another headless benchmark run already holds the benchmark lock at {}: {}",
                     path.display(),
                     detail
                 );
@@ -10303,9 +5793,9 @@ mod tests {
         .expect("objective");
         fs::write(
             case_root.join("LOCAL_REPRO.md"),
-            "# Local Repro\n\n- `cargo test --quiet`\n",
+            "# Repro\n\n- `cargo test --quiet`\n",
         )
-        .expect("local repro");
+        .expect("repro file");
         fs::write(
             case_root.join("REFERENCE.md"),
             "# Reference\n\n- sample provenance\n",
@@ -10995,7 +6485,7 @@ EOF
                     first_action_emitted: true,
                     final_stop_reason: Some(quorp_agent_core::StopReason::Success),
                     primary_failure: None,
-                    local_agent_final_failure_classification: Some("success".to_string()),
+                    agent_final_failure_classification: Some("success".to_string()),
                     adaptive_action_mode_retry: false,
                     report_path: PathBuf::from("/tmp/results/case-a/benchmark-report.json"),
                     error: None,
@@ -11025,9 +6515,7 @@ EOF
                     first_action_emitted: false,
                     final_stop_reason: Some(quorp_agent_core::StopReason::FatalError),
                     primary_failure: Some("agent_fatal_error".to_string()),
-                    local_agent_final_failure_classification: Some(
-                        "parser_tool_schema".to_string(),
-                    ),
+                    agent_final_failure_classification: Some("parser_tool_schema".to_string()),
                     adaptive_action_mode_retry: false,
                     report_path: PathBuf::from("/tmp/results/case-b/benchmark-report.json"),
                     error: Some("failed".to_string()),
@@ -11067,7 +6555,7 @@ EOF
             &case_manifest,
             temp_dir.path(),
             BenchmarkExecutor::Native,
-            &safe_benchmark_model_id().expect("broker default benchmark model"),
+            crate::quorp::provider_config::NVIDIA_QWEN_MODEL,
             3,
             "runtime never became ready".to_string(),
             None,
@@ -11107,7 +6595,7 @@ EOF
         let result_dir = tempfile::tempdir().expect("result dir");
         let options = BenchmarkRunOptions {
             path: case_root.join("START_HERE.md"),
-            executor: BenchmarkExecutor::Codex,
+            executor: BenchmarkExecutor::Native,
             model_id: Some("test-model".to_string()),
             base_url_override: None,
             briefing_file: None,
@@ -11119,7 +6607,6 @@ EOF
             result_dir: result_dir.path().to_path_buf(),
             autonomy_profile: quorp_agent_core::AutonomyProfile::AutonomousSandboxed,
             max_attempts: Some(1),
-            allow_heavy_local_model: false,
             condition: Some("proof-full".to_string()),
             keep_sandbox: true,
         };
@@ -11199,9 +6686,9 @@ EOF
                 repair_artifacts: Vec::new(),
             },
             executor: BenchmarkExecutor::Native,
-            model_id: "ssd_moe/qwen3-coder-30b-a3b".to_string(),
-            safety_mode_label: "safe_local".to_string(),
-            scenario_label: Some("QuorpLocal".to_string()),
+            model_id: "nvidia/qwen/qwen3-coder-480b-a35b-instruct".to_string(),
+            safety_mode_label: "remote_api".to_string(),
+            scenario_label: Some("QuorpRemote".to_string()),
             base_url_override: Some("http://127.0.0.1:49919".to_string()),
             briefing_file: None,
             compaction_policy: None,
@@ -11217,8 +6704,8 @@ EOF
             keep_sandbox: false,
             completion_policy: benchmark_completion_policy(
                 BenchmarkExecutor::Native,
-                "safe_local",
-                Some("ssd_moe/qwen3-coder-30b-a3b"),
+                "remote_api",
+                Some("nvidia/qwen/qwen3-coder-480b-a35b-instruct"),
             ),
         };
         let progress = BenchmarkBootstrapProgress {
@@ -11279,7 +6766,6 @@ EOF
             max_total_tokens: Some(1000),
             max_attempts: Some(2),
             autonomy_profile: quorp_agent_core::AutonomyProfile::AutonomousSandboxed,
-            allow_heavy_local_model: false,
             condition: None,
             keep_sandbox: false,
             log_dir: None,
@@ -11309,7 +6795,7 @@ EOF
             first_action_emitted: false,
             final_stop_reason: Some(quorp_agent_core::StopReason::FatalError),
             primary_failure: Some("agent_fatal_error".to_string()),
-            local_agent_final_failure_classification: Some("parser_tool_schema".to_string()),
+            agent_final_failure_classification: Some("parser_tool_schema".to_string()),
             adaptive_action_mode_retry: false,
             report_path: PathBuf::from("/tmp/results/case-a/benchmark-report.json"),
             error: Some("fatal".to_string()),
@@ -11328,7 +6814,7 @@ EOF
         assert!(rendered.contains("failure=agent_fatal_error"));
         let run_summary =
             fs::read_to_string(temp_dir.path().join("run-summary.md")).expect("read summary");
-        assert!(run_summary.contains("local=parser_tool_schema"));
+        assert!(run_summary.contains("agent=parser_tool_schema"));
     }
 
     #[test]
@@ -11346,7 +6832,7 @@ EOF
             &serde_json::json!({
                 "benchmark_name": "Case A",
                 "issue_id": "01-case-a",
-                "model_id": "ollama/local",
+                "model_id": "nvidia/qwen/qwen3-coder-480b-a35b-instruct",
                 "success": false,
                 "attempts_run": 1,
                 "max_attempts": 1,
@@ -11363,8 +6849,8 @@ EOF
                 "first_action_emitted": true,
                 "validation_commands_run": 2,
                 "post_fast_loop_validation_rerun_attempted": true,
-                "local_agent_final_failure_classification": "model_edit_strategy",
-                "local_agent_scorecard": {
+                "agent_final_failure_classification": "model_edit_strategy",
+                "agent_repair_scorecard": {
                     "first_valid_write_step": 4,
                     "modify_toml_count": 1
                 }
@@ -11376,7 +6862,7 @@ EOF
             &serde_json::json!({
                 "benchmark_name": "Case B",
                 "issue_id": "02-case-b",
-                "model_id": "ollama/local",
+                "model_id": "nvidia/qwen/qwen3-coder-480b-a35b-instruct",
                 "success": false,
                 "attempts_run": 1,
                 "max_attempts": 1,
@@ -11390,8 +6876,8 @@ EOF
                 "first_model_turn_started": true,
                 "first_action_emitted": true,
                 "primary_failure": "agent_fatal_error",
-                "local_agent_final_failure_classification": "parser_tool_schema",
-                "local_agent_scorecard": {
+                "agent_final_failure_classification": "parser_tool_schema",
+                "agent_repair_scorecard": {
                     "parser_recovery_count": 2
                 }
             }),
@@ -11428,9 +6914,7 @@ EOF
                     first_action_emitted: true,
                     final_stop_reason: Some(quorp_agent_core::StopReason::FatalError),
                     primary_failure: Some("agent_fatal_error".to_string()),
-                    local_agent_final_failure_classification: Some(
-                        "model_edit_strategy".to_string(),
-                    ),
+                    agent_final_failure_classification: Some("model_edit_strategy".to_string()),
                     adaptive_action_mode_retry: false,
                     report_path: case_a_report,
                     error: None,
@@ -11462,9 +6946,7 @@ EOF
                     first_action_emitted: true,
                     final_stop_reason: Some(quorp_agent_core::StopReason::FatalError),
                     primary_failure: Some("agent_fatal_error".to_string()),
-                    local_agent_final_failure_classification: Some(
-                        "parser_tool_schema".to_string(),
-                    ),
+                    agent_final_failure_classification: Some("parser_tool_schema".to_string()),
                     adaptive_action_mode_retry: true,
                     report_path: case_b_report,
                     error: Some("fatal".to_string()),
@@ -11617,7 +7099,7 @@ EOF
                 last_successful_write_action: None,
                 benchmark_repair_state: None,
                 failed_edit_records: Vec::new(),
-                local_model_memory: quorp_agent_core::LocalModelMemory::default(),
+                agent_repair_memory: quorp_agent_core::AgentRepairMemory::default(),
             },
             transcript: vec![TranscriptMessage {
                 role: TranscriptRole::User,
@@ -11667,7 +7149,7 @@ EOF
                 last_successful_write_action: None,
                 benchmark_repair_state: None,
                 failed_edit_records: Vec::new(),
-                local_model_memory: quorp_agent_core::LocalModelMemory::default(),
+                agent_repair_memory: quorp_agent_core::AgentRepairMemory::default(),
             },
             transcript: vec![
                 TranscriptMessage {
@@ -11904,8 +7386,10 @@ EOF
             capsule: ChallengeCapsule::default(),
         };
 
-        let attempt_one = challenge_evaluation_target_dir(&metadata, 1);
-        let attempt_two = challenge_evaluation_target_dir(&metadata, 2);
+        let attempt_one =
+            challenge_evaluation_target_dir(&metadata, 1, CHALLENGE_EVALUATION_CARGO_CACHE_DIR);
+        let attempt_two =
+            challenge_evaluation_target_dir(&metadata, 2, CHALLENGE_EVALUATION_CARGO_CACHE_DIR);
         assert_ne!(attempt_one, attempt_two);
         assert!(attempt_one.ends_with("attempt-001"));
         assert!(attempt_two.ends_with("attempt-002"));
@@ -12213,7 +7697,7 @@ EOF
             context_files: collect_context_files(&workspace),
             repair_artifacts: Vec::new(),
         };
-        let rendered = build_benchmark_objective(&resolved, &workspace, "safe_local", None)
+        let rendered = build_benchmark_objective(&resolved, &workspace, "remote_api", None)
             .expect("objective");
         assert!(rendered.contains("Fix the bug."));
         assert!(rendered.contains("issue.json"));
@@ -12242,7 +7726,7 @@ EOF
         let rendered = build_benchmark_objective(
             &resolved,
             &workspace,
-            "safe_local",
+            "remote_api",
             Some("{\"summary\":\"look at pricing\"}"),
         )
         .expect("objective");
@@ -12269,23 +7753,24 @@ EOF
     }
 
     #[test]
-    fn safe_benchmark_model_defaults_to_safe_local_runtime() {
-        let model_id = safe_benchmark_model_id().expect("broker default model");
-        assert_eq!(model_id, SAFE_LOCAL_BENCHMARK_MODEL_ID);
+    fn remote_benchmark_model_defaults_to_qwen() {
+        let model_id =
+            resolve_benchmark_model_id(BenchmarkExecutor::Native, None).expect("default model");
+        assert_eq!(model_id, "qwen/qwen3-coder-480b-a35b-instruct");
     }
 
     #[test]
-    fn native_benchmark_defaults_ignore_ambient_model_env() {
+    fn native_benchmark_defaults_use_ambient_remote_model_env() {
         let _guard = test_env_guard();
         let original_model = std::env::var("QUORP_MODEL").ok();
         let original_provider = std::env::var("QUORP_PROVIDER").ok();
         unsafe {
-            std::env::set_var("QUORP_MODEL", "ssd_moe/qwen35-35b-a3b");
-            std::env::set_var("QUORP_PROVIDER", "local");
+            std::env::set_var("QUORP_MODEL", "qwen/qwen3-coder-480b-a35b-instruct");
+            std::env::set_var("QUORP_PROVIDER", "nvidia");
         }
 
         let resolved =
-            resolve_benchmark_model_id(BenchmarkExecutor::Native, None).expect("safe model");
+            resolve_benchmark_model_id(BenchmarkExecutor::Native, None).expect("remote model");
 
         if let Some(value) = original_model {
             unsafe {
@@ -12306,31 +7791,7 @@ EOF
             }
         }
 
-        assert_eq!(resolved, SAFE_LOCAL_BENCHMARK_MODEL_ID);
-    }
-
-    #[test]
-    fn heavy_local_model_requires_explicit_opt_in() {
-        let error = ensure_safe_local_model_selection("qwen35-35b-a3b", false)
-            .expect_err("heavy model should be rejected without opt-in");
-        assert!(error.to_string().contains("--allow-heavy-local-model"));
-        ensure_safe_local_model_selection("qwen35-35b-a3b", true).expect("opt-in should pass");
-        ensure_safe_local_model_selection("qwen3-coder-30b-a3b", true)
-            .expect("coder heavy model should pass with opt-in");
-    }
-
-    #[test]
-    fn resolved_default_benchmark_model_is_allowed_without_explicit_opt_in() {
-        let model_id = safe_benchmark_model_id().expect("default benchmark model");
-
-        assert!(allow_resolved_benchmark_model_without_opt_in(
-            None, &model_id, false
-        ));
-        assert!(!allow_resolved_benchmark_model_without_opt_in(
-            Some("ssd_moe/qwen35-27b"),
-            &model_id,
-            false
-        ));
+        assert_eq!(resolved, "qwen/qwen3-coder-480b-a35b-instruct");
     }
 
     #[test]
@@ -12378,7 +7839,7 @@ EOF
             context_files: collect_context_files(&workspace),
             repair_artifacts: Vec::new(),
         };
-        let rendered = build_benchmark_objective(&resolved, &workspace, "safe_local", None)
+        let rendered = build_benchmark_objective(&resolved, &workspace, "remote_api", None)
             .expect("objective");
         assert!(estimate_token_count(&rendered) <= SAFE_PROMPT_TOKEN_CAP + 64);
     }
@@ -12430,7 +7891,7 @@ EOF
             repair_artifacts: vec![repair_artifact.clone()],
         };
 
-        let rendered = build_benchmark_objective(&resolved, &workspace, "safe_local", None)
+        let rendered = build_benchmark_objective(&resolved, &workspace, "remote_api", None)
             .expect("objective");
         assert!(rendered.contains("README.md"));
         assert!(rendered.contains("START_HERE.md"));
@@ -12443,8 +7904,8 @@ EOF
 
         let policy = benchmark_completion_policy(
             BenchmarkExecutor::Native,
-            "safe_local",
-            Some("ssd_moe/deepseek-coder-v2-lite-turbo"),
+            "remote_api",
+            Some("openai-compatible/deepseek-coder-v2-lite-turbo"),
         );
         assert!(policy.include_repo_capsule);
         assert_eq!(policy.first_turn_max_completion_tokens, Some(1536));
@@ -12479,77 +7940,12 @@ EOF
 
         let policy = benchmark_completion_policy(
             BenchmarkExecutor::Native,
-            "heavy_local",
-            Some("ssd_moe/qwen3-coder-30b-a3b"),
+            "remote_api",
+            Some("nvidia/qwen/qwen3-coder-480b-a35b-instruct"),
         );
         clear_benchmark_completion_policy_env_overrides();
 
         assert!(!policy.native_tool_calls);
-        assert_eq!(
-            policy.prompt_compaction_policy,
-            Some(PromptCompactionPolicy::Last6Ledger768)
-        );
-        assert_eq!(benchmark_action_contract_mode(&policy), "strict_json_v1");
-    }
-
-    #[test]
-    fn qwen35_27b_benchmark_defaults_use_strict_json_and_disable_reasoning() {
-        let policy = benchmark_completion_policy(
-            BenchmarkExecutor::Native,
-            "heavy_local",
-            Some("ssd_moe/qwen35-27b"),
-        );
-
-        assert!(policy.include_repo_capsule);
-        assert!(
-            policy
-                .watchdog
-                .as_ref()
-                .and_then(|watchdog| watchdog.total_timeout_ms)
-                .is_some()
-        );
-        assert!(policy.disable_reasoning);
-        assert!(!policy.native_tool_calls);
-        assert_eq!(
-            policy.prompt_compaction_policy,
-            Some(PromptCompactionPolicy::Last6Ledger768)
-        );
-        assert_eq!(benchmark_action_contract_mode(&policy), "strict_json_v1");
-    }
-
-    #[test]
-    fn qwen36_27b_benchmark_defaults_use_strict_json_and_disable_reasoning() {
-        let policy = benchmark_completion_policy(
-            BenchmarkExecutor::Native,
-            "heavy_local",
-            Some("ssd_moe/qwen36-27b"),
-        );
-
-        assert!(policy.include_repo_capsule);
-        assert!(policy.disable_reasoning);
-        assert!(!policy.native_tool_calls);
-        assert_eq!(policy.first_turn_max_completion_tokens, Some(3072));
-        assert_eq!(policy.later_turn_max_completion_tokens, Some(1536));
-        assert_eq!(
-            policy.prompt_compaction_policy,
-            Some(PromptCompactionPolicy::Last6Ledger768)
-        );
-        assert_eq!(benchmark_action_contract_mode(&policy), "strict_json_v1");
-    }
-
-    #[test]
-    fn qwen3_coder_benchmark_defaults_use_strict_json_and_tighter_caps() {
-        let policy = benchmark_completion_policy(
-            BenchmarkExecutor::Native,
-            "heavy_local",
-            Some("ssd_moe/qwen3-coder-30b-a3b"),
-        );
-
-        assert!(policy.include_repo_capsule);
-        assert!(policy.disable_reasoning);
-        assert!(!policy.native_tool_calls);
-        assert_eq!(policy.first_turn_max_completion_tokens, Some(4096));
-        assert_eq!(policy.later_turn_max_completion_tokens, Some(3072));
         assert_eq!(
             policy.prompt_compaction_policy,
             Some(PromptCompactionPolicy::Last6Ledger768)
@@ -12574,7 +7970,7 @@ EOF
         assert!(policy.disable_reasoning);
         assert!(!policy.native_tool_calls);
         assert_eq!(policy.first_turn_max_completion_tokens, Some(4096));
-        assert_eq!(policy.later_turn_max_completion_tokens, Some(3072));
+        assert_eq!(policy.later_turn_max_completion_tokens, Some(4096));
         assert_eq!(
             policy.prompt_compaction_policy,
             Some(PromptCompactionPolicy::BenchmarkStatePacket)
@@ -12587,30 +7983,28 @@ EOF
     }
 
     #[test]
-    fn native_batch_skips_local_prewarm_for_nvidia_qwen() {
-        assert!(native_batch_model_uses_remote_provider(
+    fn nvidia_qwen_coder_model_id_matches_remote_profiles() {
+        assert!(is_nvidia_qwen_coder_model_id(
             "nvidia/qwen/qwen3-coder-480b-a35b-instruct"
         ));
-        assert!(native_batch_model_uses_remote_provider(
+        assert!(is_nvidia_qwen_coder_model_id(
             "qwen/qwen3-coder-480b-a35b-instruct"
         ));
-        assert!(!native_batch_model_uses_remote_provider(
-            "ssd_moe/qwen3-coder-30b-a3b"
-        ));
+        assert!(!is_nvidia_qwen_coder_model_id("other-model"));
     }
 
     #[test]
     fn requested_compaction_override_preserves_existing_default_when_absent() {
         let mut policy = benchmark_completion_policy(
             BenchmarkExecutor::Native,
-            "heavy_local",
-            Some("ssd_moe/qwen35-27b"),
+            "nvidia_qwen_benchmark",
+            Some("nvidia/qwen/qwen3-coder-480b-a35b-instruct"),
         );
 
         apply_requested_prompt_compaction_override(&mut policy, None);
         assert_eq!(
             policy.prompt_compaction_policy,
-            Some(PromptCompactionPolicy::Last6Ledger768)
+            Some(PromptCompactionPolicy::BenchmarkStatePacket)
         );
 
         apply_requested_prompt_compaction_override(&mut policy, Some(PromptCompactionPolicy::Off));
@@ -12685,7 +8079,6 @@ EOF
             result_dir: temp_results.path().to_path_buf(),
             autonomy_profile: quorp_agent_core::AutonomyProfile::AutonomousHost,
             max_attempts: Some(1),
-            allow_heavy_local_model: true,
             condition: None,
             keep_sandbox: false,
         });
@@ -12709,20 +8102,20 @@ EOF
                 .expect("parse benchmark report");
         assert!(report.success, "expected mocked benchmark to succeed");
         assert_eq!(report.attempts_run, 1);
-        assert_eq!(report.provider_kind, "local");
-        assert_eq!(report.auth_mode, "local_bearer");
+        assert_eq!(report.provider_kind, "nvidia");
+        assert_eq!(report.auth_mode, "test_loopback_api_key");
         assert_eq!(report.usage_source, "provider_response");
         assert!(!report.proxy_visible_remote_egress_expected);
-        assert_eq!(report.requested_provider.as_deref(), Some("local"));
+        assert_eq!(report.requested_provider.as_deref(), Some("nvidia"));
         assert_eq!(
             report.requested_model.as_deref(),
-            Some("qwen3-coder-30b-a3b")
+            Some("qwen/qwen3-coder-480b-a35b-instruct")
         );
         assert_eq!(
             report.effective_model.as_deref(),
-            Some("qwen3-coder-30b-a3b")
+            Some("qwen/qwen3-coder-480b-a35b-instruct")
         );
-        assert!(!report.used_local_fallback);
+        assert!(!report.used_fallback);
         assert_eq!(
             report.final_stop_reason,
             Some(quorp_agent_core::StopReason::Success)
@@ -12762,7 +8155,7 @@ EOF
     }
 
     #[test]
-    fn benchmark_run_completes_with_fake_safe_local_model_server() {
+    fn benchmark_run_completes_with_fake_remote_model_server_with_explicit_model() {
         let _env_guard = test_env_guard();
         let temp_home = tempfile::tempdir().expect("temp home");
         let temp_results = tempfile::tempdir().expect("temp results");
@@ -12796,7 +8189,7 @@ EOF
         let result = run_benchmark(BenchmarkRunOptions {
             path: issue_dir,
             executor: BenchmarkExecutor::Native,
-            model_id: Some("ssd_moe/deepseek-coder-v2-lite-turbo".to_string()),
+            model_id: Some("openai-compatible/deepseek-coder-v2-lite-turbo".to_string()),
             base_url_override: Some(base_url),
             briefing_file: None,
             compaction_policy: None,
@@ -12807,7 +8200,6 @@ EOF
             result_dir: temp_results.path().to_path_buf(),
             autonomy_profile: quorp_agent_core::AutonomyProfile::AutonomousHost,
             max_attempts: Some(1),
-            allow_heavy_local_model: false,
             condition: None,
             keep_sandbox: false,
         });
@@ -12822,7 +8214,7 @@ EOF
             }
         }
 
-        result.expect("safe local benchmark run should complete");
+        result.expect("remote benchmark run should complete");
         server_handle.join().expect("join fake model server");
 
         let report_path = temp_results.path().join("benchmark-report.json");
@@ -12830,14 +8222,14 @@ EOF
             serde_json::from_str(&fs::read_to_string(&report_path).expect("read benchmark report"))
                 .expect("parse benchmark report");
         assert!(report.success, "expected mocked benchmark to succeed");
-        assert_eq!(report.provider_kind, "local");
+        assert_eq!(report.provider_kind, "nvidia");
         assert_eq!(
             report.requested_model.as_deref(),
-            Some("ssd_moe/deepseek-coder-v2-lite-turbo")
+            Some("qwen/qwen3-coder-480b-a35b-instruct")
         );
         assert_eq!(
             report.effective_model.as_deref(),
-            Some("deepseek-coder-v2-lite-turbo")
+            Some("qwen/qwen3-coder-480b-a35b-instruct")
         );
     }
 
@@ -12876,7 +8268,7 @@ EOF
         run_benchmark(BenchmarkRunOptions {
             path: issue_dir,
             executor: BenchmarkExecutor::Native,
-            model_id: Some(SAFE_LOCAL_BENCHMARK_MODEL_ID.to_string()),
+            model_id: Some("qwen/qwen3-coder-480b-a35b-instruct".to_string()),
             base_url_override: Some(base_url),
             briefing_file: None,
             compaction_policy: None,
@@ -12887,11 +8279,10 @@ EOF
             result_dir: temp_results.path().to_path_buf(),
             autonomy_profile: quorp_agent_core::AutonomyProfile::AutonomousHost,
             max_attempts: Some(1),
-            allow_heavy_local_model: true,
             condition: None,
             keep_sandbox: false,
         })
-        .expect("safe local benchmark run should complete");
+        .expect("remote benchmark run should complete");
         server_handle.join().expect("join fake model server");
 
         if let Some(home) = original_home {
@@ -12910,7 +8301,7 @@ EOF
                 .expect("parse manifest");
         assert_eq!(
             manifest.compaction_policy,
-            Some(PromptCompactionPolicy::Last6Ledger768)
+            Some(PromptCompactionPolicy::BenchmarkStatePacket)
         );
 
         let request_path = temp_results
@@ -12923,7 +8314,7 @@ EOF
                 .expect("parse request");
         assert_eq!(
             request.completion_policy.prompt_compaction_policy,
-            Some(PromptCompactionPolicy::Last6Ledger768)
+            Some(PromptCompactionPolicy::BenchmarkStatePacket)
         );
 
         let turn_request_path = temp_results
@@ -12939,7 +8330,7 @@ EOF
         .expect("parse turn request");
         assert_eq!(
             turn_request["prompt_compaction_policy"].as_str(),
-            Some("last6-ledger768")
+            Some("benchmark-state-packet")
         );
     }
 
@@ -12989,7 +8380,6 @@ EOF
             result_dir: temp_results.path().to_path_buf(),
             autonomy_profile: quorp_agent_core::AutonomyProfile::AutonomousHost,
             max_attempts: Some(1),
-            allow_heavy_local_model: true,
             condition: None,
             keep_sandbox: false,
         })
@@ -13087,7 +8477,6 @@ EOF
             result_dir: temp_results.path().to_path_buf(),
             autonomy_profile: quorp_agent_core::AutonomyProfile::AutonomousHost,
             max_attempts: Some(1),
-            allow_heavy_local_model: true,
             condition: None,
             keep_sandbox: false,
         })
@@ -13140,7 +8529,7 @@ EOF
     }
 
     #[test]
-    fn challenge_judge_native_completes_with_safe_local_model_server() {
+    fn challenge_judge_native_completes_with_remote_model_server() {
         let _env_guard = test_env_guard();
         let temp_dir = tempfile::tempdir().expect("tempdir");
         let sandbox_root = temp_dir.path().join("sandbox");
@@ -13172,8 +8561,8 @@ EOF
                 repair_artifacts: Vec::new(),
             },
             executor: BenchmarkExecutor::Native,
-            model_id: SAFE_LOCAL_BENCHMARK_MODEL_ID.to_string(),
-            safety_mode_label: "safe_local".to_string(),
+            model_id: "qwen/qwen3-coder-480b-a35b-instruct".to_string(),
+            safety_mode_label: "remote_api".to_string(),
             scenario_label: None,
             base_url_override: Some(base_url),
             briefing_file: None,
@@ -13235,7 +8624,7 @@ EOF
             first_action_emitted: false,
             prompt_token_series_by_turn: Vec::new(),
         };
-        let usage = crate::quorp::agent_local::HeadlessUsageSummary {
+        let usage = crate::quorp::agent_runner::HeadlessUsageSummary {
             model_requests: 1,
             reported_billed_tokens: 320,
             estimated_billed_tokens: 320,
@@ -13438,111 +8827,6 @@ EOF
     }
 
     #[test]
-    fn docker_resume_normalizes_manifest_paths() {
-        let _guard = test_env_guard();
-        unsafe {
-            std::env::set_var("QUORP_IN_DOCKER", "1");
-            std::env::set_var("QUORP_DOCKER_HOST_RESULT_DIR", "/host/results");
-            std::env::set_var("QUORP_DOCKER_HOST_WORKSPACE_ROOT", "/host/source");
-            std::env::set_var("QUORP_DOCKER_CONTAINER_WORKSPACE_ROOT", "/workspace");
-        }
-
-        let mut manifest = BenchmarkManifest {
-            resolved: ResolvedBenchmark {
-                benchmark_root: PathBuf::from("/host/source/bench"),
-                issue_id: "ISSUE-1".to_string(),
-                benchmark_name: "sample".to_string(),
-                issue_dir: None,
-                workspace_source: PathBuf::from("/host/source/workspace"),
-                objective_source: PathBuf::from("/host/source/README.md"),
-                visible_evaluator: Some(PathBuf::from("/host/source/evaluate_visible.sh")),
-                collector_evaluator: None,
-                context_files: vec![PathBuf::from("/host/source/AGENTS.md")],
-                repair_artifacts: vec![PathBuf::from("/host/results/sandbox/fix.json")],
-            },
-            executor: BenchmarkExecutor::Native,
-            model_id: "model".to_string(),
-            safety_mode_label: "safe".to_string(),
-            scenario_label: None,
-            base_url_override: None,
-            briefing_file: None,
-            compaction_policy: None,
-            seed_transcript: None,
-            max_steps: 5,
-            max_seconds: Some(60),
-            max_total_tokens: None,
-            autonomy_profile: "autonomous_host".to_string(),
-            max_attempts: 1,
-            challenge: Some(ChallengeMetadata {
-                case_root: PathBuf::from("/host/cases/01"),
-                sandbox_root: PathBuf::from("/host/results/sandbox"),
-                workspace_dir: PathBuf::from("/host/results/sandbox/workspace/proof-full"),
-                condition: "proof-full".to_string(),
-                objective_file: PathBuf::from("/host/results/sandbox/QUORP_CHALLENGE_OBJECTIVE.md"),
-                success_file: PathBuf::from("/host/results/sandbox/expected/success.md"),
-                reference_file: Some(PathBuf::from(
-                    "/host/results/sandbox/workspace/proof-full/REFERENCE.md",
-                )),
-                reset_command: "./reset.sh proof-full".to_string(),
-                evaluate_command: "./evaluate.sh proof-full".to_string(),
-                expected_files_touched: Vec::new(),
-                allowed_generated_files: Vec::new(),
-                primary_metrics: Vec::new(),
-                tags: Vec::new(),
-                capsule_file: PathBuf::from(
-                    "/host/results/sandbox/workspace/proof-full/.quorp/challenge-capsule.json",
-                ),
-                capsule: ChallengeCapsule::default(),
-            }),
-            keep_sandbox: true,
-            completion_policy: quorp_agent_core::CompletionPolicy::default(),
-        };
-
-        normalize_manifest_paths_for_runtime(&mut manifest, Path::new("/quorp-results"));
-
-        assert_eq!(
-            manifest.resolved.benchmark_root,
-            PathBuf::from("/workspace/bench")
-        );
-        assert_eq!(
-            manifest.resolved.workspace_source,
-            PathBuf::from("/workspace/workspace")
-        );
-        assert_eq!(
-            manifest.resolved.objective_source,
-            PathBuf::from("/workspace/README.md")
-        );
-        assert_eq!(
-            manifest.resolved.visible_evaluator,
-            Some(PathBuf::from("/workspace/evaluate_visible.sh"))
-        );
-        assert_eq!(
-            manifest.resolved.repair_artifacts,
-            vec![PathBuf::from("/quorp-results/sandbox/fix.json")]
-        );
-        let challenge = manifest.challenge.expect("challenge");
-        assert_eq!(
-            challenge.sandbox_root,
-            PathBuf::from("/quorp-results/sandbox")
-        );
-        assert_eq!(
-            challenge.workspace_dir,
-            PathBuf::from("/quorp-results/sandbox/workspace/proof-full")
-        );
-        assert_eq!(
-            challenge.objective_file,
-            PathBuf::from("/quorp-results/sandbox/QUORP_CHALLENGE_OBJECTIVE.md")
-        );
-
-        unsafe {
-            std::env::remove_var("QUORP_IN_DOCKER");
-            std::env::remove_var("QUORP_DOCKER_HOST_RESULT_DIR");
-            std::env::remove_var("QUORP_DOCKER_HOST_WORKSPACE_ROOT");
-            std::env::remove_var("QUORP_DOCKER_CONTAINER_WORKSPACE_ROOT");
-        }
-    }
-
-    #[test]
     fn classify_failure_labels_repair_loop_stalled_from_agent_error() {
         let report: BenchmarkReport = serde_json::from_value(serde_json::json!({
             "benchmark_name": "Example",
@@ -13557,7 +8841,7 @@ EOF
             "attempts": [{
                 "attempt": 1,
                 "executor": "native",
-                "model_id": "ssd_moe/qwen36-27b",
+                "model_id": "nvidia/qwen/qwen3-coder-480b-a35b-instruct",
                 "safety_mode_label": "safe",
                 "scenario_label": null,
                 "agent_stop_reason": "stalled",
@@ -13579,7 +8863,7 @@ EOF
             Some("repair_loop_stalled")
         );
         assert_eq!(
-            classify_local_agent_failure(&report, Some("repair_loop_stalled")).as_deref(),
+            classify_agent_failure(&report, Some("repair_loop_stalled")).as_deref(),
             Some("repair_loop_stalled")
         );
     }

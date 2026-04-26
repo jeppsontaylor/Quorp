@@ -1,0 +1,45 @@
+version = 2
+
+[lanes.fast]
+description = "Required for ordinary Rust edits. Pre-commit-grade."
+commands = [
+  "cargo fmt --all --check",
+  "cargo check --workspace",
+]
+
+[lanes.medium]
+description = "PR-ready. Lints + library tests across the workspace."
+commands = [
+  "cargo fmt --all --check",
+  "cargo check --workspace",
+  "cargo clippy --workspace --no-deps -- -D warnings",
+  "cargo test --workspace --lib",
+]
+
+[lanes.deep]
+description = "Nightly / pre-release. Full test matrix and doctests."
+commands = [
+  "cargo test --workspace --all-features",
+  "cargo test --workspace --doc",
+]
+
+[lanes.security]
+description = "Trigger for auth/secrets/unsafe/FFI/CI/shell/deser/path changes."
+commands = [
+  "cargo audit",
+  "gitleaks detect --source . --redact",
+  "./script/check-loc-cap 2000 --error",
+]
+
+[lanes.release]
+description = "Ship-gate. Builds documentation as part of the evidence pack."
+commands = [
+  "cargo doc --workspace --no-deps",
+]
+
+[lanes.loc-check]
+description = "File-size policy: 800 LOC soft, 2000 LOC hard cap."
+commands = [
+  "./script/check-loc-cap 800 --warn",
+  "./script/check-loc-cap 2000 --error",
+]

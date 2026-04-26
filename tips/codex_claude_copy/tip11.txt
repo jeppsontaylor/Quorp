@@ -1,0 +1,651 @@
+Below is the technical direction I would use for **QUORP**: a terminal-first coding IDE with the punchy orange/black mascot energy, sharp text, cinematic diff cards, fast tool calls, and a loading screen that feels closer to a product launch animation than a boring CLI banner.
+
+I also packaged a working starter project for the load screen here: [Download the QUORP splash demo ZIP](sandbox:/mnt/data/quorp_splash_demo.zip). It includes the uploaded mascot at `assets/quorp.png`, a `Cargo.toml`, and a full `src/main.rs`. I could not `cargo check` it in this sandbox because Rust is not installed here.
+
+## First correction: “Rust TUI” is not the cause of pixelated text
+
+I would not rule out Rust TUI technology. Codex CLI’s official docs describe it as an open-source coding agent built in Rust, and its public `codex-rs/tui/Cargo.toml` includes `crossterm`, `ratatui`, `syntect`, `diffy`, `unicode-width`, `unicode-segmentation`, and other terminal-rendering dependencies. ([OpenAI Developers][1])
+
+The sharpness is mostly determined by the **terminal emulator, font, HiDPI scaling, ANSI/truecolor output, glyph choice, and redraw strategy**, not by Rust itself. Terminal apps emit cells, Unicode glyphs, and escape sequences; the terminal emulator renders the actual pixels. ANSI SGR sequences support truecolor foreground/background color using RGB escape sequences such as 24-bit `38;2;r;g;b` and `48;2;r;g;b`, and Crossterm exposes RGB colors for modern terminals. ([Wikipedia][2])
+
+My recommendation: build a **terminal-native Rust app** with a custom renderer on top of Crossterm, then optionally use Ratatui for structured views once the visual language is locked. Ratatui itself is a fast, lightweight Rust library for rich terminal UIs, so the problem is not “Ratatui vs. not Ratatui”; the problem is whether we design a beautiful terminal surface instead of a generic boxy dashboard. ([Ratatui][3])
+
+---
+
+# QUORP technical stack recommendation
+
+## 1. Rendering strategy
+
+Use a **direct terminal renderer** first:
+
+```text
+Rust app
+  └─ custom quorp-renderer
+       ├─ Crossterm raw mode
+       ├─ alternate-screen rendering
+       ├─ truecolor palette engine
+       ├─ Unicode block/braille/sextant renderer
+       ├─ dirty-region redraw queue
+       └─ optional Ratatui widgets for complex panels
+```
+
+The key is to make the terminal feel cinematic without becoming visually noisy. QUORP should look like a dark, glossy, orange-lit coding creature woke up inside the shell.
+
+Use:
+
+| Area                         | Recommended stack                                              |
+| ---------------------------- | -------------------------------------------------------------- |
+| Terminal control             | `crossterm`                                                    |
+| Optional structured UI       | `ratatui`                                                      |
+| Text width correctness       | `unicode-width`, `unicode-segmentation`                        |
+| ANSI/color support detection | `supports-color`, `anstyle`, `owo-colors` or Crossterm colors  |
+| Syntax highlighting          | `syntect`, `two-face`, or Tree-sitter highlighting             |
+| Markdown rendering           | `pulldown-cmark` or `comrak`                                   |
+| Diff rendering               | `similar`, `diffy`, `git2`/`gix`                               |
+| Image-to-terminal text       | `image` + Unicode half-blocks `▀`, `▄`, `█`                    |
+| Async runtime                | `tokio`                                                        |
+| Streaming agent output       | `reqwest`, `eventsource-stream`, `tokio-tungstenite` if needed |
+| Logging/tracing              | `tracing`, `tracing-subscriber`, `color-eyre`                  |
+| Config                       | `serde`, `toml`, `directories`, `figment`                      |
+| Fuzzy search                 | `nucleo`, `skim`, or custom matcher                            |
+| Workspace walking            | `ignore`, `walkdir`, `globset`                                 |
+| Code search                  | `ripgrep` subprocess or Rust `grep` crates                     |
+| PTY commands                 | `portable-pty` for interactive processes                       |
+| Non-interactive commands     | `tokio::process`                                               |
+| Packaging                    | `cargo-dist`, Homebrew formula, npm shim, GitHub releases      |
+
+For the “brilliant” look, do **not** rely on terminal image protocols as the default. Kitty and iTerm2 both support inline image mechanisms, but those are terminal-specific; Kitty’s graphics protocol uses a placeholder Unicode cell for images, and iTerm2 has its own inline image protocol. Those are useful as optional premium paths, but QUORP’s default should use text/Unicode/ANSI so it works broadly. ([Kovid Goyal's Software Projects][4])
+
+Recommended terminals for the most beautiful experience: **WezTerm, Kitty, Ghostty, iTerm2**. WezTerm is cross-platform and implemented in Rust, Kitty is GPU-based and feature-rich, and Ghostty uses native UI plus GPU acceleration. ([WezTerm][5])
+
+---
+
+# Visual design language
+
+## Mascot read
+
+The mascot is a glossy charcoal-black imp/cat/terminal familiar:
+
+* rounded black body;
+* soft ears;
+* glowing orange eyes;
+* small mischievous mouth;
+* long black tail with three ember bulbs;
+* orange terminal prompt glyph `>_` nearby;
+* overall mood: **cute, dangerous, fast, alive**.
+
+So the QUORP terminal should feel like:
+
+```text
+dark shell
+orange thermal glow
+green/red diff energy
+cyan/lilac intelligence accents
+rare glyphs as little magical terminal artifacts
+```
+
+## Core palette
+
+Use this as the canonical theme:
+
+| Token     |       Hex | Usage                     |
+| --------- | --------: | ------------------------- |
+| `void`    | `#030108` | main background           |
+| `abyss`   | `#080812` | panel background          |
+| `body`    | `#12121D` | mascot/body fill          |
+| `body_hi` | `#2A2B3D` | mascot highlight          |
+| `rim`     | `#5B5C77` | charcoal outlines         |
+| `hot`     | `#FF5C00` | main QUORP orange         |
+| `ember`   | `#FF7B00` | glow, active prompt       |
+| `gold`    | `#FFC33C` | hot center glow           |
+| `magma`   | `#FF3E14` | warning-orange            |
+| `red`     | `#FF4367` | delete/error              |
+| `green`   | `#21FF88` | add/success               |
+| `cyan`    | `#40E8FF` | tool activity             |
+| `lilac`   | `#C376FF` | reasoning/subagent accent |
+| `mist`    | `#CED5E8` | primary text              |
+| `muted`   | `#6E748B` | secondary text            |
+
+## Diff palette
+
+The diff UI should be one of the most distinctive parts of QUORP.
+
+| Diff element      | Foreground | Background |
+| ----------------- | ---------: | ---------: |
+| Added line        |  `#B7FFD0` |  `#05321D` |
+| Added gutter      |  `#21FF88` |  `#063D25` |
+| Added intraline   |  `#FFFFFF` |  `#0B6B3D` |
+| Deleted line      |  `#FFB3C1` |  `#3A0613` |
+| Deleted gutter    |  `#FF4367` |  `#4C0718` |
+| Deleted intraline |  `#FFFFFF` |  `#7A1028` |
+| Hunk header       |  `#C376FF` |  `#191027` |
+| File header       |  `#40E8FF` |  `#0B1020` |
+| Context line      |  `#CED5E8` |  `#080812` |
+| Line numbers      |  `#6E748B` |  `#05050D` |
+
+Diff display idea:
+
+```text
+╭─ patch: src/agent/tools.rs ─────────────────────────────────────────╮
+│ @@ -41,7 +41,9 @@                                                   │
+│  41  pub enum ToolRisk {                                             │
+│  42      ReadOnly,                                                   │
+│- 43      Write,                                                      │
+│+ 43      WorkspaceWrite,                                             │
+│+ 44      ShellRead,                                                  │
+│+ 45      ShellMutate,                                                │
+│  46      Network,                                                    │
+╰────────────────────────── approve once / reject / edit patch ───────╯
+```
+
+Use animated diff states:
+
+```text
+planning → previewing → waiting approval → applying → verifying → committed
+```
+
+The moment the model edits code, QUORP should show a red/green background patch card, not a stream of vague prose.
+
+---
+
+# UX behaviors to emulate and improve
+
+Codex CLI supports full-screen interactive terminal sessions, plans, inline approvals, syntax-highlighted code/diffs, slash commands, theme selection, image inputs, web search, subagents, MCP, cloud tasks, and approval modes. ([OpenAI Developers][6])
+
+Claude Code’s docs describe terminal/IDE/browser availability, codebase reading, file edits, command execution, slash commands, MCP integrations, hooks, memory, and subagents. ([Claude API Docs][7])
+
+QUORP should have:
+
+```text
+/plan          show current plan
+/model         switch model/provider
+/deep          raise reasoning budget
+/fast          lower reasoning budget
+/diff          jump to current patch
+/tools         list available tools
+/permissions   edit tool policy
+/mcp           manage MCP servers
+/hooks         lifecycle automations
+/agents        spawn/restrict subagents
+/checkpoint    save git checkpoint
+/rollback      revert to checkpoint
+/theme         live theme preview
+/mascot        toggle mascot mood
+```
+
+The signature feature should be **tool cards**:
+
+```text
+🧿 read_file       src/lib.rs                 12 ms
+🛰️ grep            "ToolRisk"                 83 ms
+🪄 propose_patch   src/agent/tools.rs          waiting approval
+🧯 checkpoint      git stash create            ready
+```
+
+Use rare emojis only as **decorative badges**, not alignment-critical UI. Good QUORP glyphs:
+
+```text
+🪬 permission gate
+🪼 subagent
+🧿 watcher/search
+🪐 context orbit
+🛰️ MCP/network
+🧬 refactor
+🪩 theme
+🧯 rollback
+🦑 deep search
+🛸 remote/cloud task
+🫧 streaming
+🜂 ignition, if the font supports it
+```
+
+---
+
+# Agent and tool architecture
+
+## Core agent graph
+
+```text
+User input
+  ↓
+Intent classifier
+  ↓
+Planner
+  ↓
+Context gatherer
+  ├─ workspace index
+  ├─ git status
+  ├─ symbol search
+  ├─ file reads
+  └─ MCP resources
+  ↓
+Model provider
+  ↓
+Tool-call router
+  ├─ read-only tools
+  ├─ patch tools
+  ├─ shell tools
+  ├─ test tools
+  ├─ git tools
+  └─ MCP tools
+  ↓
+Approval gate
+  ↓
+Execution sandbox
+  ↓
+Diff/checkpoint renderer
+  ↓
+Reviewer/verifier
+  ↓
+Final answer
+```
+
+## Tool trait
+
+Design every tool as a typed Rust object:
+
+```rust
+#[async_trait::async_trait]
+pub trait Tool: Send + Sync {
+    fn name(&self) -> &'static str;
+    fn description(&self) -> &'static str;
+    fn json_schema(&self) -> serde_json::Value;
+    fn risk(&self, input: &serde_json::Value) -> ToolRisk;
+
+    async fn run(
+        &self,
+        ctx: ToolContext,
+        input: serde_json::Value,
+    ) -> anyhow::Result<ToolResult>;
+}
+```
+
+Risk classes:
+
+```rust
+pub enum ToolRisk {
+    ReadOnly,
+    WorkspaceWrite,
+    ShellRead,
+    ShellMutate,
+    Network,
+    SecretsSensitive,
+    Destructive,
+}
+```
+
+Approval policy:
+
+```text
+read-only          auto-run
+workspace-write    show diff first
+shell-read         auto-run if allowlisted
+shell-mutate       ask
+network            ask unless trusted
+secrets-sensitive  block or ask with warning
+destructive        never auto-run
+```
+
+## Built-in tools
+
+Start with:
+
+```text
+read_file
+write_file
+apply_patch
+list_files
+grep
+find_symbols
+git_status
+git_diff
+git_checkpoint
+git_rollback
+run_command
+run_tests
+format_file
+open_mcp_resource
+call_mcp_tool
+```
+
+## Subagents
+
+Use subagents, but restrict tools:
+
+```text
+planner       no writes, no shell mutate
+researcher    read/search only
+coder         patch tools, no destructive shell
+reviewer      read/search/test only
+tester        shell read + test commands
+security      read/search + dependency audit
+```
+
+Claude Code’s subagent docs describe allowing or denying tool access per subagent, which is exactly the right model for QUORP. ([Claude API Docs][8])
+
+## Reasoning display
+
+Do not show raw private chain-of-thought. Show **structured reasoning summaries**:
+
+```text
+Current hypothesis
+  The failing test is caused by the parser accepting empty tool names.
+
+Evidence
+  src/parser.rs:81 handles missing name as Ok("")
+  tests/parser.rs:42 expects Err(MissingName)
+
+Next action
+  Patch parser guard, run parser tests only.
+```
+
+Modes:
+
+```text
+/fast      short plan, minimal context
+/balanced  normal mode
+/deep      more planning, more verification, reviewer subagent
+```
+
+---
+
+# Security model
+
+MCP and tool integrations are powerful, but they widen the attack surface. MCP is intended to connect models to external tools/data, and both Claude Code and Codex support MCP-style integrations. ([Claude API Docs][9])
+
+QUORP should have:
+
+```text
+1. command allowlist/denylist
+2. secret redaction before model calls
+3. network policy
+4. workspace-root jail
+5. read/write path restrictions
+6. approval gate before mutations
+7. git checkpoint before edits
+8. diff preview before applying
+9. post-apply verification
+10. audit log
+```
+
+For shell execution:
+
+```text
+macOS/Linux:
+  - simple mode: tokio::process
+  - interactive mode: portable-pty
+  - stronger sandbox: bubblewrap/nsjail/container
+
+Windows:
+  - PowerShell support
+  - ConPTY for interactive sessions
+  - Job Objects for process containment
+```
+
+---
+
+# Product layout
+
+## Main screen
+
+```text
+╭─ QUORP v0.1.0 ───────────────────────────── repo: quorp-core ───────╮
+│ 🧿 Watching workspace     🪬 permissions: ask-write     model: deep │
+├─────────────────────────────────────────────────────────────────────┤
+│                                                                     │
+│  User: fix the bug in the parser                                    │
+│                                                                     │
+│  QUORP: I’ll inspect parser flow, patch the smallest change,        │
+│         then run focused tests.                                     │
+│                                                                     │
+│  🧿 read_file      src/parser.rs                         9 ms       │
+│  🧿 read_file      tests/parser.rs                       7 ms       │
+│  🪄 propose_patch  src/parser.rs                         pending    │
+│                                                                     │
+│  ╭─ patch preview ─────────────────────────────────────────────╮     │
+│  │ red/green diff with high-contrast backgrounds                │     │
+│  ╰──────────────────────────────────────────────────────────────╯     │
+│                                                                     │
+├─────────────────────────────────────────────────────────────────────┤
+│ ❯_ Tell QUORP what to build...                                      │
+╰─────────────────────────────────────────────────────────────────────╯
+```
+
+## Status rail
+
+```text
+🪬 Permission gate
+🪼 3 subagents
+🛰️ 2 MCP servers
+🧬 Patch engine
+🧯 Checkpoint ready
+🪩 Ember theme
+```
+
+## Composer
+
+Make the input line feel alive:
+
+```text
+❯_ build the auth middleware
+```
+
+Cursor suggestions:
+
+```text
+Tab: attach file     Ctrl+R: recent prompt     /: command palette
+```
+
+---
+
+# QUORP load screen concept
+
+The splash should open in alternate screen, hide cursor, render the mascot in text, animate orange gradients, show version, and show a warmup phase.
+
+Recommended startup sequence:
+
+```text
+0–300 ms    black screen, tiny ember sparkles
+300–700 ms  QUORP wordmark burns in left-to-right
+700–1100 ms mascot appears as half-block terminal text
+1100 ms     orange eyes pulse
+1200 ms     diff chips appear: + add bg / − delete bg
+1400 ms     footer cycles rare emojis and startup phases
+```
+
+Text layout:
+
+```text
+ ██████╗ ██╗   ██╗ ██████╗ ██████╗ ██████╗
+██╔═══██╗██║   ██║██╔═══██╗██╔══██╗██╔══██╗
+██║   ██║██║   ██║██║   ██║██████╔╝██████╔╝
+██║▄▄ ██║██║   ██║██║   ██║██╔══██╗██╔═══╝
+╚██████╔╝╚██████╔╝╚██████╔╝██║  ██║██║
+ ╚══▀▀═╝  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝
+
+v0.1.0 • agentic coding IDE • tool-router online • patch engine hot
+
+                 [mascot rendered as Unicode half-block text]
+
+╭────────────────────────────────────────────────────────╮
+│████████████████████████████░░░░░░░░░░░░░░░░░░░░░░░░░░░│
+╰────────────────────────────────────────────────────────╯
+
+ + add bg    − delete bg    ⟡ review    ⟡ apply
+
+🪬 permission gate armed • QUORP terminal runtime
+```
+
+The included ZIP implements this approach with:
+
+```text
+crossterm      direct terminal control
+image          PNG-to-half-block mascot renderer
+unicode-width  centering text correctly
+```
+
+The mascot renderer is still “text”: it uses Unicode half-block characters `▀` and `▄` with truecolor foreground/background, not Kitty/iTerm image protocols.
+
+Download: [quorp_splash_demo.zip](sandbox:/mnt/data/quorp_splash_demo.zip)
+
+Run it like this:
+
+```bash
+unzip quorp_splash_demo.zip
+cd quorp_splash_demo
+cargo run --release
+```
+
+Or pass a custom mascot:
+
+```bash
+cargo run --release -- ./assets/quorp.png
+```
+
+---
+
+# Implementation roadmap
+
+## Phase 1: Visual prototype
+
+Build:
+
+```text
+quorp-splash
+quorp-renderer
+quorp-theme
+quorp-diff-view
+```
+
+Milestone:
+
+```text
+- crisp splash
+- orange gradient wordmark
+- mascot half-block rendering
+- red/green diff cards
+- prompt composer mock
+- no model integration yet
+```
+
+## Phase 2: Local coding agent
+
+Build:
+
+```text
+quorp-agent-core
+quorp-tools
+quorp-workspace
+quorp-approval
+quorp-patch
+```
+
+Milestone:
+
+```text
+- read files
+- grep workspace
+- propose patch
+- preview diff
+- approve/reject
+- apply patch
+- run tests
+- checkpoint/rollback
+```
+
+## Phase 3: Provider abstraction
+
+Build:
+
+```text
+quorp-provider-openai
+quorp-provider-anthropic
+quorp-provider-local
+```
+
+Milestone:
+
+```text
+- streaming output
+- structured tool calls
+- model switching
+- reasoning mode switching
+- retry/recovery
+```
+
+## Phase 4: MCP, hooks, skills
+
+Build:
+
+```text
+quorp-mcp
+quorp-hooks
+quorp-skills
+quorp-subagents
+```
+
+Milestone:
+
+```text
+- MCP server management
+- lifecycle hooks
+- project instructions
+- reusable workflow skills
+- restricted subagents
+```
+
+## Phase 5: Polished IDE behavior
+
+Build:
+
+```text
+quorp-command-palette
+quorp-symbol-browser
+quorp-test-runner
+quorp-reviewer
+quorp-theme-gallery
+```
+
+Milestone:
+
+```text
+- / commands
+- fuzzy file open
+- test diagnostics
+- reviewer subagent
+- theme preview
+- keyboard-first flow
+```
+
+---
+
+# Final stack choice
+
+I would build QUORP as:
+
+```text
+Rust terminal-native app
+  Crossterm direct renderer
+  Optional Ratatui for heavier panels
+  Tokio async core
+  Structured tool router
+  Typed approval gate
+  Git checkpoint/diff engine
+  MCP bridge
+  Skills/subagents
+  Truecolor theme system
+  Unicode half-block mascot renderer
+```
+
+That gives you the Claude/Codex-style speed and terminal-native feel, while letting QUORP own a much more distinctive visual identity: **charcoal mascot, orange glow, rare magical glyphs, sharp truecolor text, and beautiful red/green diff backgrounds**.
+
+[1]: https://developers.openai.com/codex/cli?utm_source=chatgpt.com "Codex CLI"
+[2]: https://en.wikipedia.org/wiki/ANSI_escape_code?utm_source=chatgpt.com "ANSI escape code"
+[3]: https://ratatui.rs/?utm_source=chatgpt.com "Ratatui | Ratatui"
+[4]: https://sw.kovidgoyal.net/kitty/graphics-protocol/?utm_source=chatgpt.com "Terminal graphics protocol - kitty"
+[5]: https://wezterm.org/index.html?utm_source=chatgpt.com "WezTerm - Wez's Terminal Emulator"
+[6]: https://developers.openai.com/codex/cli/features?utm_source=chatgpt.com "Codex CLI features"
+[7]: https://docs.anthropic.com/en/docs/claude-code/overview?utm_source=chatgpt.com "Claude Code overview - Claude Code Docs"
+[8]: https://docs.anthropic.com/en/docs/claude-code/sub-agents?utm_source=chatgpt.com "Create custom subagents - Claude Code Docs"
+[9]: https://docs.anthropic.com/en/docs/claude-code/mcp?utm_source=chatgpt.com "Connect Claude Code to tools via MCP"
+
