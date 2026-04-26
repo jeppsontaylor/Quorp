@@ -2461,6 +2461,7 @@ dependencies = [
  "quorp_core",
  "quorp_log",
  "quorp_provider",
+ "quorp_render",
  "quorp_sandbox",
  "quorp_term",
  "quorp_tools",

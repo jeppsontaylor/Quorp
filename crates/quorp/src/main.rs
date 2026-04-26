@@ -51,6 +51,7 @@ fn run(args: CliArgs) -> anyhow::Result<()> {
         Some(Command::Diagnostics { command }) => run_diagnostics_command(command),
         Some(Command::Agent { command }) => run_agent_command(command),
         Some(Command::Benchmark { command }) => run_benchmark_command(command),
+        Some(Command::RenderDemo) => run_render_demo(),
         None => run_inline_cli(SessionLaunchConfig::from_paths_or_urls(
             args.paths_or_urls,
             parse_prompt_compaction_policy_arg(args.prompt_compaction_policy.as_deref())?,
@@ -97,6 +98,87 @@ fn run_doctor_command() -> anyhow::Result<()> {
         project_agent_toml.exists()
     );
     println!("tmp-copy root: /tmp/quorp");
+    Ok(())
+}
+
+fn run_render_demo() -> anyhow::Result<()> {
+    use quorp_render::caps::{ColorCapability, RenderProfile};
+    use quorp_render::permission_modal::{PermissionPrompt, render_permission_modal};
+    use quorp_render::shimmer::{ShimmerStyle, render_shimmer};
+    use quorp_render::splash::{SplashStatus, SplashStep, render_splash};
+    use quorp_render::status_footer::{StatusFooter, render_status_footer};
+    use quorp_render::transcript::{TranscriptLine, render_transcript_line};
+
+    let profile = RenderProfile::detect_from_env();
+    let color = profile.color;
+
+    let splash_steps = [
+        SplashStep { name: "workspace".into(), detail: "~/Code/quorp".into(), status: SplashStatus::Done },
+        SplashStep { name: "settings".into(), detail: "user + project".into(), status: SplashStatus::Done },
+        SplashStep { name: "env".into(), detail: ".quorp/.env (4 vars)".into(), status: SplashStatus::Done },
+        SplashStep { name: "provider".into(), detail: "nvidia/qwen3-coder · 47ms".into(), status: SplashStatus::Done },
+        SplashStep { name: "repo capsule".into(), detail: "412 files, 64kb cached".into(), status: SplashStatus::Done },
+        SplashStep { name: "memory + rules".into(), detail: "3 active rules · 42 facts".into(), status: SplashStatus::Running },
+    ];
+    print!("{}", render_splash("quorp · brilliant terminal coding", &splash_steps, color));
+    println!();
+
+    let frames = 18;
+    let style = ShimmerStyle::default();
+    print!("\x1b[?25l");
+    for i in 0..frames {
+        let t = i as f32 * 0.06;
+        print!("\r  {} · ctx 12.4k/64k", render_shimmer("Cogitating", t, style, color));
+        let _ = std::io::Write::flush(&mut std::io::stdout());
+        std::thread::sleep(std::time::Duration::from_millis(55));
+    }
+    print!("\x1b[?25h\r\x1b[2K");
+
+    let transcript = [
+        TranscriptLine::UserPrompt("refactor agent_runner.rs into smaller modules".into()),
+        TranscriptLine::AssistantProse("I'll inspect the file and propose a 4-step plan.".into()),
+        TranscriptLine::ToolCallSummary {
+            tool: "read_file".into(),
+            target: "crates/quorp/src/quorp/agent_runner.rs".into(),
+            sample_chars: 31_842,
+        },
+        TranscriptLine::RepairAttempt {
+            attempt: 1,
+            cap: 3,
+            hypothesis: "missing pub(super) on HeadlessEventRecorder".into(),
+        },
+    ];
+    for line in &transcript {
+        println!("{}", render_transcript_line(line, color));
+    }
+    println!();
+
+    let footer = StatusFooter {
+        model_provider: "qwen3-coder@nvidia".into(),
+        mode_label: "Act".into(),
+        phase_pill: "thinking".into(),
+        usage_summary: "ctx 12.4k/64k · $0.024 · tasks 3/8 · 4.2s".into(),
+    };
+    println!("{}", render_status_footer(&footer, color));
+    println!();
+
+    let prompt = PermissionPrompt {
+        tool: "run_command".into(),
+        command_repr: "cargo test -p quorp_term".into(),
+        cwd: "crates/quorp_term".into(),
+        sandbox: "tmp-copy".into(),
+        rationale: "validate the SlashCommand parser changes".into(),
+    };
+    print!("{}", render_permission_modal(&prompt, color));
+    println!();
+
+    let color_label = match color {
+        ColorCapability::TrueColor => "truecolor",
+        ColorCapability::Ansi256 => "ansi-256",
+        ColorCapability::Ansi16 => "ansi-16",
+        ColorCapability::NoColor => "no-color",
+    };
+    println!("(detected color profile: {color_label})");
     Ok(())
 }
 
@@ -1353,6 +1435,11 @@ enum Command {
         #[command(subcommand)]
         command: BenchmarkCommand,
     },
+    /// Render a brief animated demo of the brilliant-CLI primitives
+    /// (splash checklist, oscillating shimmer, status footer,
+    /// transcript lines, permission modal). Useful while wiring
+    /// `quorp_render` into the inline CLI.
+    RenderDemo,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, ValueEnum)]
