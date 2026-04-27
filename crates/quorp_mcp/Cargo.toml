@@ -1,0 +1,20 @@
+[package]
+name = "quorp_mcp"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+authors = ["Quorp Team <hi@quorp.dev>"]
+
+[lib]
+path = "src/quorp_mcp.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+log.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio = { workspace = true, features = ["process", "io-util", "rt", "sync", "macros", "time"] }

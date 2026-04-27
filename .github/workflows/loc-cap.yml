@@ -1,0 +1,43 @@
+name: loc-cap
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  loc-cap:
+    name: enforce 2000-LOC hard cap
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: enforce 2000 LOC hard cap on production code
+        run: ./script/check-loc-cap 2000 --error
+
+      - name: report soft cap (800 LOC) offenders
+        # Soft cap is informational; never fails CI.
+        run: ./script/check-loc-cap 800 --warn || true
+
+  fast-lane:
+    name: fmt + check
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout
+        uses: actions/checkout@v4
+
+      - name: install rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+
+      - name: cache cargo
+        uses: Swatinem/rust-cache@v2
+
+      - name: cargo fmt --all --check
+        run: cargo fmt --all --check
+
+      - name: cargo check --workspace
+        run: cargo check --workspace

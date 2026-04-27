@@ -37,6 +37,7 @@ portable-pty.workspace = true
 rand.workspace = true
 quorp_config.workspace = true
 quorp_core.workspace = true
+quorp_mcp.workspace = true
 quorp_permissions.workspace = true
 quorp_provider.workspace = true
 quorp_render.workspace = true

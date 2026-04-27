@@ -13,6 +13,7 @@ members = [
     "crates/quorp_context_model",
     "crates/quorp_core",
     "crates/quorp_ids",
+    "crates/quorp_mcp",
     "crates/quorp_memory",
     "crates/quorp_memory_model",
     "crates/quorp_patch_model",
@@ -91,6 +92,7 @@ quorp_context = { path = "crates/quorp_context" }
 quorp_context_model = { path = "crates/quorp_context_model" }
 quorp_core = { path = "crates/quorp_core" }
 quorp_ids = { path = "crates/quorp_ids" }
+quorp_mcp = { path = "crates/quorp_mcp" }
 quorp_memory = { path = "crates/quorp_memory" }
 quorp_memory_model = { path = "crates/quorp_memory_model" }
 quorp_patch_model = { path = "crates/quorp_patch_model" }
