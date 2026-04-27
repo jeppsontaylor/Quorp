@@ -13,6 +13,7 @@ path = "src/quorp_render.rs"
 workspace = true
 
 [dependencies]
+image.workspace = true
 serde = { workspace = true, features = ["derive"] }
 unicode-width.workspace = true
 

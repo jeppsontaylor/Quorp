@@ -1,0 +1,1815 @@
+Yes. I studied the repo structure you pointed to, and the short version is:
+
+**QUORP’s current terminal UX is structurally pointed in the wrong direction if your target is “Claude CLI / Codex CLI felt experience.”**
+
+The repo is clearly using a **terminal-first custom UI stack** based on `crossterm`, `portable-pty`, `vt100`, `syntect`, and related utilities, not a browser UI and not a stock Rust widget framework. The TUI/service layer is split between `main.rs` and `crates/quorp/src/quorp/tui/*`, while `crates/quorp/src/quorp/tui.rs` explicitly says the **old alternate-screen dashboard was removed** and the module now mainly exposes shared agent services. Also, the main entry file is very large (3172 lines), and it directly imports low-level terminal commands like `MoveTo`, `Clear`, `EnterAlternateScreen`, and `LeaveAlternateScreen`, which strongly suggests QUORP is painting the terminal manually rather than through a highly opinionated visual framework. ([GitHub][1]) ([GitHub][2]) ([GitHub][2]) ([GitHub][3])
+
+## My blunt diagnosis
+
+The problem is **not** “Rust TUI can’t look good.”
+
+The problem is that QUORP currently feels designed like a **dashboard / shell control surface**, while Claude CLI and Codex CLI feel designed like a **conversation-first terminal product**.
+
+That difference matters a lot.
+
+Your screenshot shows the exact issues:
+
+* too much dead space
+* too many always-on borders
+* weak hierarchy
+* dim top metadata
+* giant empty shell panel
+* bottom status line overloaded with implementation detail
+* no strong “center of gravity”
+* no elegant composer
+* no rich command palette behavior
+* no premium visual identity
+
+So: **this is not mostly a rendering problem. It is an information architecture + interaction model problem.**
+
+---
+
+# What in the codebase is signaling that
+
+A few things stand out from the repo structure and entry flow:
+
+1. **The current product path is “inline CLI / session launch” driven from `main.rs`**, not a dedicated polished UI surface. The main dispatch routes into `run_session(...)` and `run_inline_cli(SessionLaunchConfig::from_paths_or_urls(...))`. That tells me the CLI/session orchestration is currently the center of gravity, not a purpose-built experience layer. ([GitHub][2])
+
+2. **The TUI module is mostly service plumbing now**, not a strong presentation system. `tui.rs` literally says the old alternate-screen dashboard has been removed from the default product. That is a big clue: the repo has TUI support code, but not a clearly separated “world-class UI system” layer. ([GitHub][1])
+
+3. **The dependency mix is right for a serious terminal app**, but the UX you want requires a tighter presentation layer on top of it. `crossterm` + `portable-pty` + `vt100` + `syntect` is enough to build something excellent. The current issue is that the app is not yet using those primitives with a premium interaction design. ([GitHub][3])
+
+---
+
+# My best recommendation: redesign QUORP around a “conversation-first terminal workspace”
+
+If you want it to feel like Claude CLI / Codex CLI, **stop treating the screen like a shell dashboard** and start treating it like a **focused terminal-native conversation environment**.
+
+## The target feel should be:
+
+* **minimal chrome**
+* **strong visual hierarchy**
+* **chat/transcript as the main canvas**
+* **composer as the hero interaction**
+* **slash command palette appears instantly**
+* **shell/tool output lives inline or in overlays**
+* **status is ambient, not screaming**
+* **a premium branded startup moment**
+* **fluid transitions, no giant static boxes**
+
+---
+
+# What I would change, specifically
+
+## 1) Replace the current “big boxed layout” with a 3-zone layout
+
+### Current feeling
+
+You have:
+
+* a header
+* a task panel
+* an agent session panel
+* a huge empty middle
+* a thin bottom prompt + overloaded status strip
+
+That layout feels like an admin console.
+
+### Replace it with:
+
+## A. Top header strip
+
+Very thin. One line, maybe two max.
+
+**Left**
+
+* QUORP logo mark
+* workspace/project name
+
+**Center**
+
+* active mode / session name
+
+**Right**
+
+* model
+* provider
+* cwd
+* latency / idle / running chip
+
+No giant bordered header box.
+
+---
+
+## B. Main transcript pane
+
+This becomes the **dominant visual surface**.
+
+Instead of showing:
+
+* “task list”
+* “agent session”
+* shell state in big empty boxes
+
+show a **streaming transcript**:
+
+* user prompt block
+* assistant thinking / status block
+* tool call cards
+* command output cards
+* diff/test result cards
+* final answer block
+
+This is how Claude CLI / Codex CLI feel good:
+they create a sense of **narrative progression**.
+
+You need the user to feel:
+
+> “I am in a live conversation with an agent that can act.”
+
+Not:
+
+> “I am staring at a monitoring dashboard.”
+
+---
+
+## C. Bottom composer
+
+This is the second-most important area after the transcript.
+
+It needs:
+
+* a **multiline input**
+* soft placeholder text
+* inline hint text
+* `/` to open command palette immediately
+* Tab / arrows for selection
+* subtle right-side chips for mode, approval, sandbox, or enter behavior
+
+Think:
+
+* **single elegant composer**
+* not a raw shell prompt
+* not a status footer pretending to be input
+
+---
+
+# 2) Remove 70% of the visible borders
+
+This is huge.
+
+Claude CLI / Codex CLI don’t feel premium because they have more boxes.
+They feel premium because they use:
+
+* whitespace
+* alignment
+* restrained color
+* emphasis only where needed
+
+### Rule I would use:
+
+* **No border unless the thing is currently interactive or conceptually separate**
+* Use spacing + typography as the default separator
+* Use **1 accent color**, **1 warning color**, **1 success color**
+* Use very light dividers, not giant rectangles around everything
+
+In your screenshot, nearly everything is visually “boxed,” which flattens hierarchy.
+
+---
+
+# 3) Move from “panel-first” to “message-first”
+
+This is the single biggest product change.
+
+## Instead of:
+
+* task list panel
+* agent session panel
+* shell panel
+* status panel
+
+## Use:
+
+* transcript messages with typed block kinds:
+
+  * `UserPrompt`
+  * `AssistantResponse`
+  * `ToolInvocation`
+  * `ToolResult`
+  * `CommandRun`
+  * `CommandOutput`
+  * `PatchSummary`
+  * `ApprovalRequest`
+  * `SystemNotice`
+
+Then render each block with different treatment.
+
+### Example:
+
+* user messages: bright, simple
+* assistant streaming: neutral with subtle spinner
+* tool calls: collapsed cards with icon + short summary
+* shell output: expandable monospaced block
+* diff/test result: compact success/failure chips
+* approvals: highlighted inline action card
+
+This will immediately make QUORP feel much closer to top-tier agent CLIs.
+
+---
+
+# 4) Make slash commands a real command palette, not just “commands exist”
+
+You explicitly want the **instant `/` dropdown** behavior.
+
+That means implementing a **first-class command palette overlay**, not just parsing slash text.
+
+## Behavior spec
+
+When the composer content begins with `/`:
+
+* open a floating palette directly above the composer
+* fuzzy filter as the user types
+* show:
+
+  * command name
+  * short description
+  * shortcut / aliases
+  * maybe a category badge
+
+### Example commands
+
+* `/model`
+* `/provider`
+* `/cwd`
+* `/sandbox`
+* `/approve`
+* `/tools`
+* `/theme`
+* `/resume`
+* `/clear`
+* `/compact`
+* `/diff`
+* `/tests`
+* `/open`
+* `/attach`
+* `/memory`
+* `/settings`
+
+### Interaction
+
+* arrows up/down
+* Enter to select
+* Tab to autocomplete
+* Esc to close
+* right pane preview for complex commands
+
+This is a big part of the “premium CLI” feeling.
+
+---
+
+# 5) Do not keep a giant always-visible shell pane
+
+This is one of the main reasons the current screen feels bad.
+
+A giant shell pane creates:
+
+* dead space
+* layout rigidity
+* attention fragmentation
+
+Instead:
+
+## shell/tool execution should be shown as:
+
+### Option A — inline cards
+
+When a command runs:
+
+* show a “Running command” card in transcript
+* let it stream inline
+* allow expand/collapse
+
+### Option B — temporary bottom drawer
+
+Open a resizable bottom drawer **only while needed**
+
+* command output
+* logs
+* diff
+* test run
+
+### Option C — side inspector
+
+For advanced users:
+
+* press a key to open a side inspector with:
+
+  * shell
+  * logs
+  * files
+  * approvals
+
+But do **not** dedicate the entire interface to an empty shell by default.
+
+---
+
+# 6) Create a real design system for the terminal
+
+This matters more than people think.
+
+## You need a `Theme` layer with tokens:
+
+* background
+* elevated background
+* primary foreground
+* muted foreground
+* accent
+* accent_dim
+* success
+* warning
+* error
+* selection_bg
+* border_subtle
+* border_active
+
+And spacing / radius conventions:
+
+* `pad_x = 2`
+* `pad_y = 1`
+* default vertical gap = 1 line
+* rounded box drawing where supported
+* fallback to square box chars if terminal support is bad
+
+### Color recommendation
+
+Your screenshot is too dark and too flat.
+
+Use:
+
+* dark charcoal / navy base, not pure black
+* brighter cyan/teal accent
+* controlled purple accent for mode/status
+* warm yellow only for attention
+* softer gray for metadata
+
+The current top-line metadata is too dim.
+
+---
+
+# 7) Add motion and micro-feedback
+
+A premium CLI has **small animations**, not necessarily flashy ones.
+
+Add:
+
+* spinner animation during agent response
+* subtle typing cursor in composer
+* fade/slide feel when palette opens
+* shimmer/progress bar during startup
+* tiny pulse on active status chip
+* smooth transcript autoscroll
+
+Even in a terminal, these things matter.
+
+---
+
+# 8) Put the brand front and center: a real colored QUORP logo splash
+
+You asked for a brilliant QUORP logo load in color.
+
+Absolutely yes.
+
+## My recommendation
+
+Implement a startup splash system with **capability detection**:
+
+### Preferred output order
+
+1. **Kitty graphics protocol**
+2. **iTerm2 inline image**
+3. **Sixel**
+4. **24-bit ANSI block-art fallback**
+
+That gives you the best result across terminals.
+
+Since QUORP already depends on `image`, you are in a decent place to render or preprocess a logo asset for terminal display. ([GitHub][3])
+
+## What the splash should do
+
+* show a true colored QUORP logo mark
+* display “QUORP” wordmark beneath or beside it
+* maybe short line: “agent-first coding shell”
+* subtle 300–700ms reveal animation
+* then transition into the main UI
+
+## Critical rule
+
+The splash must be:
+
+* fast
+* optional via config/env
+* skippable in CI / dumb terminals
+* not annoying on every rapid invocation
+
+## Fallback plan
+
+If graphics protocols are unavailable, render a **beautiful ANSI block logo** using half blocks / full blocks and 24-bit color.
+Do **not** fall back to plain text unless absolutely necessary.
+
+---
+
+# 9) Refactor the code so UX can actually evolve
+
+Right now the repo structure suggests the UX layer is too entangled with the CLI/session machinery.
+
+I would split the UI into a dedicated module tree like this:
+
+```rust
+crates/quorp/src/ui/
+  app.rs
+  state.rs
+  event_loop.rs
+  renderer.rs
+  theme.rs
+  layout.rs
+  capabilities.rs
+  splash.rs
+  input/
+    composer.rs
+    keymap.rs
+    command_palette.rs
+  components/
+    header.rs
+    transcript.rs
+    message.rs
+    tool_card.rs
+    command_output.rs
+    status_bar.rs
+    modal.rs
+    drawer.rs
+  overlays/
+    slash_menu.rs
+    model_picker.rs
+    file_picker.rs
+    approval_dialog.rs
+    help.rs
+```
+
+## Then separate state from rendering:
+
+### `AppState`
+
+* workspace
+* cwd
+* provider
+* model
+* transcript
+* composer state
+* palette state
+* active overlay
+* running jobs
+* shell sessions
+* approvals
+* notifications
+
+### `Renderer`
+
+Pure rendering only.
+
+### `EventLoop`
+
+Handles:
+
+* keyboard input
+* terminal resize
+* agent stream events
+* shell output events
+* timers / animation ticks
+
+### `Services`
+
+Reuse your existing agent/session machinery under the UI.
+
+This is how you get from “working TUI” to “excellent product.”
+
+---
+
+# 10) Use an immediate-mode custom renderer, not stock ratatui-looking widgets
+
+If the goal is to feel like Claude CLI / Codex CLI, **do not lean into generic ratatui panel aesthetics**.
+
+Rust is fine.
+Terminal-first is fine.
+But the renderer should be:
+
+* **custom**
+* **minimal**
+* **layout-driven**
+* **transcript-centric**
+
+The repo already looks like it is close to that low-level path through `crossterm`. That is actually good. ([GitHub][2])
+
+My recommendation is:
+
+## Keep:
+
+* `crossterm`
+* `portable-pty`
+* `vt100`
+* `tokio`
+* `syntect`
+
+## Add / consider:
+
+* `unicode-segmentation`
+* `ropey` or another rope buffer for transcript
+* `nucleo-matcher` or `skim`-style fuzzy matching for slash palette
+* a tiny internal layout engine
+* image protocol helpers for logo splash
+
+Do **not** build the UI out of generic boxed widgets and call it done.
+
+---
+
+# The exact UX I would target for QUORP
+
+## On launch
+
+* branded color splash
+* quick workspace detection
+* animate into main interface
+
+## Main screen
+
+### Header
+
+`[logo] QUORP   memo/   session: default`
+right aligned:
+`qwen3-coder-480b | NVIDIA | /Users/.../memo | idle`
+
+### Main transcript
+
+Shows:
+
+* welcome guidance
+* recent activity
+* current conversation
+* command cards
+* test cards
+* file change summaries
+
+### Composer
+
+Large, elegant, multiline:
+`Ask QUORP anything…`
+Below it:
+`/ commands   Tab complete   Ctrl+J newline   Enter send`
+
+### Slash menu
+
+Floating and instant.
+
+### Optional drawer
+
+Toggle:
+
+* shell
+* logs
+* file tree
+* diffs
+* diagnostics
+
+### Footer
+
+One subtle line max.
+Not a loud telemetry dump.
+
+---
+
+# The most important visual changes for your current screenshot
+
+If you changed only these 8 things, it would improve dramatically:
+
+1. **Delete the giant task-list border**
+2. **Delete the giant agent-session border**
+3. **Make transcript the central pane**
+4. **Turn the bottom prompt into a real composer**
+5. **Open slash commands in a floating menu**
+6. **Compress status metadata into chips in the header**
+7. **Brighten the palette and reduce pure-black background**
+8. **Add a real color logo splash**
+
+That alone would make it feel 5x more premium.
+
+---
+
+# My strongest opinion
+
+If you want QUORP to feel like Claude CLI or Codex CLI:
+
+## DO NOT optimize for:
+
+* more panels
+* more borders
+* more visible shell surface
+* more constantly visible metadata
+
+## DO optimize for:
+
+* flow
+* focus
+* hierarchy
+* elegant transcript rendering
+* beautiful composer
+* fast command palette
+* restrained color
+* premium startup branding
+
+That is the real difference.
+
+---
+
+# Recommended implementation order
+
+## Phase 1 — quick win
+
+* add theme tokens
+* brighten palette
+* collapse metadata
+* redesign header
+* replace bottom prompt with composer
+* add floating slash palette
+* add startup logo splash
+
+## Phase 2 — structural
+
+* transcript-first layout
+* inline tool cards
+* inline command output cards
+* hide shell behind drawer
+
+## Phase 3 — architecture cleanup
+
+* move UI out of `main.rs`
+* create `AppState`, `Renderer`, `EventLoop`
+* componentize overlays and transcript blocks
+
+## Phase 4 — premium polish
+
+* animations
+* better scrolling
+* better keyboard feel
+* notification toasts
+* approval dialogs
+* richer diff/test cards
+
+---
+
+# Final verdict
+
+**Yes, QUORP can absolutely be made to feel very similar to Claude CLI / Codex CLI.**
+The good news is the underlying stack is already close enough: low-level terminal control, PTY support, VT parsing, async runtime, and rendering-related dependencies are already there. The missing piece is **not capability**. The missing piece is **product-level UI architecture and taste**. ([GitHub][3]) ([GitHub][2])
+
+If you want, next I can do one of two things:
+
+1. **give you a concrete “new QUORP TUI architecture spec”** with modules, state structs, keybindings, event loop, and render passes, or
+2. **mock the exact screen redesign** in detail — header, transcript, composer, slash menu, shell drawer, and startup logo behavior.
+
+[1]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp/src/quorp/tui.rs?utm_source=chatgpt.com "raw.githubusercontent.com"
+[2]: https://github.com/jeppsontaylor/Quorp/blob/main/crates/quorp/src/main.rs?utm_source=chatgpt.com "Quorp/crates/quorp/src/main.rs at main · jeppsontaylor/Quorp · GitHub"
+[3]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp/Cargo.toml?utm_source=chatgpt.com "raw.githubusercontent.com"
+
+
+You’re right. No image. Here’s the code.
+
+I looked at the current TUI path: `run_fullscreen_cli` creates `FullscreenShell`, enters crossterm alternate-screen mode, then repeatedly clears and re-renders the full frame; the current `render()` builds a `SessionFrame` with `TaskRow`, `CommandCard`, and a footer, which is why it feels like a boxed checklist rather than a Claude/Codex-style conversation shell. ([GitHub][1]) The existing renderer also has `render_session_frame()` hardwired around a brand header, “task list”, and full-width command card. ([GitHub][2])
+
+Drop this in as a surgical first pass.
+
+---
+
+## 1. Add `crates/quorp_render/src/brand.rs`
+
+```rust
+//! QUORP brand mark + startup splash.
+//!
+//! This is intentionally terminal-native: ANSI truecolor gradient,
+//! no image protocol dependency, graceful monochrome fallback.
+
+use unicode_width::UnicodeWidthStr;
+
+use crate::caps::ColorCapability;
+use crate::palette::{
+    ACCENT_CYAN, ACCENT_GREEN, ACCENT_VIOLET, ACCENT_YELLOW, BOLD, DIM, FG_TEXT, RESET, Rgb,
+    SHIMMER_COOL, SHIMMER_WARM, lerp_rgb,
+};
+
+const LOGO: &[&str] = &[
+    "  ██████╗  ██╗   ██╗ ██████╗  ██████╗ ██████╗ ",
+    " ██╔═══██╗ ██║   ██║██╔═══██╗ ██╔══██╗██╔══██╗",
+    " ██║   ██║ ██║   ██║██║   ██║ ██████╔╝██████╔╝",
+    " ██║▄▄ ██║ ██║   ██║██║   ██║ ██╔══██╗██╔═══╝ ",
+    " ╚██████╔╝ ╚██████╔╝╚██████╔╝ ██║  ██║██║     ",
+    "  ╚══▀▀═╝   ╚═════╝  ╚═════╝  ╚═╝  ╚═╝╚═╝     ",
+];
+
+const COMPACT_LOGO: &[&str] = &[
+    "  ██████╗ ██╗   ██╗ ██████╗ ██████╗ ██████╗ ",
+    " ██╔═══██╗██║   ██║██╔═══██╗██╔══██╗██╔══██╗",
+    " ██║▄▄ ██║██║   ██║██║   ██║██████╔╝██████╔╝",
+    " ╚██████╔╝╚██████╔╝╚██████╔╝██║  ██║██║     ",
+    "  ╚══▀▀═╝  ╚═════╝  ╚═════╝ ╚═╝  ╚═╝╚═╝     ",
+];
+
+pub fn render_quorp_logo(width: usize, frame_time: f32, color: ColorCapability) -> Vec<String> {
+    let logo = if width < 76 { COMPACT_LOGO } else { LOGO };
+
+    logo.iter()
+        .enumerate()
+        .map(|(row, line)| {
+            let centered = center_plain(line, width);
+            if matches!(color, ColorCapability::NoColor) {
+                centered
+            } else {
+                gradient_line(&centered, row, frame_time)
+            }
+        })
+        .collect()
+}
+
+pub fn render_quorp_boot_screen(
+    width: usize,
+    frame_time: f32,
+    color: ColorCapability,
+    model: &str,
+    cwd: &str,
+    mode: &str,
+) -> Vec<String> {
+    let mut lines = render_quorp_logo(width, frame_time, color);
+
+    lines.push(String::new());
+
+    let tagline = "terminal-native agentic IDE";
+    let meta = format!(
+        "{}  •  {}  •  {}",
+        truncate_plain(model, 36),
+        mode,
+        truncate_plain(cwd, width.saturating_sub(24).max(18))
+    );
+
+    lines.push(center_styled(
+        &paint(tagline, color, ACCENT_YELLOW, true),
+        tagline.width(),
+        width,
+    ));
+    lines.push(center_styled(
+        &paint(&meta, color, FG_TEXT, false),
+        meta.width(),
+        width,
+    ));
+
+    let pulse = match ((frame_time * 8.0) as usize) % 4 {
+        0 => "●○○",
+        1 => "○●○",
+        2 => "○○●",
+        _ => "○●○",
+    };
+
+    let loading = format!("{pulse} booting QUORP runtime");
+    lines.push(center_styled(
+        &paint(&loading, color, ACCENT_GREEN, false),
+        loading.width(),
+        width,
+    ));
+
+    lines
+}
+
+fn gradient_line(line: &str, row: usize, frame_time: f32) -> String {
+    let mut out = String::new();
+    let chars: Vec<char> = line.chars().collect();
+    let denom = chars.len().saturating_sub(1).max(1) as f32;
+
+    for (col, ch) in chars.into_iter().enumerate() {
+        if ch == ' ' {
+            out.push(ch);
+            continue;
+        }
+
+        let wave = ((col as f32 / denom) + frame_time * 0.18 + row as f32 * 0.07) % 1.0;
+        let rgb = if wave < 0.5 {
+            lerp_rgb(SHIMMER_COOL, SHIMMER_WARM, wave * 2.0)
+        } else {
+            lerp_rgb(SHIMMER_WARM, ACCENT_YELLOW, (wave - 0.5) * 2.0)
+        };
+
+        out.push_str(&rgb.fg());
+        out.push(ch);
+    }
+
+    out.push_str(RESET);
+    out
+}
+
+fn paint(text: &str, color: ColorCapability, rgb: Rgb, bold: bool) -> String {
+    if matches!(color, ColorCapability::NoColor) {
+        return text.to_string();
+    }
+
+    if bold {
+        format!("{}{}{}{}", rgb.fg(), BOLD, text, RESET)
+    } else {
+        format!("{}{}{}", rgb.fg(), text, RESET)
+    }
+}
+
+fn center_plain(text: &str, width: usize) -> String {
+    let text_width = text.width();
+    let pad = width.saturating_sub(text_width) / 2;
+    format!("{}{}", " ".repeat(pad), text)
+}
+
+fn center_styled(styled: &str, visible_width: usize, width: usize) -> String {
+    let pad = width.saturating_sub(visible_width) / 2;
+    format!("{}{}", " ".repeat(pad), styled)
+}
+
+fn truncate_plain(value: &str, max_width: usize) -> String {
+    if value.width() <= max_width {
+        return value.to_string();
+    }
+
+    if max_width <= 1 {
+        return "…".to_string();
+    }
+
+    let target = max_width - 1;
+    let mut out = String::new();
+    let mut width = 0;
+
+    for ch in value.chars() {
+        let ch_width = unicode_width::UnicodeWidthChar::width(ch).unwrap_or(0);
+        if width + ch_width > target {
+            break;
+        }
+        out.push(ch);
+        width += ch_width;
+    }
+
+    out.push('…');
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logo_has_real_color_when_supported() {
+        let lines = render_quorp_logo(100, 0.0, ColorCapability::TrueColor);
+        assert!(lines.join("\n").contains("\x1b[38;2"));
+        assert!(lines.join("\n").contains("██████"));
+    }
+
+    #[test]
+    fn logo_is_plain_under_no_color() {
+        let lines = render_quorp_logo(100, 0.0, ColorCapability::NoColor);
+        assert!(!lines.join("\n").contains("\x1b["));
+    }
+}
+```
+
+---
+
+## 2. Add `crates/quorp_render/src/shell_scene.rs`
+
+```rust
+//! Claude/Codex-like fullscreen shell renderer.
+//!
+//! Design goals:
+//! - transcript first
+//! - quiet chrome
+//! - bottom composer gets the visual weight
+//! - active tool/agent work is compact, not a giant full-width box
+//! - no "task list" banner
+
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+
+use crate::brand::render_quorp_logo;
+use crate::caps::ColorCapability;
+use crate::palette::{
+    ACCENT_CYAN, ACCENT_GREEN, ACCENT_RED, ACCENT_VIOLET, ACCENT_YELLOW, BOLD, DIM, FG_TEXT, RESET,
+    Rgb,
+};
+use crate::session::{CommandCard, CommandState};
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ShellLineKind {
+    Hint,
+    User,
+    Assistant,
+    Tool,
+    Status,
+    Warn,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellLine {
+    pub kind: ShellLineKind,
+    pub text: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellSuggestion {
+    pub value: String,
+    pub detail: String,
+    pub description: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellFooter {
+    pub model_provider: String,
+    pub mode_label: String,
+    pub phase: String,
+    pub usage: String,
+}
+
+#[derive(Debug, Clone, PartialEq)]
+pub struct ShellScene {
+    pub show_logo: bool,
+    pub frame_time: f32,
+    pub transcript: Vec<ShellLine>,
+    pub active: Option<CommandCard>,
+    pub composer: String,
+    pub suggestions: Vec<ShellSuggestion>,
+    pub selected_suggestion: usize,
+    pub footer: ShellFooter,
+    pub scroll_offset: usize,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ShellSceneRenderOutput {
+    pub lines: Vec<String>,
+    pub cursor_row: u16,
+    pub cursor_col: u16,
+}
+
+pub fn render_shell_scene(
+    scene: &ShellScene,
+    width: usize,
+    height: usize,
+    color: ColorCapability,
+) -> ShellSceneRenderOutput {
+    let width = width.max(56);
+    let height = height.max(10);
+
+    let mut body = Vec::new();
+
+    if scene.show_logo && height >= 22 {
+        body.extend(render_quorp_logo(width, scene.frame_time, color));
+        body.push(String::new());
+        body.push(center_styled(
+            &paint("Ask anything. Use / for commands.", color, ACCENT_YELLOW, false),
+            "Ask anything. Use / for commands.".width(),
+            width,
+        ));
+        body.push(String::new());
+    }
+
+    for line in &scene.transcript {
+        body.extend(render_transcript_row(line, width, color));
+    }
+
+    if let Some(active) = scene.active.as_ref() {
+        if !matches!(active.state, CommandState::Pending) {
+            if !body.is_empty() {
+                body.push(String::new());
+            }
+            body.extend(render_work_card(active, width, color));
+        }
+    }
+
+    let suggestion_lines = render_suggestions(
+        &scene.suggestions,
+        scene.selected_suggestion,
+        width,
+        color,
+    );
+
+    let composer = render_composer(&scene.composer, width, color);
+    let footer = render_footer(&scene.footer, width, color);
+
+    let reserved = suggestion_lines.len() + composer.lines.len() + 1;
+    let body_height = height.saturating_sub(reserved);
+
+    let visible_body = visible_window(&body, body_height, scene.scroll_offset);
+
+    let mut lines = Vec::new();
+    lines.extend(visible_body);
+
+    while lines.len() < body_height {
+        lines.push(String::new());
+    }
+
+    lines.extend(suggestion_lines);
+
+    let cursor_row = lines.len().saturating_add(1).min(u16::MAX as usize) as u16;
+    let cursor_col = composer.cursor_col;
+
+    lines.extend(composer.lines);
+    lines.push(footer);
+
+    ShellSceneRenderOutput {
+        lines,
+        cursor_row,
+        cursor_col,
+    }
+}
+
+struct ComposerRender {
+    lines: Vec<String>,
+    cursor_col: u16,
+}
+
+fn render_composer(buffer: &str, width: usize, color: ColorCapability) -> ComposerRender {
+    let plain = matches!(color, ColorCapability::NoColor);
+    let (tl, tr, bl, br, h, v) = if plain {
+        ("+", "+", "+", "+", "-", "|")
+    } else {
+        ("╭", "╮", "╰", "╯", "─", "│")
+    };
+
+    let border_color = ACCENT_VIOLET;
+    let inner = width.saturating_sub(4);
+    let prompt = if plain { "> " } else { "❯ " };
+    let input_width = inner.saturating_sub(prompt.width());
+
+    let shown = tail_to_width(buffer, input_width);
+    let shown_width = strip_ansi_width(&shown);
+    let padding = inner.saturating_sub(prompt.width() + shown_width);
+
+    let mut lines = Vec::new();
+
+    lines.push(format!(
+        "{}{}{}",
+        paint(tl, color, border_color, false),
+        paint(&h.repeat(width.saturating_sub(2)), color, border_color, false),
+        paint(tr, color, border_color, false)
+    ));
+
+    let prompt_styled = paint(prompt, color, ACCENT_CYAN, true);
+    lines.push(format!(
+        "{} {}{}{} {}",
+        paint(v, color, border_color, false),
+        prompt_styled,
+        paint(&shown, color, FG_TEXT, false),
+        " ".repeat(padding),
+        paint(v, color, border_color, false),
+    ));
+
+    lines.push(format!(
+        "{}{}{}",
+        paint(bl, color, border_color, false),
+        paint(&h.repeat(width.saturating_sub(2)), color, border_color, false),
+        paint(br, color, border_color, false)
+    ));
+
+    ComposerRender {
+        lines,
+        cursor_col: (2 + prompt.width() + shown_width)
+            .min(u16::MAX as usize) as u16,
+    }
+}
+
+fn render_transcript_row(line: &ShellLine, width: usize, color: ColorCapability) -> Vec<String> {
+    let plain = matches!(color, ColorCapability::NoColor);
+
+    let (glyph, rgb, text_rgb, dim_text) = match line.kind {
+        ShellLineKind::Hint => ("·", ACCENT_VIOLET, FG_TEXT, true),
+        ShellLineKind::User => ("›", ACCENT_CYAN, FG_TEXT, false),
+        ShellLineKind::Assistant => ("✦", ACCENT_GREEN, FG_TEXT, false),
+        ShellLineKind::Tool => ("⎿", ACCENT_YELLOW, FG_TEXT, true),
+        ShellLineKind::Status => ("•", ACCENT_VIOLET, FG_TEXT, true),
+        ShellLineKind::Warn => ("!", ACCENT_RED, ACCENT_RED, false),
+    };
+
+    let prefix = format!("  {glyph} ");
+    let continuation_prefix = "    ";
+    let first_content_width = width.saturating_sub(prefix.width()).max(8);
+    let cont_content_width = width.saturating_sub(continuation_prefix.width()).max(8);
+    let chunks = wrap_plain(&line.text, first_content_width, cont_content_width);
+
+    let mut out = Vec::new();
+
+    for (index, chunk) in chunks.iter().enumerate() {
+        if index == 0 {
+            if plain {
+                out.push(format!("{prefix}{chunk}"));
+            } else {
+                let text = if dim_text {
+                    format!("{DIM}{}{RESET}", chunk)
+                } else {
+                    paint(chunk, color, text_rgb, false)
+                };
+                out.push(format!(
+                    "  {} {}",
+                    paint(glyph, color, rgb, true),
+                    text
+                ));
+            }
+        } else if plain {
+            out.push(format!("{continuation_prefix}{chunk}"));
+        } else {
+            let text = if dim_text {
+                format!("{DIM}{}{RESET}", chunk)
+            } else {
+                paint(chunk, color, text_rgb, false)
+            };
+            out.push(format!("{continuation_prefix}{text}"));
+        }
+    }
+
+    if out.is_empty() {
+        out.push(prefix);
+    }
+
+    out
+}
+
+fn render_work_card(card: &CommandCard, width: usize, color: ColorCapability) -> Vec<String> {
+    let plain = matches!(color, ColorCapability::NoColor);
+    let (tl, mid, bl, v) = if plain {
+        ("+-", "| ", "+-", "| ")
+    } else {
+        ("╭─", "│ ", "╰─", "│ ")
+    };
+
+    let border_color = match card.state {
+        CommandState::Pending => ACCENT_VIOLET,
+        CommandState::Active { .. } => ACCENT_CYAN,
+        CommandState::Passed { .. } => ACCENT_GREEN,
+        CommandState::Failed { .. } => ACCENT_RED,
+    };
+
+    let state = render_command_state(&card.state, color);
+    let usable = width.saturating_sub(4).max(20);
+
+    let mut lines = Vec::new();
+
+    lines.push(format!(
+        "  {} {} {}",
+        paint(tl, color, border_color, false),
+        paint(&truncate_plain(&card.label, 24), color, FG_TEXT, true),
+        state,
+    ));
+
+    lines.push(format!(
+        "  {}{}",
+        paint(mid, color, border_color, false),
+        paint(
+            &truncate_plain(&card.command, usable.saturating_sub(2)),
+            color,
+            FG_TEXT,
+            false
+        ),
+    ));
+
+    if !card.cwd.trim().is_empty() {
+        lines.push(format!(
+            "  {}{}",
+            paint(mid, color, border_color, false),
+            paint(
+                &truncate_plain(&format!("cwd {}", card.cwd), usable.saturating_sub(2)),
+                color,
+                ACCENT_VIOLET,
+                false
+            ),
+        ));
+    }
+
+    if !card.output_summary.trim().is_empty() {
+        lines.push(format!(
+            "  {}{}",
+            paint(mid, color, border_color, false),
+            paint(
+                &truncate_plain(&card.output_summary, usable.saturating_sub(2)),
+                color,
+                FG_TEXT,
+                false
+            ),
+        ));
+    }
+
+    lines.push(format!("  {}", paint(bl, color, border_color, false)));
+    lines
+}
+
+fn render_command_state(state: &CommandState, color: ColorCapability) -> String {
+    match state {
+        CommandState::Pending => paint("ready", color, ACCENT_VIOLET, false),
+        CommandState::Active { frame_time } => {
+            let spinner = match ((*frame_time * 10.0) as usize) % 8 {
+                0 => "⠋",
+                1 => "⠙",
+                2 => "⠹",
+                3 => "⠸",
+                4 => "⠼",
+                5 => "⠴",
+                6 => "⠦",
+                _ => "⠧",
+            };
+            paint(&format!("{spinner} running"), color, ACCENT_CYAN, false)
+        }
+        CommandState::Passed { exit_code, duration } => {
+            paint(&format!("✓ exit={exit_code} {duration}"), color, ACCENT_GREEN, false)
+        }
+        CommandState::Failed { exit_code, duration } => {
+            paint(&format!("✗ exit={exit_code} {duration}"), color, ACCENT_RED, false)
+        }
+    }
+}
+
+fn render_suggestions(
+    suggestions: &[ShellSuggestion],
+    selected: usize,
+    width: usize,
+    color: ColorCapability,
+) -> Vec<String> {
+    suggestions
+        .iter()
+        .take(7)
+        .enumerate()
+        .map(|(index, entry)| {
+            let selected_row = index == selected;
+            let selector = if selected_row { "›" } else { " " };
+
+            let value = truncate_plain(&entry.value, 18);
+            let detail = truncate_plain(&entry.detail, 14);
+            let remaining = width.saturating_sub(28);
+            let description = truncate_plain(&entry.description, remaining);
+
+            if matches!(color, ColorCapability::NoColor) {
+                format!(" {selector} {value:<18} {detail:<14} {description}")
+            } else if selected_row {
+                format!(
+                    " {} {}{}{} {}{}{} {}",
+                    paint(selector, color, ACCENT_YELLOW, true),
+                    ACCENT_CYAN.fg(),
+                    value,
+                    RESET,
+                    ACCENT_VIOLET.fg(),
+                    detail,
+                    RESET,
+                    paint(&description, color, FG_TEXT, false)
+                )
+            } else {
+                format!(
+                    "   {} {} {}",
+                    paint(&format!("{value:<18}"), color, ACCENT_CYAN, false),
+                    paint(&format!("{detail:<14}"), color, ACCENT_VIOLET, false),
+                    paint(&description, color, FG_TEXT, false)
+                )
+            }
+        })
+        .collect()
+}
+
+fn render_footer(footer: &ShellFooter, width: usize, color: ColorCapability) -> String {
+    let plain = matches!(color, ColorCapability::NoColor);
+    let text = format!(
+        "{}  {}  {}  {}",
+        footer.model_provider, footer.mode_label, footer.phase, footer.usage
+    );
+    let text = truncate_plain(&text, width);
+
+    if plain {
+        return text;
+    }
+
+    let mut out = String::new();
+    out.push_str(&ACCENT_CYAN.fg());
+    out.push_str(&truncate_plain(&footer.model_provider, 34));
+    out.push_str(RESET);
+    out.push_str("  ");
+
+    out.push_str(&ACCENT_YELLOW.fg());
+    out.push_str(&truncate_plain(&footer.mode_label, 24));
+    out.push_str(RESET);
+    out.push_str("  ");
+
+    out.push_str(&ACCENT_VIOLET.fg());
+    out.push_str(&truncate_plain(&footer.phase, 28));
+    out.push_str(RESET);
+    out.push_str("  ");
+
+    let used = strip_ansi_width(&out);
+    let remaining = width.saturating_sub(used);
+    out.push_str(&paint(
+        &truncate_plain(&footer.usage, remaining),
+        color,
+        FG_TEXT,
+        false,
+    ));
+
+    truncate_ansiish(&out, width)
+}
+
+fn visible_window(lines: &[String], height: usize, scroll_offset: usize) -> Vec<String> {
+    if height == 0 {
+        return Vec::new();
+    }
+
+    if lines.len() <= height {
+        return lines.to_vec();
+    }
+
+    if scroll_offset == 0 {
+        return lines[lines.len().saturating_sub(height)..].to_vec();
+    }
+
+    let max_scroll = lines.len().saturating_sub(height);
+    let scroll_offset = scroll_offset.min(max_scroll);
+    let end = lines.len().saturating_sub(scroll_offset);
+    let start = end.saturating_sub(height);
+
+    lines[start..end].to_vec()
+}
+
+fn wrap_plain(text: &str, first_width: usize, continuation_width: usize) -> Vec<String> {
+    let mut chunks = Vec::new();
+    let mut current = String::new();
+    let mut current_width = 0usize;
+    let mut limit = first_width.max(1);
+
+    for word in text.split_whitespace() {
+        let word_width = word.width();
+        let spacer = usize::from(!current.is_empty());
+
+        if current_width + spacer + word_width > limit && !current.is_empty() {
+            chunks.push(current);
+            current = String::new();
+            current_width = 0;
+            limit = continuation_width.max(1);
+        }
+
+        if !current.is_empty() {
+            current.push(' ');
+            current_width += 1;
+        }
+
+        if word_width > limit {
+            for ch in word.chars() {
+                let ch_width = ch.width().unwrap_or(0);
+                if current_width + ch_width > limit && !current.is_empty() {
+                    chunks.push(current);
+                    current = String::new();
+                    current_width = 0;
+                    limit = continuation_width.max(1);
+                }
+                current.push(ch);
+                current_width += ch_width;
+            }
+        } else {
+            current.push_str(word);
+            current_width += word_width;
+        }
+    }
+
+    if !current.is_empty() {
+        chunks.push(current);
+    }
+
+    if chunks.is_empty() {
+        chunks.push(String::new());
+    }
+
+    chunks
+}
+
+fn tail_to_width(text: &str, max_width: usize) -> String {
+    if text.width() <= max_width {
+        return text.to_string();
+    }
+
+    if max_width <= 1 {
+        return "…".to_string();
+    }
+
+    let target = max_width - 1;
+    let mut out = String::new();
+    let mut width = 0usize;
+
+    for ch in text.chars().rev() {
+        let ch_width = ch.width().unwrap_or(0);
+        if width + ch_width > target {
+            break;
+        }
+        out.insert(0, ch);
+        width += ch_width;
+    }
+
+    format!("…{out}")
+}
+
+fn truncate_plain(text: &str, max_width: usize) -> String {
+    if text.width() <= max_width {
+        return text.to_string();
+    }
+
+    if max_width <= 1 {
+        return "…".to_string();
+    }
+
+    let target = max_width - 1;
+    let mut out = String::new();
+    let mut width = 0usize;
+
+    for ch in text.chars() {
+        let ch_width = ch.width().unwrap_or(0);
+        if width + ch_width > target {
+            break;
+        }
+        out.push(ch);
+        width += ch_width;
+    }
+
+    out.push('…');
+    out
+}
+
+fn truncate_ansiish(text: &str, max_width: usize) -> String {
+    if strip_ansi_width(text) <= max_width {
+        return text.to_string();
+    }
+
+    // Conservative fallback: strip styling only when truncating a complex line.
+    truncate_plain(&strip_ansi(text), max_width)
+}
+
+fn strip_ansi(text: &str) -> String {
+    let mut out = String::new();
+    let mut in_escape = false;
+
+    for ch in text.chars() {
+        if in_escape {
+            if ch == 'm' {
+                in_escape = false;
+            }
+            continue;
+        }
+
+        if ch == '\x1b' {
+            in_escape = true;
+            continue;
+        }
+
+        out.push(ch);
+    }
+
+    out
+}
+
+fn strip_ansi_width(text: &str) -> usize {
+    strip_ansi(text).width()
+}
+
+fn paint(text: &str, color: ColorCapability, rgb: Rgb, bold: bool) -> String {
+    if matches!(color, ColorCapability::NoColor) {
+        return text.to_string();
+    }
+
+    if bold {
+        format!("{}{}{}{}", rgb.fg(), BOLD, text, RESET)
+    } else {
+        format!("{}{}{}", rgb.fg(), text, RESET)
+    }
+}
+
+fn center_styled(styled: &str, visible_width: usize, width: usize) -> String {
+    let pad = width.saturating_sub(visible_width) / 2;
+    format!("{}{}", " ".repeat(pad), styled)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn composer_places_cursor_after_buffer() {
+        let scene = ShellScene {
+            show_logo: false,
+            frame_time: 0.0,
+            transcript: vec![],
+            active: None,
+            composer: "hello".into(),
+            suggestions: vec![],
+            selected_suggestion: 0,
+            footer: ShellFooter {
+                model_provider: "qwen".into(),
+                mode_label: "Act".into(),
+                phase: "idle".into(),
+                usage: "cwd /repo".into(),
+            },
+            scroll_offset: 0,
+        };
+
+        let rendered = render_shell_scene(&scene, 80, 20, ColorCapability::NoColor);
+        assert_eq!(rendered.cursor_row, 18);
+        assert!(rendered.lines.join("\n").contains("> hello"));
+    }
+
+    #[test]
+    fn color_renderer_uses_ansi() {
+        let scene = ShellScene {
+            show_logo: true,
+            frame_time: 0.0,
+            transcript: vec![ShellLine {
+                kind: ShellLineKind::User,
+                text: "fix the renderer".into(),
+            }],
+            active: None,
+            composer: String::new(),
+            suggestions: vec![],
+            selected_suggestion: 0,
+            footer: ShellFooter {
+                model_provider: "qwen".into(),
+                mode_label: "Act".into(),
+                phase: "idle".into(),
+                usage: "cwd /repo".into(),
+            },
+            scroll_offset: 0,
+        };
+
+        let rendered = render_shell_scene(&scene, 100, 30, ColorCapability::TrueColor);
+        assert!(rendered.lines.join("\n").contains("\x1b[38;2"));
+    }
+}
+```
+
+---
+
+## 3. Update `crates/quorp_render/src/quorp_render.rs`
+
+Add the two modules and exports:
+
+```rust
+pub mod brand;
+pub mod shell_scene;
+```
+
+Then add these exports near the existing `pub use` lines:
+
+```rust
+pub use brand::{render_quorp_boot_screen, render_quorp_logo};
+pub use shell_scene::{
+    ShellFooter, ShellLine, ShellLineKind, ShellScene, ShellSceneRenderOutput, ShellSuggestion,
+    render_shell_scene,
+};
+```
+
+---
+
+## 4. Patch `crates/quorp/src/main.rs`
+
+### A. In `run_fullscreen_cli`, render the startup logo after entering fullscreen
+
+Find this:
+
+```rust
+let _terminal = FullscreenTerminalGuard::enter()?;
+```
+
+Replace with this:
+
+```rust
+let _terminal = FullscreenTerminalGuard::enter()?;
+render_fullscreen_boot_logo(&shell)?;
+```
+
+Add this function near `FullscreenTerminalGuard`:
+
+```rust
+fn render_fullscreen_boot_logo(shell: &FullscreenShell) -> anyhow::Result<()> {
+    use std::io::{self, Write as _};
+
+    if std::env::var_os("QUORP_NO_SPLASH").is_some() {
+        return Ok(());
+    }
+
+    let mut stdout = io::stdout();
+
+    for frame in 0..14 {
+        let (width, height) = terminal_size().unwrap_or((120, 40));
+        let width = usize::from(width);
+        let height = usize::from(height);
+
+        let mode = if matches!(shell.run_mode, quorp_core::RunMode::Plan) {
+            "Plan"
+        } else {
+            "Act"
+        };
+
+        let lines = quorp_render::render_quorp_boot_screen(
+            width,
+            frame as f32 * 0.11,
+            shell.color,
+            &shell.model,
+            &shell.workspace_root.display().to_string(),
+            mode,
+        );
+
+        let top = height.saturating_sub(lines.len()) / 2;
+
+        execute!(stdout, MoveTo(0, 0), Clear(ClearType::All))?;
+
+        for (index, line) in lines.iter().enumerate() {
+            execute!(stdout, MoveTo(0, (top + index).min(u16::MAX as usize) as u16))?;
+            write!(stdout, "{line}")?;
+        }
+
+        stdout.flush()?;
+        thread::sleep(Duration::from_millis(34));
+    }
+
+    Ok(())
+}
+```
+
+### B. Replace the bad first-run feed copy
+
+In `FullscreenShell::new`, replace the three current `feed.push_back(...)` calls with:
+
+```rust
+feed.push_back(quorp_render::TaskRow {
+    label: "Ask Quorp to edit, explain, test, or refactor this repo.".to_string(),
+    state: quorp_render::TaskState::Active,
+});
+feed.push_back(quorp_render::TaskRow {
+    label: "/ opens commands · ↑ recalls prompts · Ctrl+C exits".to_string(),
+    state: quorp_render::TaskState::Done,
+});
+feed.push_back(quorp_render::TaskRow {
+    label: format!("cwd {}", workspace_root.display()),
+    state: quorp_render::TaskState::Done,
+});
+```
+
+Also change the idle command card summary from:
+
+```rust
+output_summary: "use /help for local shell commands".to_string(),
+```
+
+to:
+
+```rust
+output_summary: "ready".to_string(),
+```
+
+### C. Replace `FullscreenShell::render`
+
+Replace the entire existing `fn render(&mut self, width: usize, height: usize) -> ShellRenderOutput` with this:
+
+```rust
+fn render(&mut self, width: usize, height: usize) -> ShellRenderOutput {
+    let command_card = if let Some(running_worker) = self.running_worker.as_ref() {
+        let mut card = self.command_card.clone();
+        card.state = quorp_render::CommandState::Active {
+            frame_time: running_worker.start_time.elapsed().as_secs_f32(),
+        };
+        card
+    } else {
+        self.command_card.clone()
+    };
+
+    let active = if matches!(command_card.state, quorp_render::CommandState::Pending) {
+        None
+    } else {
+        Some(command_card)
+    };
+
+    let suggestions = if self.composer.suggestions_visible() && self.composer.buffer().starts_with('/') {
+        self.composer
+            .suggestions(&self.registry)
+            .into_iter()
+            .map(|entry| quorp_render::ShellSuggestion {
+                value: entry.value,
+                detail: entry.detail,
+                description: entry.description,
+            })
+            .collect::<Vec<_>>()
+    } else {
+        Vec::new()
+    };
+
+    let transcript = self
+        .feed
+        .iter()
+        .map(|row| {
+            let text = row.label.clone();
+            let lower = text.to_lowercase();
+
+            let kind = if lower.starts_with("you:") {
+                quorp_render::ShellLineKind::User
+            } else if lower.starts_with("error")
+                || lower.starts_with("failure")
+                || lower.contains(" panicked")
+                || lower.contains(" failed")
+            {
+                quorp_render::ShellLineKind::Warn
+            } else if lower.starts_with("run ")
+                || lower.starts_with("status")
+                || lower.starts_with("cwd ")
+                || lower.contains("mode updated")
+                || lower.contains("model switched")
+                || lower.contains("provider switched")
+            {
+                quorp_render::ShellLineKind::Status
+            } else if matches!(row.state, quorp_render::TaskState::Active) {
+                quorp_render::ShellLineKind::Tool
+            } else if matches!(row.state, quorp_render::TaskState::Warn) {
+                quorp_render::ShellLineKind::Warn
+            } else if text.starts_with('/') || text.contains("commands") {
+                quorp_render::ShellLineKind::Hint
+            } else {
+                quorp_render::ShellLineKind::Assistant
+            };
+
+            quorp_render::ShellLine { kind, text }
+        })
+        .collect::<Vec<_>>();
+
+    let frame_time = self
+        .running_worker
+        .as_ref()
+        .map(|running_worker| running_worker.start_time.elapsed().as_secs_f32())
+        .unwrap_or(0.0);
+
+    let show_logo = self.running_worker.is_none()
+        && self.scroll_offset == 0
+        && self.feed.len() <= 3
+        && self.composer.buffer().trim().is_empty();
+
+    let scene = quorp_render::ShellScene {
+        show_logo,
+        frame_time,
+        transcript,
+        active,
+        composer: self.composer.buffer().to_string(),
+        suggestions,
+        selected_suggestion: self.composer.selected(),
+        footer: quorp_render::ShellFooter {
+            model_provider: format!("{} · {}", self.model, self.provider_label),
+            mode_label: format!("{:?}/{:?}/{:?}", self.run_mode, self.permission_mode, self.sandbox),
+            phase: self.status_line.clone(),
+            usage: format!("cwd {}", self.workspace_root.display()),
+        },
+        scroll_offset: self.scroll_offset,
+    };
+
+    let rendered = quorp_render::render_shell_scene(&scene, width, height, self.color);
+
+    ShellRenderOutput {
+        lines: rendered.lines,
+        cursor_row: rendered.cursor_row,
+        cursor_col: rendered.cursor_col,
+    }
+}
+```
+
+### D. Keep real scrollback instead of only 8 rows
+
+Replace `push_feed` with this:
+
+```rust
+fn push_feed(&mut self, label: String, state: quorp_render::TaskState) {
+    const MAX_TRANSCRIPT_ROWS: usize = 400;
+
+    if self.feed.len() >= MAX_TRANSCRIPT_ROWS {
+        self.feed.pop_front();
+    }
+
+    self.feed.push_back(quorp_render::TaskRow { label, state });
+}
+```
+
+### E. Delete these old helpers from `main.rs`
+
+After the new renderer owns suggestions and cursor math, delete the old private functions:
+
+```rust
+fn render_shell_suggestion_panel(...)
+fn buffer_width_to_cursor(...)
+```
+
+---
+
+## 5. What this changes immediately
+
+The first screen becomes a centered animated color QUORP logo, then the idle shell becomes transcript-first with a bottom composer. No more giant “task list” heading. No more full-width “agent session pending” box. Active work shows as a compact running card only when something is actually running.
+
+I couldn’t run `cargo check` here because the sandbox couldn’t resolve GitHub for a clone, so apply this and compile locally; the code is written directly against the functions/types present in the repo paths above.
+
+[1]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/refs/heads/main/crates/quorp/src/main.rs "raw.githubusercontent.com"
+[2]: https://github.com/jeppsontaylor/Quorp/raw/refs/heads/main/crates/quorp_render/src/session.rs "raw.githubusercontent.com"
+

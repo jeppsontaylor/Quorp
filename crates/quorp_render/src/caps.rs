@@ -12,8 +12,18 @@ pub enum ColorCapability {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum GraphicsCapability {
+    Kitty,
+    Iterm2,
+    Sixel,
+    AnsiBlocks,
+    None,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct RenderProfile {
     pub color: ColorCapability,
+    pub graphics: GraphicsCapability,
     pub osc8_hyperlinks: bool,
     pub bracketed_paste: bool,
     pub focus_events: bool,
@@ -24,6 +34,7 @@ impl RenderProfile {
         let no_color = env::var_os("NO_COLOR").is_some();
         let colorterm = env::var("COLORTERM").unwrap_or_default();
         let term = env::var("TERM").unwrap_or_default();
+        let term_program = env::var("TERM_PROGRAM").unwrap_or_default();
 
         let color = if no_color {
             ColorCapability::NoColor
@@ -36,9 +47,26 @@ impl RenderProfile {
         } else {
             ColorCapability::Ansi16
         };
+        let graphics = if matches!(color, ColorCapability::NoColor) {
+            GraphicsCapability::None
+        } else if term.contains("kitty") || env::var_os("KITTY_WINDOW_ID").is_some() {
+            GraphicsCapability::Kitty
+        } else if term_program.contains("iTerm") {
+            GraphicsCapability::Iterm2
+        } else if term.contains("sixel") {
+            GraphicsCapability::Sixel
+        } else if matches!(
+            color,
+            ColorCapability::TrueColor | ColorCapability::Ansi256 | ColorCapability::Ansi16
+        ) {
+            GraphicsCapability::AnsiBlocks
+        } else {
+            GraphicsCapability::None
+        };
 
         Self {
             color,
+            graphics,
             osc8_hyperlinks: !matches!(color, ColorCapability::NoColor),
             bracketed_paste: !matches!(color, ColorCapability::NoColor),
             focus_events: matches!(color, ColorCapability::TrueColor),
@@ -56,6 +84,7 @@ mod tests {
         // instead, sanity check that NoColor is non-truecolor.
         let profile = RenderProfile {
             color: ColorCapability::NoColor,
+            graphics: GraphicsCapability::None,
             osc8_hyperlinks: false,
             bracketed_paste: false,
             focus_events: false,

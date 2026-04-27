@@ -1,0 +1,250 @@
+I studied the current TUI path from the repo source and your screenshot. I did **not** run the repo locally, so this is a source-review recommendation, not a measured runtime profile.
+
+## Diagnosis
+
+This is not mainly a color/palette problem. It is an **interaction-model problem**.
+
+Right now Quorp is trying to look “terminal-native,” but the fullscreen path behaves like a crude dashboard: it enters the alternate screen, hides the cursor, captures mouse, clears the whole terminal, repaints rows, and polls input in a loop. That path is inside `run_fullscreen_cli`, via `FullscreenTerminalGuard::enter`, `EnterAlternateScreen`, `EnableMouseCapture`, `Clear(ClearType::All)`, and repeated full-screen redraws. ([GitHub][1])
+
+The inline path is closer to the right idea, but it still renders a framed “session dashboard” with a hard-coded `QUORP // title`, `task list`, and command cards. The render layer’s own comments say it is “scrollback-native” and produces committed terminal text plus one active command frame, but the actual fullscreen experience contradicts that and feels boxed-in and synthetic. ([GitHub][2])
+
+There is also a very specific bug in the experience flow: when `use_fullscreen` is true, `run_inline_cli` returns into `run_fullscreen_cli` **before** calling `print_inline_startup_splash`, so the fullscreen mode never gets the boot splash path at all. ([GitHub][1])
+
+Finally, the current “brand” is text-first. `quorp_term::startup_card` literally formats `quorp\nworkspace...\nmodel...\nsandbox...`, and `render_card` emits small ANSI labels like `plan`, `tool`, `shell`, `diff`, `approval`, and `receipt`. ([GitHub][3]) The repo already has real visual assets, including `assets/images/quorp-mascot-header.gif` and `assets/images/quorp-mascot.png`, but they are not wired into the terminal boot experience. ([GitHub API][4])
+
+## Best recommendation
+
+**Stop trying to make the current fullscreen dashboard prettier. Replace it with a Claude/Codex-style scrollback-first agent transcript, plus a small live region and a serious logo renderer.**
+
+Claude Code and Codex CLI are both terminal coding-agent products: Claude Code is positioned as a full-featured terminal CLI for editing files, running commands, and managing projects, while Codex CLI is OpenAI’s local terminal coding agent that can read, change, and run code in the selected directory. ([Claude API Docs][5]) The “felt” quality to copy is not the exact chrome; it is the calm, legible, persistent terminal conversation: user prompt, assistant stream, compact tool cards, approvals, diffs, tests, and final summary, all in scrollback with minimal ceremony.
+
+### Target feel
+
+The opening should feel like this:
+
+```text
+[actual colored QUORP mascot/logo if terminal supports images]
+
+QUORP
+qwen3-coder • NVIDIA • Act • tmp-copy sandbox • / for commands
+
+› Can you write a simple test.py demo?
+
+● Thinking
+  scanning workspace
+  preparing edit
+
+✦ Created test.py
+  ./test.py
+
+▶ python test.py
+  hello from quorp
+
+✓ Done
+```
+
+Not this:
+
+```text
+QUORP // quorp · fullscreen shell
+task list
+* status thinking
+* phase thinking
+...
+╭────────────────────────────────────────────╮
+│ agent session failed exit=1 ...            │
+╰────────────────────────────────────────────╯
+```
+
+## Concrete architecture change
+
+Build a new UI layer around **events and blocks**, not “task rows.”
+
+Create something like:
+
+```rust
+enum TranscriptBlock {
+    Logo(LogoBlock),
+    UserPrompt(String),
+    AssistantText { text: String, streaming: bool },
+    Thinking { label: String, elapsed_ms: u64 },
+    ToolCall { name: String, args_summary: String, state: ToolState },
+    Command { command: String, cwd: PathBuf, output: Vec<String>, state: CommandState },
+    FileEdit { path: PathBuf, summary: String },
+    Diff { files: Vec<DiffFileSummary> },
+    ApprovalRequest(PermissionPrompt),
+    Error(String),
+    FinalReceipt { result_dir: PathBuf, tokens: u64, duration_ms: u64 },
+}
+```
+
+Then render those blocks into either:
+
+1. **Scrollback mode**, the default and recommended mode.
+2. **Fullscreen mode**, optional, but still visually a transcript with a composer, not a boxed task dashboard.
+
+The source already has `ChatUiEvent` variants for assistant deltas, command output, command finished, stream finished, and errors. ([GitHub][6]) Extend that event stream rather than inventing a separate TUI state machine.
+
+## Replace the fullscreen shell
+
+The current `FullscreenShell` stores a `feed: VecDeque<TaskRow>`, a single `command_card`, a composer, scroll offset, and a running worker. It pushes things like “slash commands open instantly with /,” “cwd ...,” and “run started ...” into task rows. ([GitHub][1]) That is why it feels like a debug dashboard instead of an agent conversation.
+
+Change this:
+
+```rust
+feed: VecDeque<TaskRow>,
+command_card: CommandCard,
+status_line: String,
+```
+
+to this:
+
+```rust
+transcript: Vec<TranscriptBlock>,
+live_block: Option<TranscriptBlock>,
+composer: ComposerState,
+status: SessionStatus,
+```
+
+Then only repaint the live region. Do **not** clear the whole terminal on every tick unless the user explicitly chooses fullscreen mode. In scrollback mode, append committed blocks permanently, and reserve a small bottom live region for “thinking,” active command output, and the composer.
+
+## Logo plan: actual image first, ANSI art fallback
+
+Use the existing mascot assets. The repo already has both a static PNG and an animated header GIF. ([GitHub API][4]) The right approach is a three-tier renderer:
+
+1. **Terminal image protocol**, best case. Detect Kitty graphics, iTerm2 inline images, or Sixel. Kitty’s protocol is specifically designed to render raster graphics in terminals, iTerm2 supports inline images including animated GIFs, and Sixel is a bitmap graphics format supported by compatible terminals. ([Kovid Goyal's Software Projects][7])
+2. **ANSI half-block logo**, fallback. Downsample `quorp-mascot.png` to around 32×12 cells and render with `▀`, `▄`, `█`, and truecolor foreground/background pairs. The project already depends on the `image` crate in the main `quorp` crate, so this is practical without a giant new dependency. ([GitHub][8])
+3. **Minimal wordmark**, final fallback. Only use text if images and color are unavailable.
+
+Add a module like:
+
+```rust
+crates/quorp_render/src/logo.rs
+```
+
+with:
+
+```rust
+pub enum LogoMode {
+    TerminalImage,
+    AnsiHalfBlock,
+    Wordmark,
+}
+
+pub struct LogoRenderOptions {
+    pub max_width_cells: u16,
+    pub max_height_cells: u16,
+    pub animate_once: bool,
+}
+
+pub fn detect_logo_mode(profile: RenderProfile) -> LogoMode;
+pub fn render_logo(options: LogoRenderOptions, profile: RenderProfile) -> anyhow::Result<String>;
+```
+
+Then call it **before** entering the session loop. For fullscreen, render the logo during a short boot phase before the composer appears. For scrollback, print it once and never redraw it.
+
+## What to change first
+
+1. **Make scrollback the default.** Keep `--tui fullscreen`, but make `auto` choose scrollback unless the user explicitly requests fullscreen. The repo already has `CliTuiMode::{Auto, Fullscreen, Scrollback}`. ([GitHub][1])
+2. **Delete the “task list” startup frame.** The current `render_session_frame` hard-codes a brand header, task list, command cards, and footer. ([GitHub][9]) Replace it with logo → one-line session context → composer.
+3. **Move TUI code out of `main.rs`.** `main.rs` is carrying CLI parsing, run logic, inline task execution, fullscreen shell, rendering, and tests. Put the session UI in `crates/quorp/src/quorp/session_ui/` or a new `crates/quorp_tui`.
+4. **Introduce block rendering snapshots.** Add golden tests for every block: user prompt, assistant text, command running, command success, command failure, permission prompt, diff summary, final receipt.
+5. **Render real file edits and diffs.** The current card model has `DiffPreview`, but the fullscreen feel does not show a premium diff experience. Make edits a first-class transcript block.
+6. **Polish the composer.** Bottom prompt should feel like `›`, not `quorp>_`. Use subtle slash completions, command history, multiline paste, and `Esc` to clear.
+
+## Specific UI style rules
+
+Use less chrome. No giant bordered box around the whole app. No red rectangle unless there is a true blocking failure. No “task list” label. No constant “cwd” repetition. No full-screen clearing in default mode.
+
+Use these visual primitives instead:
+
+```text
+› user prompt
+● thinking / planning
+◇ tool queued
+▶ command running
+✓ success
+✕ failure
+✎ file edit
+⚠ approval required
+```
+
+Keep metadata dim:
+
+```text
+qwen3-coder • tmp-copy • /help
+```
+
+Keep status alive but quiet:
+
+```text
+● thinking  8.7s  ctx 12k/64k
+```
+
+For commands:
+
+```text
+▶ cargo test -p quorp_term
+  running 47 tests
+  test slash_commands ... ok
+
+✓ cargo test -p quorp_term  1.42s
+```
+
+For failures:
+
+```text
+✕ cargo test -p quorp_term  exit 101
+  failure: expected `Sandbox(Some(TmpCopy))`
+  open: crates/quorp_term/src/lib.rs
+```
+
+## The “brilliant QUORP logo load”
+
+Do this as a boot sequence, not as decorative clutter.
+
+```text
+[mascot/logo renders here]
+
+QUORP
+terminal-native agent runtime
+
+✓ workspace  /Users/bentaylor/Code/memo
+✓ provider   NVIDIA
+✓ model      qwen/qwen3-coder-480b-a35b-instruct
+✓ sandbox    tmp-copy
+✓ commands   /plan /act /diff /apply /status
+```
+
+The existing splash module is already a checklist renderer, but it is just text rows. ([GitHub][10]) Keep the checklist, prepend a real logo, and shorten the copy.
+
+## Strong recommendation on dependencies
+
+Do **not** add a heavy GUI-like framework just to make boxes nicer. You can keep `crossterm`, but treat it as a terminal control layer, not as an excuse to redraw the whole screen. The project already uses `crossterm`, `image`, `font8x8`, `vt100`, and `unicode-width`; that is enough for a high-quality terminal UI. ([GitHub][8])
+
+Only add a dependency if it directly improves core feel:
+
+```toml
+ratatui = optional, only if fullscreen remains
+viuer or custom terminal-image = only if it supports kitty/iterm/sixel cleanly
+```
+
+My preference: **custom renderer for scrollback**, optional `ratatui` only for a later advanced fullscreen mode.
+
+## The north-star PR title
+
+> Replace dashboard TUI with scrollback-native agent transcript and image-capable QUORP boot logo
+
+That is the move. Not “improve colors.” Not “add more borders.” Not “make task list prettier.” The current code needs a felt-experience reset: persistent transcript, calm tool events, excellent composer, serious startup branding, and actual terminal image support.
+
+[1]: https://github.com/jeppsontaylor/Quorp/raw/refs/heads/main/crates/quorp/src/main.rs "raw.githubusercontent.com"
+[2]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_render/src/quorp_render.rs "raw.githubusercontent.com"
+[3]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_term/src/lib.rs "raw.githubusercontent.com"
+[4]: https://api.github.com/repos/jeppsontaylor/Quorp/contents/assets/images?ref=main "api.github.com"
+[5]: https://docs.anthropic.com/claude-code?utm_source=chatgpt.com "Claude Code overview - Claude Code Docs"
+[6]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp/src/quorp/tui.rs "raw.githubusercontent.com"
+[7]: https://sw.kovidgoyal.net/kitty/graphics-protocol/?utm_source=chatgpt.com "Terminal graphics protocol - kitty"
+[8]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp/Cargo.toml "raw.githubusercontent.com"
+[9]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_render/src/session.rs "raw.githubusercontent.com"
+[10]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_render/src/splash.rs "raw.githubusercontent.com"
+

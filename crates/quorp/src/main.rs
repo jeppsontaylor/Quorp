@@ -1183,12 +1183,10 @@ fn print_inline_startup_splash(
 
 fn inline_prompt(color: quorp_render::ColorCapability) -> String {
     if matches!(color, quorp_render::ColorCapability::NoColor) {
-        return "quorp> ".to_string();
+        return "> ".to_string();
     }
     format!(
-        "{}quorp{} {}>_{} ",
-        quorp_render::palette::ACCENT_CYAN.fg(),
-        quorp_render::palette::RESET,
+        "{}>{} ",
         quorp_render::palette::ACCENT_YELLOW.fg(),
         quorp_render::palette::RESET
     )
@@ -1613,11 +1611,11 @@ fn run_fullscreen_cli(
 
     let workspace_root = launch.workspace_root.clone();
     let _loaded = load_workspace_settings(&workspace_root)?;
-    let color = quorp_render::RenderProfile::detect_from_env().color;
+    let profile = quorp_render::RenderProfile::detect_from_env();
     let mut shell = FullscreenShell::new(
         launch,
         workspace_root,
-        color,
+        profile,
         run_mode,
         permission_mode,
         sandbox,
@@ -1706,14 +1704,14 @@ impl Drop for FullscreenTerminalGuard {
 struct FullscreenShell {
     launch: SessionLaunchConfig,
     workspace_root: PathBuf,
-    color: quorp_render::ColorCapability,
+    profile: quorp_render::RenderProfile,
     run_mode: quorp_core::RunMode,
     permission_mode: quorp_core::PermissionMode,
     sandbox: quorp_core::SandboxMode,
     registry: quorp_slash::Registry,
     composer: crate::quorp::inline_composer::ComposerState,
-    feed: VecDeque<quorp_render::TaskRow>,
-    command_card: quorp_render::CommandCard,
+    transcript: VecDeque<quorp_render::TranscriptItem>,
+    active_command_index: Option<usize>,
     running_worker: Option<RunningPromptSession>,
     queued_prompt: Option<String>,
     prompt_history: Vec<String>,
@@ -1722,8 +1720,8 @@ struct FullscreenShell {
     exit_requested: bool,
     model: String,
     provider_label: String,
-    provider_context: String,
     status_line: String,
+    boot_started: Instant,
 }
 
 struct RunningPromptSession {
@@ -1743,7 +1741,7 @@ impl FullscreenShell {
     fn new(
         launch: SessionLaunchConfig,
         workspace_root: PathBuf,
-        color: quorp_render::ColorCapability,
+        profile: quorp_render::RenderProfile,
         run_mode: quorp_core::RunMode,
         permission_mode: quorp_core::PermissionMode,
         sandbox: quorp_core::SandboxMode,
@@ -1758,44 +1756,22 @@ impl FullscreenShell {
             .provider
             .map(|provider| provider.label().to_string())
             .unwrap_or_else(|| "provider".to_string());
-        let provider_context = launch
-            .base_url
-            .as_deref()
-            .filter(|value| !value.trim().is_empty())
-            .map(|value| format!("base-url {value}"))
-            .unwrap_or_else(|| provider_label.clone());
-        let mut feed = VecDeque::new();
-        feed.push_back(quorp_render::TaskRow {
-            label: "type a task and press Enter".to_string(),
-            state: quorp_render::TaskState::Active,
+        let mut transcript = VecDeque::new();
+        transcript.push_back(quorp_render::TranscriptItem::System {
+            text: "type a task, or press / for commands".to_string(),
         });
-        feed.push_back(quorp_render::TaskRow {
-            label: "slash commands open instantly with /".to_string(),
-            state: quorp_render::TaskState::Done,
-        });
-        feed.push_back(quorp_render::TaskRow {
-            label: format!("cwd {}", workspace_root.display()),
-            state: quorp_render::TaskState::Done,
-        });
-        let command_card = quorp_render::CommandCard {
-            label: "agent session".to_string(),
-            command: "awaiting prompt".to_string(),
-            cwd: workspace_root.display().to_string(),
-            state: quorp_render::CommandState::Pending,
-            output_summary: "use /help for local shell commands".to_string(),
-        };
 
         Self {
             launch,
             workspace_root,
-            color,
+            profile,
             run_mode,
             permission_mode,
             sandbox,
             registry: quorp_slash::Registry::new(),
             composer: crate::quorp::inline_composer::ComposerState::default(),
-            feed,
-            command_card,
+            transcript,
+            active_command_index: None,
             running_worker: None,
             queued_prompt: None,
             prompt_history: Vec::new(),
@@ -1804,8 +1780,8 @@ impl FullscreenShell {
             exit_requested: false,
             model,
             provider_label,
-            provider_context,
             status_line: "idle".to_string(),
+            boot_started: Instant::now(),
         }
     }
 
@@ -1816,7 +1792,9 @@ impl FullscreenShell {
         if self.running_worker.is_some() {
             self.queued_prompt = Some(prompt.clone());
             self.status_line = "queued follow-up prompt".to_string();
-            self.push_feed(prompt, quorp_render::TaskState::Pending);
+            self.push_transcript(quorp_render::TranscriptItem::System {
+                text: format!("queued follow-up: {}", truncate_for_frame(&prompt, 96)),
+            });
             return Ok(());
         }
         self.prompt_history.push(prompt.clone());
@@ -1873,21 +1851,11 @@ impl FullscreenShell {
             start_time: Instant::now(),
             command_output: VecDeque::new(),
         });
-        self.command_card = quorp_render::CommandCard {
-            label: "agent session".to_string(),
-            command: prompt,
-            cwd: self.workspace_root.display().to_string(),
-            state: quorp_render::CommandState::Active { frame_time: 0.0 },
-            output_summary: "working…".to_string(),
-        };
+        self.push_transcript(quorp_render::TranscriptItem::Thinking {
+            label: "thinking".to_string(),
+        });
+        self.active_command_index = None;
         self.status_line = "running".to_string();
-        self.push_feed(
-            format!(
-                "run started · model {} · {}",
-                self.model, self.provider_context
-            ),
-            quorp_render::TaskState::Active,
-        );
         Ok(())
     }
 
@@ -1896,14 +1864,13 @@ impl FullscreenShell {
         if input.is_empty() {
             return Ok(());
         }
-        self.push_feed(
-            format!("you: {}", truncate_for_frame(&input, 96)),
-            quorp_render::TaskState::Done,
-        );
         if let Some(command) = quorp_term::parse_slash_command(&input) {
             self.handle_slash_command(command)?;
             return Ok(());
         }
+        self.push_transcript(quorp_render::TranscriptItem::User {
+            text: input.clone(),
+        });
         self.start_prompt(input)
     }
 
@@ -1927,19 +1894,21 @@ impl FullscreenShell {
                     "mode updated · run={:?} permissions={:?} sandbox={:?}",
                     self.run_mode, self.permission_mode, self.sandbox
                 );
-                self.push_feed(self.status_line.clone(), quorp_render::TaskState::Done);
+                self.push_transcript(quorp_render::TranscriptItem::System {
+                    text: self.status_line.clone(),
+                });
             }
             quorp_term::SlashCommand::Clear => {
-                self.feed.clear();
+                self.transcript.clear();
+                self.active_command_index = None;
                 self.scroll_offset = 0;
-                self.push_feed(
-                    "cleared transcript".to_string(),
-                    quorp_render::TaskState::Done,
-                );
+                self.push_transcript(quorp_render::TranscriptItem::System {
+                    text: "cleared transcript".to_string(),
+                });
             }
             quorp_term::SlashCommand::Status => {
-                self.push_feed(
-                    format!(
+                self.push_transcript(quorp_render::TranscriptItem::System {
+                    text: format!(
                         "status · model={} · cwd={} · run={:?} · permissions={:?} · sandbox={:?}",
                         self.model,
                         self.workspace_root.display(),
@@ -1947,48 +1916,41 @@ impl FullscreenShell {
                         self.permission_mode,
                         self.sandbox
                     ),
-                    quorp_render::TaskState::Done,
-                );
+                });
             }
             quorp_term::SlashCommand::Model(Some(model)) => {
                 self.model = model;
-                self.push_feed(
-                    format!("model switched to {}", self.model),
-                    quorp_render::TaskState::Done,
-                );
+                self.push_transcript(quorp_render::TranscriptItem::System {
+                    text: format!("model switched to {}", self.model),
+                });
             }
             quorp_term::SlashCommand::Model(None) => {
-                self.push_feed(
-                    format!("model {}", self.model),
-                    quorp_render::TaskState::Done,
-                );
+                self.push_transcript(quorp_render::TranscriptItem::System {
+                    text: format!("model {}", self.model),
+                });
             }
             quorp_term::SlashCommand::Provider(Some(provider)) => {
                 self.provider_label = provider;
-                self.push_feed(
-                    format!("provider switched to {}", self.provider_label),
-                    quorp_render::TaskState::Done,
-                );
+                self.push_transcript(quorp_render::TranscriptItem::System {
+                    text: format!("provider switched to {}", self.provider_label),
+                });
             }
             quorp_term::SlashCommand::Provider(None) => {
-                self.push_feed(
-                    format!("provider {}", self.provider_label),
-                    quorp_render::TaskState::Done,
-                );
+                self.push_transcript(quorp_render::TranscriptItem::System {
+                    text: format!("provider {}", self.provider_label),
+                });
             }
             quorp_term::SlashCommand::Help | quorp_term::SlashCommand::Unknown(_) => {
-                self.push_feed(
-                    "try /plan, /act, /full-auto, /permissions, /sandbox, /status, /clear"
+                self.push_transcript(quorp_render::TranscriptItem::System {
+                    text: "try /plan, /act, /full-auto, /permissions, /sandbox, /status, /clear"
                         .to_string(),
-                    quorp_render::TaskState::Warn,
-                );
+                });
             }
             quorp_term::SlashCommand::Doctor => {
-                self.push_feed(
-                    "run `quorp doctor` from a regular shell if you want the full diagnostics dump"
+                self.push_transcript(quorp_render::TranscriptItem::System {
+                    text: "run `quorp doctor` from a regular shell for full diagnostics"
                         .to_string(),
-                    quorp_render::TaskState::Warn,
-                );
+                });
             }
             quorp_term::SlashCommand::Tasks
             | quorp_term::SlashCommand::Checkpoint
@@ -2013,13 +1975,9 @@ impl FullscreenShell {
             | quorp_term::SlashCommand::Load(_)
             | quorp_term::SlashCommand::Think
             | quorp_term::SlashCommand::Compact => {
-                self.push_feed(
-                    format!(
-                        "slash command /{:?} is acknowledged in fullscreen shell",
-                        command
-                    ),
-                    quorp_render::TaskState::Warn,
-                );
+                self.push_transcript(quorp_render::TranscriptItem::System {
+                    text: "that command is not available in the fullscreen shell yet".to_string(),
+                });
             }
         }
         self.history_cursor = None;
@@ -2033,9 +1991,12 @@ impl FullscreenShell {
                 return Ok(());
             }
             (KeyCode::Char('l'), KeyModifiers::CONTROL) => {
-                self.feed.clear();
+                self.transcript.clear();
+                self.active_command_index = None;
                 self.scroll_offset = 0;
-                self.push_feed("cleared screen".to_string(), quorp_render::TaskState::Done);
+                self.push_transcript(quorp_render::TranscriptItem::System {
+                    text: "cleared screen".to_string(),
+                });
                 return Ok(());
             }
             (KeyCode::PageUp, _) => {
@@ -2157,37 +2118,22 @@ impl FullscreenShell {
                                     .collect::<Vec<_>>()
                                     .join(" · ")
                             };
-                            self.push_feed(
-                                truncate_for_frame(&line, 96),
-                                quorp_render::TaskState::Active,
-                            );
-                            self.command_card.output_summary = summary;
+                            self.update_command_tail("tool output".to_string(), summary);
                         }
                         self.status_line = "streaming command output".to_string();
                     }
                     crate::quorp::tui::ChatUiEvent::Error(_, message) => {
                         if !message.trim().is_empty() {
-                            self.push_feed(
-                                format!("error: {}", truncate_for_frame(&message, 96)),
-                                quorp_render::TaskState::Warn,
-                            );
+                            self.push_transcript(quorp_render::TranscriptItem::Error {
+                                title: "runtime error".to_string(),
+                                detail: truncate_for_frame(&message, 160),
+                            });
                         }
                         self.status_line = "runtime error".to_string();
                     }
                     crate::quorp::tui::ChatUiEvent::CommandFinished(_, outcome) => match outcome {
                         quorp_agent_core::ActionOutcome::Success { action, .. } => {
-                            let duration = self
-                                .running_worker
-                                .as_ref()
-                                .map(|running_worker| {
-                                    format!("{:.2?}", running_worker.start_time.elapsed())
-                                })
-                                .unwrap_or_else(|| "0s".to_string());
                             self.status_line = format!("completed {:?}", action);
-                            self.command_card.state = quorp_render::CommandState::Passed {
-                                exit_code: 0,
-                                duration,
-                            };
                             let summary = self
                                 .running_worker
                                 .as_ref()
@@ -2201,34 +2147,19 @@ impl FullscreenShell {
                                         .join(" · ")
                                 })
                                 .unwrap_or_else(|| "success".to_string());
-                            self.command_card.output_summary = summary;
+                            self.finish_active_command(quorp_render::ToolStatus::Passed, summary);
                         }
                         quorp_agent_core::ActionOutcome::Failure { action, error } => {
-                            let duration = self
-                                .running_worker
-                                .as_ref()
-                                .map(|running_worker| {
-                                    format!("{:.2?}", running_worker.start_time.elapsed())
-                                })
-                                .unwrap_or_else(|| "0s".to_string());
                             self.status_line = format!("failed {:?} · {}", action, error);
-                            self.command_card.state = quorp_render::CommandState::Failed {
-                                exit_code: 1,
-                                duration,
-                            };
-                            self.command_card.output_summary = format!("{action:?} · {error}");
-                            self.push_feed(
-                                format!("failure: {error}"),
-                                quorp_render::TaskState::Warn,
+                            self.finish_active_command(
+                                quorp_render::ToolStatus::Failed,
+                                format!("{action:?} · {error}"),
                             );
                         }
                     },
                     crate::quorp::tui::ChatUiEvent::AssistantDelta(_, line) => {
                         if !line.trim().is_empty() {
-                            self.push_feed(
-                                truncate_for_frame(&line, 96),
-                                quorp_render::TaskState::Done,
-                            );
+                            self.append_assistant_delta(&line);
                             self.status_line =
                                 format!("assistant: {}", truncate_for_frame(&line, 96));
                         }
@@ -2258,10 +2189,10 @@ impl FullscreenShell {
         let outcome = match running_worker.worker.join() {
             Ok(result) => result?,
             Err(error) => {
-                self.push_feed(
-                    format!("worker panicked: {error:?}"),
-                    quorp_render::TaskState::Warn,
-                );
+                self.push_transcript(quorp_render::TranscriptItem::Error {
+                    title: "worker panicked".to_string(),
+                    detail: format!("{error:?}"),
+                });
                 self.status_line = "worker panicked".to_string();
                 return Ok(());
             }
@@ -2270,32 +2201,13 @@ impl FullscreenShell {
             "run finished · {:?} · {} tokens",
             outcome.stop_reason, outcome.total_billed_tokens
         );
-        self.command_card.output_summary = format!(
-            "stop={:?} · billed={} · {}ms",
-            outcome.stop_reason, outcome.total_billed_tokens, outcome.duration_ms
-        );
-        self.command_card.state = if outcome.stop_reason == quorp_agent_core::StopReason::Success {
-            quorp_render::CommandState::Passed {
-                exit_code: 0,
-                duration: format!("{:.2?}", running_worker.start_time.elapsed()),
-            }
-        } else {
-            quorp_render::CommandState::Failed {
-                exit_code: 1,
-                duration: format!("{:.2?}", running_worker.start_time.elapsed()),
-            }
-        };
-        self.push_feed(
-            format!(
+        self.push_transcript(quorp_render::TranscriptItem::Receipt {
+            text: format!(
                 "run finished · {:?} · {} tokens",
                 outcome.stop_reason, outcome.total_billed_tokens
             ),
-            if outcome.stop_reason == quorp_agent_core::StopReason::Success {
-                quorp_render::TaskState::Done
-            } else {
-                quorp_render::TaskState::Warn
-            },
-        );
+            success: outcome.stop_reason == quorp_agent_core::StopReason::Success,
+        });
         if let Some(queued_prompt) = self.queued_prompt.take()
             && !queued_prompt.trim().is_empty()
         {
@@ -2305,80 +2217,78 @@ impl FullscreenShell {
     }
 
     fn render(&mut self, width: usize, height: usize) -> ShellRenderOutput {
-        let mut frame_tasks = self.feed.iter().cloned().collect::<Vec<_>>();
-        if frame_tasks.is_empty() {
-            frame_tasks.push(quorp_render::TaskRow {
-                label: "type a task and press Enter".to_string(),
-                state: quorp_render::TaskState::Active,
-            });
-        }
-        let command_card = if let Some(running_worker) = self.running_worker.as_ref() {
-            let mut card = self.command_card.clone();
-            card.state = quorp_render::CommandState::Active {
-                frame_time: running_worker.start_time.elapsed().as_secs_f32(),
-            };
-            card
-        } else {
-            self.command_card.clone()
-        };
-
-        let footer = quorp_render::render_status_footer(
-            &quorp_render::StatusFooter {
-                model_provider: self.model.clone(),
-                mode_label: format!("{:?}/{:?}", self.permission_mode, self.sandbox),
-                phase_pill: if matches!(self.run_mode, quorp_core::RunMode::Plan) {
-                    "Plan mode".to_string()
-                } else {
-                    "Act mode".to_string()
-                },
-                usage_summary: format!(
-                    "cwd {} · {}",
-                    self.workspace_root.display(),
-                    self.status_line
-                ),
-            },
-            self.color,
-        );
-
-        let mut body = quorp_render::render_session_frame(
-            &quorp_render::SessionFrame {
-                title: "quorp · fullscreen shell".to_string(),
-                subtitle: format!(
-                    "{} · {}",
-                    self.provider_context,
-                    self.workspace_root.display()
-                ),
-                tasks: frame_tasks,
-                commands: vec![command_card],
-                footer: String::new(),
-            },
-            width,
-            self.color,
-        )
-        .lines()
-        .map(|line| line.to_string())
-        .collect::<Vec<_>>();
-
-        let prompt_prefix = if matches!(self.color, quorp_render::ColorCapability::NoColor) {
-            "quorp> ".to_string()
-        } else {
-            format!(
-                "{}quorp{}> ",
-                quorp_render::palette::ACCENT_CYAN.fg(),
-                quorp_render::palette::RESET
-            )
-        };
         let buffer = self.composer.buffer().to_string();
-        let suggestions =
+        let overlay =
             if self.composer.suggestions_visible() && self.composer.buffer().starts_with('/') {
-                render_shell_suggestion_panel(
-                    &self.composer.suggestions(&self.registry),
-                    self.composer.selected(),
-                    self.color,
-                )
+                Some(quorp_render::ShellOverlay::SlashPalette {
+                    selected: self.composer.selected(),
+                    entries: self
+                        .composer
+                        .suggestions(&self.registry)
+                        .into_iter()
+                        .map(|entry| quorp_render::shell::PaletteRow {
+                            value: entry.value,
+                            detail: entry.detail,
+                            description: entry.description,
+                        })
+                        .collect(),
+                })
             } else {
-                Vec::new()
+                None
             };
+        let live_turn = self
+            .running_worker
+            .as_ref()
+            .map(|running_worker| quorp_render::LiveTurn {
+                label: "working".to_string(),
+                elapsed_ms: running_worker.start_time.elapsed().as_millis() as u64,
+            });
+        let status = quorp_render::StatusLine {
+            left: format!("{} · {}", self.model, self.provider_label),
+            center: format!("{:?} · {:?}", self.permission_mode, self.sandbox),
+            right: if matches!(self.run_mode, quorp_core::RunMode::Plan) {
+                "Plan mode".to_string()
+            } else {
+                format!("{} · {}", self.workspace_root.display(), self.status_line)
+            },
+        };
+        let composer = quorp_render::ComposerView {
+            prompt: ">".to_string(),
+            buffer: buffer.clone(),
+            blink_on: self.boot_started.elapsed().as_millis() % 1000 < 500,
+        };
+        let frame = quorp_render::ShellFrame {
+            transcript: self.transcript.iter().cloned().collect(),
+            live_turn,
+            composer,
+            status,
+            overlay,
+        };
+        let mut body = Vec::new();
+        let show_boot = self.boot_started.elapsed() < Duration::from_millis(1200)
+            || (self.transcript.len() <= 1 && self.running_worker.is_none());
+        if show_boot {
+            body.extend(
+                quorp_render::logo::render_boot_card(
+                    &self.workspace_root.display().to_string(),
+                    &self.model,
+                    &format!("{:?}", self.sandbox),
+                    self.profile,
+                )
+                .lines()
+                .map(|line| line.to_string()),
+            );
+            body.push(String::new());
+        }
+        body.extend(quorp_render::render_shell_frame(
+            &frame,
+            width,
+            self.profile.color,
+        ));
+        let suggestions =
+            quorp_render::shell::render_shell_overlay(&frame.overlay, width, self.profile.color);
+        let footer =
+            quorp_render::shell::render_status_line(&frame.status, width, self.profile.color);
         let footer_height = 1usize;
         let prompt_height = 1usize;
         let suggestion_height = suggestions.len().min(8).min(height.saturating_sub(2));
@@ -2404,9 +2314,12 @@ impl FullscreenShell {
         }
         lines.extend(suggestions);
         let cursor_row = lines.len() as u16;
-        let cursor_col =
-            (7usize + buffer_width_to_cursor(&buffer, buffer.len())).min(u16::MAX as usize) as u16;
-        lines.push(format!("{prompt_prefix}{buffer}"));
+        let cursor_col = (2usize + buffer_width_to_cursor(&buffer, self.composer.cursor()))
+            .min(u16::MAX as usize) as u16;
+        lines.push(quorp_render::shell::render_composer(
+            &frame.composer,
+            self.profile.color,
+        ));
         lines.push(footer);
 
         ShellRenderOutput {
@@ -2416,56 +2329,85 @@ impl FullscreenShell {
         }
     }
 
-    fn push_feed(&mut self, label: String, state: quorp_render::TaskState) {
-        if self.feed.len() >= 8 {
-            self.feed.pop_front();
+    fn push_transcript(&mut self, item: quorp_render::TranscriptItem) {
+        if self.transcript.len() >= 300 {
+            self.transcript.pop_front();
         }
-        self.feed.push_back(quorp_render::TaskRow { label, state });
+        self.transcript.push_back(item);
         if self.scroll_offset == 0 {
             self.scroll_offset = 0;
         }
     }
-}
 
-fn render_shell_suggestion_panel(
-    entries: &[crate::quorp::inline_composer::PaletteEntry],
-    selected: usize,
-    color: quorp_render::ColorCapability,
-) -> Vec<String> {
-    if entries.is_empty() {
-        return Vec::new();
-    }
-    let plain = matches!(color, quorp_render::ColorCapability::NoColor);
-    entries
-        .iter()
-        .take(8)
-        .enumerate()
-        .map(|(index, entry)| {
-            let selector = if index == selected { ">" } else { " " };
-            if plain {
-                format!(
-                    "  {selector} {:<18} {:<12} {}",
-                    entry.value, entry.detail, entry.description
-                )
-            } else {
-                format!(
-                    "  {}{}{} {}{:<18}{} {}{:<12}{} {}{}{}",
-                    quorp_render::palette::ACCENT_YELLOW.fg(),
-                    selector,
-                    quorp_render::palette::RESET,
-                    quorp_render::palette::ACCENT_CYAN.fg(),
-                    entry.value,
-                    quorp_render::palette::RESET,
-                    quorp_render::palette::ACCENT_VIOLET.fg(),
-                    entry.detail,
-                    quorp_render::palette::RESET,
-                    quorp_render::palette::FG_TEXT.fg(),
-                    entry.description,
-                    quorp_render::palette::RESET
-                )
+    fn append_assistant_delta(&mut self, delta: &str) {
+        if let Some(quorp_render::TranscriptItem::Assistant { text, streaming }) =
+            self.transcript.back_mut()
+        {
+            if !text.ends_with('\n') && !text.is_empty() {
+                text.push(' ');
             }
-        })
-        .collect()
+            text.push_str(delta.trim());
+            *streaming = true;
+            return;
+        }
+        self.push_transcript(quorp_render::TranscriptItem::Assistant {
+            text: delta.trim().to_string(),
+            streaming: true,
+        });
+    }
+
+    fn update_command_tail(&mut self, command: String, summary: String) {
+        let output_tail = summary
+            .split(" · ")
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| truncate_for_frame(line, 120))
+            .collect::<Vec<_>>();
+        if let Some(index) = self.active_command_index
+            && let Some(quorp_render::TranscriptItem::Command {
+                output_tail: current_tail,
+                status,
+                ..
+            }) = self.transcript.get_mut(index)
+        {
+            *current_tail = output_tail;
+            *status = quorp_render::ToolStatus::Running;
+            return;
+        }
+        let index = self.transcript.len();
+        self.push_transcript(quorp_render::TranscriptItem::Command {
+            command,
+            cwd: self.workspace_root.display().to_string(),
+            output_tail,
+            status: quorp_render::ToolStatus::Running,
+        });
+        self.active_command_index = Some(index);
+    }
+
+    fn finish_active_command(&mut self, status: quorp_render::ToolStatus, summary: String) {
+        let output_tail = summary
+            .split(" · ")
+            .filter(|line| !line.trim().is_empty())
+            .map(|line| truncate_for_frame(line, 120))
+            .collect::<Vec<_>>();
+        if let Some(index) = self.active_command_index
+            && let Some(quorp_render::TranscriptItem::Command {
+                output_tail: current_tail,
+                status: current_status,
+                ..
+            }) = self.transcript.get_mut(index)
+        {
+            *current_tail = output_tail;
+            *current_status = status;
+            self.active_command_index = None;
+            return;
+        }
+        self.push_transcript(quorp_render::TranscriptItem::Command {
+            command: "tool".to_string(),
+            cwd: self.workspace_root.display().to_string(),
+            output_tail,
+            status,
+        });
+    }
 }
 
 fn buffer_width_to_cursor(buffer: &str, cursor: usize) -> usize {

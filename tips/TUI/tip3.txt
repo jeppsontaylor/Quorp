@@ -1,0 +1,173 @@
+I studied the TUI/rendering path. My strongest recommendation is: **stop polishing the current fullscreen dashboard and replace it with a transcript-first agent shell.** The screenshot looks bad because the code is rendering an internal batch-run dashboard, not a conversational coding CLI.
+
+Quorp’s own README says the goal is “TUI-first,” terminal-native, rich rendering, and a shell-native agentic environment, so the current direction is right in spirit. But the active renderer is structurally wrong for the Claude Code / Codex CLI feel. `render_session_frame` builds a branded header, a literal `task list`, one or more giant bordered `CommandCard`s, and a footer. The fullscreen shell then maps user prompts, assistant deltas, command output, errors, and run completion into an eight-row feed plus one command card. It also clears and redraws the whole alternate screen on every loop. That directly explains the screenshot: huge red failure box, tiny prompt, no real conversation, and lots of internal state leaking into the UI. ([GitHub][1])
+
+The most important architectural change: **fullscreen mode should not be a viewer for `run_headless_agent_with_progress` batch jobs.** Right now each prompt becomes an objective file and a headless autonomous run; the UI then displays `StopReason`, `FatalError`, “run finished,” etc. That is automation-run language, not assistant-session language. Keep that machinery for `quorp run` / CI / benchmarks, but make the TUI a persistent interactive session with a transcript, a live turn, tool events, approvals, diffs, and a bottom composer. There is even a source comment saying the old alternate-screen dashboard had been removed from the default product; the current fullscreen path has effectively reintroduced a dashboard. ([GitHub][2])
+
+For the target feel, use Codex/Claude as principles, not as a pixel clone: Codex’s current docs emphasize a fullscreen terminal UI, real-time review of actions, plan approval, syntax-highlighted markdown/code/diffs, prompt history, slash popup, and a persistent composer; Claude Code is similarly positioned as a terminal coding agent that edits files, runs commands, and manages the project from the command line. That means Quorp should feel like a calm coding conversation with inline action cards, not a process monitor. ([OpenAI Developers][3])
+
+## The TUI I would build
+
+Main screen:
+
+```text
+[animated color QUORP logo for ~900ms]
+
+› Can you write a simple test.py Python script?
+
+✦ thinking
+  I’ll create a small script and add a basic demo entrypoint.
+
+✶ WriteFile  test.py
+  ⎿ wrote 18 lines
+
+✓ done  8.7s · 2.6k tokens
+  Created test.py. Run it with: python test.py
+
+────────────────────────────────────────────────────────
+quorp ›
+qwen3-coder · act · tmp-copy · /Users/bentaylor/Code/memo
+```
+
+Failure state should look like this, not like the screenshot:
+
+```text
+✕ stalled after 8.7s · 2.6k tokens
+  The agent stopped without selecting a valid next action.
+
+  retry   /plan   /status   /debug
+```
+
+No `task list` heading. No giant bordered failure card. No “agent session failed exit=1” as the dominant visual. No raw autonomous-loop internals unless the user asks for `/debug`.
+
+## Concrete recommendation
+
+Create a new renderer: **`quorp_render::shell`**.
+
+Keep `session.rs` as a render demo / legacy primitive, but stop using `render_session_frame` for fullscreen mode. Replace it with something like:
+
+```rust
+pub struct ShellFrame<'a> {
+    pub logo: Option<LogoFrame<'a>>,
+    pub transcript: &'a [TranscriptItem],
+    pub live_turn: Option<&'a LiveTurn>,
+    pub composer: ComposerView<'a>,
+    pub status: StatusLine<'a>,
+    pub overlay: Option<Overlay<'a>>,
+}
+
+pub enum TranscriptItem {
+    System { text: String },
+    User { text: String },
+    Assistant { text: String, streaming: bool },
+    Plan { steps: Vec<String> },
+    Tool { name: String, target: String, status: ToolStatus, output_tail: Vec<String> },
+    Diff { files_changed: usize, summary: String },
+    Approval { title: String, detail: String },
+    Error { title: String, detail: String, raw: Option<String> },
+    RunFinished { duration: String, tokens: u64, outcome: OutcomeView },
+}
+```
+
+Then in `crates/quorp/src/main.rs`, change `FullscreenShell` roughly like this:
+
+```rust
+// Current bad shape
+feed: VecDeque<TaskRow>,
+command_card: quorp_render::CommandCard,
+
+// Better shape
+transcript: VecDeque<TranscriptItem>,
+live_turn: Option<LiveTurn>,
+status: StatusLineState,
+overlay: Option<ShellOverlay>,
+```
+
+The current `push_feed` cap of eight rows is a major reason the UI feels like a toy dashboard. It should become a real virtualized transcript with hundreds or thousands of items, plus scrollback and persisted session history. Assistant deltas should append to the current assistant block, not create separate checklist rows. Tool output should update a compact tool card. A final outcome should become a receipt line. Errors should become a readable diagnosis card with raw detail hidden behind `/debug`. ([GitHub][2])
+
+## The QUORP logo: make it visual, not ASCII
+
+There is already an inline colored ASCII loader in `inline_composer::render_quorp_loader`, but that is not enough, and it is not wired as the fullscreen boot experience. The current splash renderer is also just a checklist of boot steps. ([GitHub][4])
+
+I would implement a **three-tier logo system**:
+
+1. **Best case:** render a real QUORP PNG/SVG/mascot through terminal graphics protocols when supported.
+2. **Default case:** render a precomputed truecolor ANSI pixel logo using half-blocks / sextants / braille cells. This is still terminal-native, but it is an actual image-like logo, not FIGlet text.
+3. **Fallback:** gradient ASCII wordmark only when image protocols and color are unavailable.
+
+Add:
+
+```text
+crates/quorp_render/src/logo.rs
+assets/quorp-logo.svg
+assets/quorp-logo.png
+build.rs or xtask/logo.rs to generate assets/quorp-logo.ansi
+```
+
+Extend `RenderProfile` with graphics capability:
+
+```rust
+pub enum GraphicsCapability {
+    Kitty,
+    Iterm2,
+    Sixel,
+    AnsiBlocks,
+    None,
+}
+
+pub struct RenderProfile {
+    pub color: ColorCapability,
+    pub graphics: GraphicsCapability,
+    pub osc8_hyperlinks: bool,
+    pub bracketed_paste: bool,
+    pub focus_events: bool,
+}
+```
+
+Right now `caps.rs` mentions image protocols in the comment, but the struct only tracks color, OSC8, bracketed paste, and focus events. That is exactly where the logo capability should live. ([GitHub][5])
+
+The splash should be short and premium:
+
+```text
+0–200ms: black screen / subtle shimmer
+200–700ms: QUORP logo resolves in color
+700–1000ms: “terminal agent online · qwen3-coder · tmp-copy”
+then fade/cut into the transcript shell
+```
+
+Do **not** keep a huge logo permanently at the top. The logo should create identity at load, then collapse to a small `QUORP` mark in the statusline so the coding surface stays usable.
+
+## Keep the pieces that are already good
+
+Do not throw everything away. The codebase already has useful primitives:
+
+The composer and slash suggestions are worth keeping. `inline_composer.rs` already supports prompt editing, slash suggestion panels, tab completion, and palette entries. `quorp_term` already has a broad slash-command parser with `/plan`, `/act`, `/clear`, `/model`, `/provider`, `/diff`, `/apply`, `/compact`, `/theme`, and more. The problem is that fullscreen mode acknowledges many commands instead of making them feel first-class. ([GitHub][4])
+
+The shimmer and palette work are also usable, but use them sparingly. Claude/Codex-class CLIs feel good because motion is restrained: one active spinner, one live “thinking/working” line, one tool card updating in place. Not every element needs a border or color.
+
+## First PR I would land
+
+1. Add `quorp_render::logo` and `quorp_render::shell`.
+2. Stop calling `render_session_frame` from `FullscreenShell::render`.
+3. Replace `feed` and `command_card` with `transcript` and `live_turn`.
+4. Change `drain_agent_events` so:
+
+   * `AssistantDelta` appends to the current assistant message.
+   * `CommandOutput` updates the active tool card tail.
+   * `CommandFinished` marks that tool card as passed/failed.
+   * `Error` creates a compact error item.
+   * final outcome creates a one-line receipt.
+5. Show the QUORP logo splash on fullscreen startup before the first render.
+6. Keep the composer pinned to the bottom with the slash palette as an overlay above it.
+7. Keep the footer to one quiet line: model, mode, sandbox, cwd, tokens/status.
+
+After that PR, the screenshot should no longer contain `task list`, a giant boxed `agent session`, or raw `FatalError` dominance. It should look like a focused coding assistant that happens to be Quorp-branded.
+
+The north star: **Quorp should reveal useful work, not internal machinery.** The logo gives it identity; the transcript gives it trust; the composer gives it speed.
+
+[1]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/README.md "raw.githubusercontent.com"
+[2]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp/src/main.rs "raw.githubusercontent.com"
+[3]: https://developers.openai.com/codex/cli/features "Features – Codex CLI | OpenAI Developers"
+[4]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp/src/quorp/inline_composer.rs "raw.githubusercontent.com"
+[5]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_render/src/caps.rs "raw.githubusercontent.com"
+

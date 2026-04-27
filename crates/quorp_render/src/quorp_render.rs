@@ -10,20 +10,27 @@
 //! All rendering is unit-testable: nothing here directly touches stdout.
 
 pub mod caps;
+pub mod logo;
 pub mod palette;
 pub mod permission_modal;
 pub mod session;
+pub mod shell;
 pub mod shimmer;
 pub mod splash;
 pub mod status_footer;
 pub mod transcript;
 
-pub use caps::{ColorCapability, RenderProfile};
+pub use caps::{ColorCapability, GraphicsCapability, RenderProfile};
+pub use logo::{LogoMode, LogoRenderOptions, render_logo};
 pub use palette::{Rgb, lerp_rgb};
 pub use permission_modal::{PermissionPrompt, render_permission_modal};
 pub use session::{
     CommandCard, CommandState, SessionFrame, TaskRow, TaskState, render_command_card,
     render_session_frame,
+};
+pub use shell::{
+    ComposerView, LiveTurn, PaletteRow, ShellFrame, ShellOverlay, StatusLine, ToolStatus,
+    TranscriptItem, render_shell_frame,
 };
 pub use shimmer::{ShimmerStyle, render_shimmer};
 pub use splash::{SplashStep, render_splash};
