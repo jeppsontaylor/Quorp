@@ -46,6 +46,20 @@ pub struct Action {
     pub command_repr: Option<String>,
 }
 
+impl Action {
+    pub fn new(
+        capability: Capability,
+        tool_name: impl Into<String>,
+        command_repr: Option<String>,
+    ) -> Self {
+        Self {
+            capability,
+            tool_name: tool_name.into(),
+            command_repr,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub enum AllowPolicy {
     Once,
@@ -74,6 +88,12 @@ pub enum Decision {
     PromptUser,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ExecutionSurface {
+    Host,
+    Sandbox,
+}
+
 #[derive(Debug)]
 pub struct Permissions {
     pub mode: Mode,
@@ -92,12 +112,26 @@ impl Permissions {
                     .map(|glob| (glob.compile_matcher(), entry.policy.clone()))
             })
             .collect();
-        Self { mode, allow, compiled_command_globs }
+        Self {
+            mode,
+            allow,
+            compiled_command_globs,
+        }
     }
 
     pub fn check(&self, action: &Action) -> Decision {
+        self.check_on_surface(action, ExecutionSurface::Sandbox)
+    }
+
+    pub fn check_on_surface(&self, action: &Action, surface: ExecutionSurface) -> Decision {
         match self.mode {
-            Mode::YoloSandbox => Decision::Allow,
+            Mode::YoloSandbox => {
+                if surface == ExecutionSurface::Sandbox {
+                    Decision::Allow
+                } else {
+                    Decision::Deny
+                }
+            }
             Mode::ReadOnly => match action.capability {
                 Capability::Read => Decision::Allow,
                 _ => Decision::Deny,
@@ -106,29 +140,85 @@ impl Permissions {
                 if matches!(action.capability, Capability::Read) {
                     return Decision::Allow;
                 }
-                if let Some(policy) = self.allow.tools.get(&action.tool_name) {
-                    if policy != &AllowPolicy::Once {
-                        return Decision::Allow;
-                    }
-                }
-                if let Some(cmd) = action.command_repr.as_deref() {
-                    if self.compiled_command_globs.iter().any(|(g, _)| g.is_match(cmd)) {
-                        return Decision::Allow;
-                    }
-                }
-                if self.mode == Mode::AcceptEdits
-                    && matches!(action.capability, Capability::WriteFile | Capability::DeleteFile)
+                if let Some(policy) = self.allow.tools.get(&action.tool_name)
+                    && policy != &AllowPolicy::Once
                 {
                     return Decision::Allow;
                 }
-                if self.mode == Mode::AutoSafe
-                    && matches!(action.capability, Capability::WriteFile)
+                if let Some(cmd) = action.command_repr.as_deref()
+                    && self
+                        .compiled_command_globs
+                        .iter()
+                        .any(|(g, _)| g.is_match(cmd))
+                {
+                    return Decision::Allow;
+                }
+                if self.mode == Mode::AcceptEdits
+                    && matches!(
+                        action.capability,
+                        Capability::WriteFile | Capability::DeleteFile
+                    )
+                {
+                    return Decision::Allow;
+                }
+                if self.mode == Mode::AutoSafe && matches!(action.capability, Capability::WriteFile)
                 {
                     return Decision::Allow;
                 }
                 Decision::PromptUser
             }
         }
+    }
+}
+
+pub fn classify_tool_action(
+    tool_name: &str,
+    command_repr: Option<String>,
+    path_hint: Option<&str>,
+) -> Action {
+    let normalized_tool = tool_name.trim().to_ascii_lowercase();
+    let capability = match normalized_tool.as_str() {
+        "read_file"
+        | "list_directory"
+        | "search_text"
+        | "search_symbols"
+        | "find_files"
+        | "structural_search"
+        | "cargo_diagnostics"
+        | "get_repo_capsule"
+        | "explain_validation_failure"
+        | "suggest_implementation_targets"
+        | "suggest_edit_anchors" => Capability::Read,
+        "write_file"
+        | "apply_patch"
+        | "replace_block"
+        | "replace_range"
+        | "set_executable"
+        | "preview_edit"
+        | "apply_preview"
+        | "modify_toml"
+        | "structural_edit_preview" => Capability::WriteFile,
+        "delete" | "delete_file" => Capability::DeleteFile,
+        "run_command" | "run_validation" => classify_command_capability(command_repr.as_deref()),
+        "mcp_call_tool" => Capability::Mcp,
+        _ if path_hint.is_some() => Capability::WriteFile,
+        _ => Capability::RunCommand,
+    };
+    Action::new(capability, normalized_tool, command_repr)
+}
+
+fn classify_command_capability(command: Option<&str>) -> Capability {
+    let Some(command) = command.map(str::trim).filter(|command| !command.is_empty()) else {
+        return Capability::RunCommand;
+    };
+    let first_word = command
+        .split_whitespace()
+        .next()
+        .unwrap_or_default()
+        .trim_matches(|ch| matches!(ch, '\'' | '"'));
+    match first_word {
+        "curl" | "wget" | "ssh" | "scp" | "rsync" | "nc" | "ncat" | "telnet" => Capability::Network,
+        _ => Capability::RunCommand,
     }
 }
 
@@ -145,11 +235,11 @@ mod tests {
     }
 
     fn run_test_action() -> Action {
-        Action {
-            capability: Capability::RunCommand,
-            tool_name: "run_command".into(),
-            command_repr: Some("cargo test -p quorp_term".into()),
-        }
+        Action::new(
+            Capability::RunCommand,
+            "run_command",
+            Some("cargo test -p quorp_term".into()),
+        )
     }
 
     #[test]
@@ -180,5 +270,40 @@ mod tests {
     fn yolo_allows_everything() {
         let p = Permissions::new(Mode::YoloSandbox, AllowList::default());
         assert_eq!(p.check(&run_test_action()), Decision::Allow);
+    }
+
+    #[test]
+    fn yolo_denies_host_surface() {
+        let p = Permissions::new(Mode::YoloSandbox, AllowList::default());
+        assert_eq!(
+            p.check_on_surface(&run_test_action(), ExecutionSurface::Host),
+            Decision::Deny
+        );
+        assert_eq!(
+            p.check_on_surface(&run_test_action(), ExecutionSurface::Sandbox),
+            Decision::Allow
+        );
+    }
+
+    #[test]
+    fn classifier_marks_network_commands() {
+        let action = classify_tool_action(
+            "run_command",
+            Some("curl https://example.com".to_string()),
+            None,
+        );
+        assert_eq!(action.capability, Capability::Network);
+    }
+
+    #[test]
+    fn classifier_marks_read_and_write_tools() {
+        assert_eq!(
+            classify_tool_action("read_file", None, Some("src/main.rs")).capability,
+            Capability::Read
+        );
+        assert_eq!(
+            classify_tool_action("replace_block", None, Some("src/main.rs")).capability,
+            Capability::WriteFile
+        );
     }
 }

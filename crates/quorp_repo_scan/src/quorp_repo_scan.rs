@@ -62,7 +62,11 @@ pub fn scan(root: &Path) -> Vec<ScannedFile> {
                 .map(Language::from_extension)
                 .unwrap_or(Language::Other);
             let bytes = entry.metadata().map(|m| m.len()).unwrap_or(0);
-            ScannedFile { path, language, bytes }
+            ScannedFile {
+                path,
+                language,
+                bytes,
+            }
         })
         .collect()
 }
@@ -76,22 +80,40 @@ pub fn harvest_rust_symbols(file: &ScannedFile, contents: &str) -> Vec<SymbolNod
     let mut symbols = Vec::new();
     for (idx, line) in contents.lines().enumerate() {
         let trimmed = line.trim_start();
-        if let Some(rest) = trimmed.strip_prefix("pub fn ").or_else(|| trimmed.strip_prefix("fn ")) {
+        if let Some(rest) = trimmed
+            .strip_prefix("pub fn ")
+            .or_else(|| trimmed.strip_prefix("fn "))
+        {
             push_symbol(rest, SymbolKind::Function, idx as u32, file, &mut symbols);
-        } else if let Some(rest) = trimmed.strip_prefix("pub struct ").or_else(|| trimmed.strip_prefix("struct ")) {
+        } else if let Some(rest) = trimmed
+            .strip_prefix("pub struct ")
+            .or_else(|| trimmed.strip_prefix("struct "))
+        {
             push_symbol(rest, SymbolKind::Struct, idx as u32, file, &mut symbols);
-        } else if let Some(rest) = trimmed.strip_prefix("pub enum ").or_else(|| trimmed.strip_prefix("enum ")) {
+        } else if let Some(rest) = trimmed
+            .strip_prefix("pub enum ")
+            .or_else(|| trimmed.strip_prefix("enum "))
+        {
             push_symbol(rest, SymbolKind::Enum, idx as u32, file, &mut symbols);
-        } else if let Some(rest) = trimmed.strip_prefix("pub trait ").or_else(|| trimmed.strip_prefix("trait ")) {
+        } else if let Some(rest) = trimmed
+            .strip_prefix("pub trait ")
+            .or_else(|| trimmed.strip_prefix("trait "))
+        {
             push_symbol(rest, SymbolKind::Trait, idx as u32, file, &mut symbols);
         }
     }
     symbols
 }
 
-fn push_symbol(rest: &str, kind: SymbolKind, line: u32, file: &ScannedFile, out: &mut Vec<SymbolNode>) {
+fn push_symbol(
+    rest: &str,
+    kind: SymbolKind,
+    line: u32,
+    file: &ScannedFile,
+    out: &mut Vec<SymbolNode>,
+) {
     let name = rest
-        .split(|c: char| matches!(c, '<' | '(' | ' ' | '{'))
+        .split(['<', '(', ' ', '{'])
         .next()
         .unwrap_or("")
         .trim()
@@ -104,7 +126,10 @@ fn push_symbol(rest: &str, kind: SymbolKind, line: u32, file: &ScannedFile, out:
         path: SymbolPath::new(name),
         kind,
         file: FileId(file.path.clone()),
-        span: LineRange { start: line + 1, end: line + 1 },
+        span: LineRange {
+            start: line + 1,
+            end: line + 1,
+        },
     });
 }
 
@@ -147,7 +172,11 @@ mod tests {
         fs::write(root.join("good.rs"), "fn good(){}").unwrap();
         let scanned = scan(root);
         assert!(scanned.iter().any(|f| f.path.ends_with("good.rs")));
-        assert!(!scanned.iter().any(|f| f.path.to_string_lossy().contains("target")));
+        assert!(
+            !scanned
+                .iter()
+                .any(|f| f.path.to_string_lossy().contains("target"))
+        );
     }
 
     #[test]
@@ -156,7 +185,11 @@ mod tests {
         let path = dir.path().join("a.rs");
         let src = "pub fn hello() {}\nstruct Foo;\nenum Bar { A }\n";
         fs::write(&path, src).unwrap();
-        let file = ScannedFile { path, language: Language::Rust, bytes: src.len() as u64 };
+        let file = ScannedFile {
+            path,
+            language: Language::Rust,
+            bytes: src.len() as u64,
+        };
         let symbols = harvest_rust_symbols(&file, src);
         let kinds: Vec<SymbolKind> = symbols.iter().map(|s| s.kind).collect();
         assert!(kinds.contains(&SymbolKind::Function));

@@ -2,7 +2,7 @@
 
 #![allow(dead_code)]
 
-use quorp_ids::{RuleId, SessionId, TurnId};
+use quorp_ids::{RuleId, SessionId, TurnId, VerifyRunId};
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -73,6 +73,29 @@ pub struct NegativeSignature {
     pub signature: String,
     pub failure_kind: String,
     pub seen_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailureFingerprint {
+    pub signature: String,
+    pub failure_kind: String,
+    pub owner: Option<String>,
+    pub attempted_fix_hash: String,
+    pub evidence_hash: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct FailedAttemptRecord {
+    pub fingerprint: FailureFingerprint,
+    pub run_id: Option<VerifyRunId>,
+    pub seen_count: u32,
+    pub last_seen_unix: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RetryDecision {
+    Allow,
+    Block { reason: String },
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

@@ -200,18 +200,14 @@ pub fn strip_path_suffix<'a>(base: &'a Path, suffix: &Path) -> Option<&'a Path> 
         .as_os_str()
         .as_encoded_bytes()
         .strip_suffix(suffix.as_os_str().as_encoded_bytes())
-    {
-        if remainder
+        && remainder
             .last()
             .is_none_or(|last_byte| std::path::is_separator(*last_byte as char))
-        {
-            let os_str = unsafe {
-                OsStr::from_encoded_bytes_unchecked(
-                    &remainder[0..remainder.len().saturating_sub(1)],
-                )
-            };
-            return Some(Path::new(os_str));
-        }
+    {
+        let os_str = unsafe {
+            OsStr::from_encoded_bytes_unchecked(&remainder[0..remainder.len().saturating_sub(1)])
+        };
+        return Some(Path::new(os_str));
     }
     None
 }
@@ -486,6 +482,7 @@ impl RemotePathBuf {
         self.style
     }
 
+    #[allow(clippy::wrong_self_convention)]
     pub fn to_proto(self) -> String {
         self.string
     }
@@ -867,7 +864,7 @@ impl PathMatcher {
                 let glob = glob.glob();
                 Some((
                     glob.to_string(),
-                    RelPath::new(&glob.as_ref(), path_style)
+                    RelPath::new(glob.as_ref(), path_style)
                         .ok()
                         .map(std::borrow::Cow::into_owned)?,
                     glob.ends_with(path_style.separators_ch()),
@@ -1122,18 +1119,22 @@ pub fn compare_rel_paths(
                 let b_is_file = b_is_file && components_b.rest().is_empty();
 
                 let ordering = a_is_file.cmp(&b_is_file).then_with(|| {
-                    let (a_stem, a_extension) = a_is_file
-                        .then(|| stem_and_extension(component_a))
-                        .unwrap_or_default();
+                    let (a_stem, a_extension) = if a_is_file {
+                        stem_and_extension(component_a)
+                    } else {
+                        Default::default()
+                    };
                     let path_string_a = if a_is_file { a_stem } else { Some(component_a) };
 
-                    let (b_stem, b_extension) = b_is_file
-                        .then(|| stem_and_extension(component_b))
-                        .unwrap_or_default();
+                    let (b_stem, b_extension) = if b_is_file {
+                        stem_and_extension(component_b)
+                    } else {
+                        Default::default()
+                    };
                     let path_string_b = if b_is_file { b_stem } else { Some(component_b) };
 
                     let compare_components = match (path_string_a, path_string_b) {
-                        (Some(a), Some(b)) => natural_sort(&a, &b),
+                        (Some(a), Some(b)) => natural_sort(a, b),
                         (Some(_), None) => Ordering::Greater,
                         (None, Some(_)) => Ordering::Less,
                         (None, None) => Ordering::Equal,
@@ -1179,12 +1180,16 @@ pub fn compare_rel_paths_mixed(
                 let a_leaf_file = a_is_file && components_a.rest().is_empty();
                 let b_leaf_file = b_is_file && components_b.rest().is_empty();
 
-                let (a_stem, a_ext) = a_leaf_file
-                    .then(|| stem_and_extension(component_a))
-                    .unwrap_or_default();
-                let (b_stem, b_ext) = b_leaf_file
-                    .then(|| stem_and_extension(component_b))
-                    .unwrap_or_default();
+                let (a_stem, a_ext) = if a_leaf_file {
+                    stem_and_extension(component_a)
+                } else {
+                    Default::default()
+                };
+                let (b_stem, b_ext) = if b_leaf_file {
+                    stem_and_extension(component_b)
+                } else {
+                    Default::default()
+                };
                 let a_key = if a_leaf_file {
                     a_stem
                 } else {
@@ -1253,12 +1258,16 @@ pub fn compare_rel_paths_files_first(
                 let a_leaf_file = a_is_file && components_a.rest().is_empty();
                 let b_leaf_file = b_is_file && components_b.rest().is_empty();
 
-                let (a_stem, a_ext) = a_leaf_file
-                    .then(|| stem_and_extension(component_a))
-                    .unwrap_or_default();
-                let (b_stem, b_ext) = b_leaf_file
-                    .then(|| stem_and_extension(component_b))
-                    .unwrap_or_default();
+                let (a_stem, a_ext) = if a_leaf_file {
+                    stem_and_extension(component_a)
+                } else {
+                    Default::default()
+                };
+                let (b_stem, b_ext) = if b_leaf_file {
+                    stem_and_extension(component_b)
+                } else {
+                    Default::default()
+                };
                 let a_key = if a_leaf_file {
                     a_stem
                 } else {
@@ -1436,11 +1445,13 @@ pub trait UrlExt {
     /// A version of `url::Url::to_file_path` that does platform handling based on the provided `PathStyle` instead of the host platform.
     ///
     /// Prefer using this over `url::Url::to_file_path` when you need to handle paths in a cross-platform way as is the case for remoting interactions.
+    #[allow(clippy::result_unit_err)]
     fn to_file_path_ext(&self, path_style: PathStyle) -> Result<PathBuf, ()>;
 }
 
 impl UrlExt for url::Url {
     // Copied from `url::Url::to_file_path`, but the `cfg` handling is replaced with runtime branching on `PathStyle`
+    #[allow(clippy::result_unit_err)]
     fn to_file_path_ext(&self, source_path_style: PathStyle) -> Result<PathBuf, ()> {
         if let Some(segments) = self.path_segments() {
             let host = match self.host() {

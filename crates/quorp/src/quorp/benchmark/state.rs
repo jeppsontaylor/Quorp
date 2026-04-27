@@ -561,7 +561,10 @@ pub(crate) fn load_benchmark_briefing(
     Ok(Some(raw))
 }
 
-pub(crate) fn select_benchmark_briefing_text(value: &serde_json::Value, issue_id: &str) -> Option<String> {
+pub(crate) fn select_benchmark_briefing_text(
+    value: &serde_json::Value,
+    issue_id: &str,
+) -> Option<String> {
     match value {
         serde_json::Value::String(text) => Some(text.clone()),
         serde_json::Value::Object(object) => object
@@ -966,4 +969,3 @@ pub(crate) fn is_support_or_generated_changed_file(path: &str) -> bool {
             | "benchmark-report.md"
     )
 }
-

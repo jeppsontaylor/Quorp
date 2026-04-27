@@ -77,7 +77,10 @@ impl AgentTaskState {
         }
     }
 
-    pub(crate) fn allow_action_for_benchmark_policy(&self, action: &AgentAction) -> Result<(), String> {
+    pub(crate) fn allow_action_for_benchmark_policy(
+        &self,
+        action: &AgentAction,
+    ) -> Result<(), String> {
         if let Some(error) = self.benchmark_narrow_repair_restricts_action(action) {
             return Err(error);
         }

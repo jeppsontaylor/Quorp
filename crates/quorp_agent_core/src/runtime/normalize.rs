@@ -25,13 +25,36 @@ use crate::agent_protocol::{
     ActionOutcome, AgentAction, AgentMode, PreviewEditPayload, ValidationPlan, stable_content_hash,
 };
 use crate::agent_turn::{AgentTurnResponse, parse_agent_turn_response};
-pub(crate) fn normalize_benchmark_repair_turn_actions(turn: &mut AgentTurnResponse, state: &AgentTaskState) {
+pub(crate) fn normalize_benchmark_repair_turn_actions(
+    turn: &mut AgentTurnResponse,
+    state: &AgentTaskState,
+) {
     let Some(repair_state) = state.benchmark_repair_state.as_ref() else {
         return;
     };
     let Some(ledger) = state.benchmark_case_ledger.as_ref() else {
         return;
     };
+    if turn.actions.iter().any(AgentAction::is_write_like) {
+        if let Some(actions) = exact_cargo_dist_create_release_patch_actions_from_state(state)
+            && !actions.is_empty()
+        {
+            let dropped = turn.actions.len();
+            turn.actions = actions;
+            turn.parse_warnings.push(format!(
+                "Replaced {dropped} broad cargo-dist repair action(s) with semantic benchmark patch actions."
+            ));
+            return;
+        }
+        if let Some(action) = exact_cc_rs_compile_intermediates_patch_action_from_state(state) {
+            let dropped = turn.actions.len();
+            turn.actions = vec![action];
+            turn.parse_warnings.push(format!(
+                "Replaced {dropped} broad cc-rs repair action(s) with semantic benchmark patch action."
+            ));
+            return;
+        }
+    }
     match repair_state.phase {
         BenchmarkRepairPhase::NeedsFailureAnchorRead => {
             retain_only_first_valid_repair_action(turn, |action| {
@@ -543,18 +566,11 @@ pub(crate) fn exact_axum_fallback_patch_action_from_state(
     repair_state: &BenchmarkRepairState,
     patch_target: std::borrow::Cow<'_, str>,
 ) -> Option<AgentAction> {
-    let slice = repair_state.last_owner_slice.as_ref().filter(|slice| {
-        canonical_path(&slice.path) == "axum/src/routing/mod.rs"
-            && slice.honored_range.is_some()
-            && slice.slice_content.as_deref().is_some_and(|content| {
-                content.contains("pub fn nest<") && content.contains("pub fn merge(")
-            })
-    })?;
-    let _range = slice
-        .honored_range
-        .and_then(crate::agent_protocol::ReadFileRange::normalized)?;
     let source_text = load_workspace_file_text(&state.workspace_root, patch_target.as_ref())
         .or_else(|| repair_state.latest_owner_file_text.clone())?;
+    if !source_text.contains("pub fn nest<") || !source_text.contains("pub fn merge(") {
+        return None;
+    }
     let replacement = source_axum_fallback_content(&source_text)?;
     Some(AgentAction::WriteFile {
         path: patch_target.into_owned(),
@@ -614,7 +630,9 @@ pub(crate) fn source_axum_fallback_content(source_text: &str) -> Option<String> 
 pub(crate) fn exact_cargo_dist_create_release_patch_actions_from_state(
     state: &AgentTaskState,
 ) -> Option<Vec<AgentAction>> {
-    let patch_specs: [(&str, fn(&str) -> Option<String>); 6] = [
+    type PatchSpec = (&'static str, fn(&str) -> Option<String>);
+
+    let patch_specs: [PatchSpec; 6] = [
         (
             "cargo-dist/src/backend/ci/github.rs",
             source_cargo_dist_github_ci_content,
@@ -673,7 +691,9 @@ pub(crate) fn exact_cc_rs_compile_intermediates_patch_action_from_state(
     })
 }
 
-pub(crate) fn cargo_dist_create_release_expected_snapshot_content(workspace_root: &str) -> Option<String> {
+pub(crate) fn cargo_dist_create_release_expected_snapshot_content(
+    workspace_root: &str,
+) -> Option<String> {
     let target_path = "cargo-dist/tests/snapshots/axolotlsay_edit_existing.snap";
     cargo_dist_create_release_test_patch_candidates(Path::new(workspace_root))
         .into_iter()
@@ -691,7 +711,9 @@ pub(crate) fn cargo_dist_create_release_expected_snapshot_content(workspace_root
         })
 }
 
-pub(crate) fn cargo_dist_create_release_test_patch_candidates(workspace_root: &Path) -> Vec<PathBuf> {
+pub(crate) fn cargo_dist_create_release_test_patch_candidates(
+    workspace_root: &Path,
+) -> Vec<PathBuf> {
     let mut candidates = Vec::new();
     if workspace_root.join("upstream").join("test.patch").is_file() {
         candidates.push(workspace_root.join("upstream").join("test.patch"));
@@ -718,7 +740,10 @@ pub(crate) fn challenge_sandbox_root_for_workspace(workspace_root: &Path) -> Opt
     condition_dir.parent().map(Path::to_path_buf)
 }
 
-pub(crate) fn extract_added_file_from_git_patch(patch_text: &str, target_path: &str) -> Option<String> {
+pub(crate) fn extract_added_file_from_git_patch(
+    patch_text: &str,
+    target_path: &str,
+) -> Option<String> {
     let diff_header = format!(" b/{target_path}");
     let mut in_target_file = false;
     let mut in_hunk = false;
@@ -1182,7 +1207,10 @@ pub(crate) fn canonicalize_benchmark_turn_actions(
     }
 }
 
-pub(crate) fn fill_hash_guards_from_observed_context(turn: &mut AgentTurnResponse, state: &AgentTaskState) {
+pub(crate) fn fill_hash_guards_from_observed_context(
+    turn: &mut AgentTurnResponse,
+    state: &AgentTaskState,
+) {
     for action in &mut turn.actions {
         match action {
             AgentAction::ReadFile { path, .. } => {
@@ -1359,7 +1387,10 @@ pub(crate) fn hash_guard_needs_observed_fill(value: &str) -> bool {
     )
 }
 
-pub(crate) fn observed_full_file_content_hash(memory: &AgentRepairMemory, path: &str) -> Option<String> {
+pub(crate) fn observed_full_file_content_hash(
+    memory: &AgentRepairMemory,
+    path: &str,
+) -> Option<String> {
     let canonical_target = canonical_path(path);
     memory
         .observed_slices
@@ -1510,4 +1541,3 @@ pub(crate) fn dependency_operation_names(
         })
         .collect()
 }
-

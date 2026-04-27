@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+suite="${QUORP_BENCHMARK_SUITE:-rust-swebench-top5}"
+reports_root="${QUORP_BENCHMARK_REPORTS_ROOT:-${HOME}/Library/Caches/Quorp/benchmark-reports}"
+output_root="${QUORP_BENCHMARK_SCORE_OUTPUT_ROOT:-${reports_root}/scoreboards/${suite}}"
+run_dir="${QUORP_BENCHMARK_RUN_DIR:-}"
+
+cd "$repo_root"
+
+echo "[quorp-benchmark-regression-gate] deterministic scoring tests"
+cargo test -p quorp_benchmark --lib
+cargo test -p quorp --bin quorp score_benchmark_reports_writes_session_scoreboard
+
+if [[ -z "$run_dir" && "${QUORP_BENCHMARK_RUN_SMOKE:-0}" == "1" ]]; then
+  run_dir="$(mktemp -d "${TMPDIR:-/tmp}/quorp-benchmark-gate.XXXXXX")"
+  QUORP_BENCHMARK_RESULT_DIR="$run_dir" ./script/quorp-benchmark-smoke
+fi
+
+if [[ -z "$run_dir" ]]; then
+  echo "[quorp-benchmark-regression-gate] no live run requested; set QUORP_BENCHMARK_RUN_SMOKE=1 or QUORP_BENCHMARK_RUN_DIR=/path/to/run"
+  exit 0
+fi
+
+echo "[quorp-benchmark-regression-gate] scoring run_dir=$run_dir"
+cargo run -p quorp -- benchmark score \
+  --run-dir "$run_dir" \
+  --suite "$suite" \
+  --reports-root "$reports_root" \
+  --output-root "$output_root" \
+  --fail-on-regression

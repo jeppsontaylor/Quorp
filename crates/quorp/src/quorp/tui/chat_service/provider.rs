@@ -45,20 +45,11 @@ pub(crate) fn nvidia_rate_limit_retries() -> u64 {
     env_u64("QUORP_NVIDIA_RATE_LIMIT_RETRIES").unwrap_or(2)
 }
 
-pub(crate) fn parse_retry_after_seconds(headers: &reqwest::header::HeaderMap) -> Option<u64> {
-    headers
-        .get(reqwest::header::RETRY_AFTER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|value| value.trim().parse::<u64>().ok())
-}
-
 pub(crate) fn nvidia_rate_limit_backoff_seconds(
     headers: &reqwest::header::HeaderMap,
     attempt_index: u64,
 ) -> u64 {
-    parse_retry_after_seconds(headers)
-        .unwrap_or_else(|| 30_u64.saturating_mul(attempt_index.saturating_add(1)))
-        .clamp(1, 120)
+    quorp_provider::openai_compatible_client::retry_backoff_seconds(headers, attempt_index)
 }
 
 pub(crate) fn is_nvidia_qwen_coder_model(model_id: &str) -> bool {

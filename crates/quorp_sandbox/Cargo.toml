@@ -11,6 +11,7 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+log.workspace = true
 quorp_core.workspace = true
 serde = { workspace = true, features = ["derive"] }
 tempfile.workspace = true

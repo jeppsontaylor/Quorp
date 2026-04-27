@@ -451,5 +451,4 @@ impl AgentTaskState {
     pub(crate) fn can_finish_without_more_actions(&self) -> bool {
         self.verified_green
     }
-
 }

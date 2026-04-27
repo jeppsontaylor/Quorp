@@ -299,7 +299,9 @@ Return a strict JSON object only with this schema:
     )
 }
 
-pub(crate) fn parse_challenge_judge_response(content: &str) -> Result<ChallengeJudgeOutcome, String> {
+pub(crate) fn parse_challenge_judge_response(
+    content: &str,
+) -> Result<ChallengeJudgeOutcome, String> {
     let trimmed = content.trim();
     let candidate = extract_json_object(trimmed).unwrap_or(trimmed);
     let value: serde_json::Value = serde_json::from_str(candidate)
@@ -620,6 +622,9 @@ pub(crate) fn attempt_report_for_bootstrap_stall(
         repair_phase_invalid_action_count: 0,
         post_fast_loop_patch_attempted: false,
         post_fast_loop_validation_rerun_attempted: false,
+        full_validation_before_fast_loop: false,
+        prose_only_recovery_count: 0,
+        bare_replace_block_retry_count: 0,
         patch_packet_injected: false,
         patch_packet_honored_range: None,
         recommended_rerun_command: None,
@@ -1225,6 +1230,9 @@ pub(crate) fn finalize_attempt(
         post_fast_loop_patch_attempted: validation_state.post_fast_loop_patch_attempted,
         post_fast_loop_validation_rerun_attempted: validation_state
             .post_fast_loop_validation_rerun_attempted,
+        full_validation_before_fast_loop: validation_state.full_validation_before_fast_loop,
+        prose_only_recovery_count: validation_state.prose_only_recovery_count,
+        bare_replace_block_retry_count: validation_state.bare_replace_block_retry_count,
         patch_packet_injected: validation_state.patch_packet_injected,
         patch_packet_honored_range: validation_state.patch_packet_honored_range,
         recommended_rerun_command: validation_state.recommended_rerun_command,
@@ -1267,4 +1275,3 @@ pub(crate) fn finalize_attempt(
         routing,
     })
 }
-

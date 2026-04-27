@@ -331,6 +331,7 @@ impl Child {
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn spawn_posix_spawn(
     program: &OsStr,
     args: &[OsString],

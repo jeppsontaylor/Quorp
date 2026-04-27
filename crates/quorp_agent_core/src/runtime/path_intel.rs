@@ -447,6 +447,7 @@ pub(crate) async fn dispatch_action(
     event_sink: &dyn RuntimeEventSink,
     transcript: &mut Vec<TranscriptMessage>,
 ) -> Result<DispatchOutcome, String> {
+    let action = normalize_benchmark_dispatch_action(state, action);
     state.record_canonical_action(step, &action);
     if let Err(error) = state.allow_action(&action) {
         event_sink.emit(RuntimeEvent::PolicyDenied {
@@ -552,6 +553,30 @@ pub(crate) async fn dispatch_action(
         }
     };
     Ok(outcome)
+}
+
+fn normalize_benchmark_dispatch_action(
+    state: &AgentTaskState,
+    mut action: AgentAction,
+) -> AgentAction {
+    const BENCHMARK_FAST_LOOP_TIMEOUT_MS: u64 = 120_000;
+    if let AgentAction::RunCommand {
+        command,
+        timeout_ms,
+    } = &mut action
+        && let Some(ledger) = state.benchmark_case_ledger.as_ref()
+        && action_matches_fast_loop(
+            &AgentAction::RunCommand {
+                command: command.clone(),
+                timeout_ms: *timeout_ms,
+            },
+            ledger,
+        )
+        && *timeout_ms < BENCHMARK_FAST_LOOP_TIMEOUT_MS
+    {
+        *timeout_ms = BENCHMARK_FAST_LOOP_TIMEOUT_MS;
+    }
+    action
 }
 
 pub(crate) fn parse_path_resolution_failure(error_text: &str) -> Option<PathResolutionFailure> {
@@ -1025,7 +1050,10 @@ pub(crate) fn summarize_read_file_observation(
     lines.join("\n")
 }
 
-pub(crate) fn failing_line_hint_for_path(ledger: &BenchmarkCaseLedger, path: &str) -> Option<usize> {
+pub(crate) fn failing_line_hint_for_path(
+    ledger: &BenchmarkCaseLedger,
+    path: &str,
+) -> Option<usize> {
     let failure = ledger.last_validation_failure.as_ref()?;
     let needle = format!("{path}:");
     failure.lines().find_map(|line| {
@@ -1088,7 +1116,9 @@ pub(crate) fn parse_read_file_observation(output_text: &str) -> Option<ReadFileO
     })
 }
 
-pub(crate) fn parse_read_file_range_label(label: &str) -> Option<crate::agent_protocol::ReadFileRange> {
+pub(crate) fn parse_read_file_range_label(
+    label: &str,
+) -> Option<crate::agent_protocol::ReadFileRange> {
     let (start_line, end_line) = label.trim().split_once('-')?;
     let start_line = start_line.trim().parse::<usize>().ok()?;
     let end_line = end_line.trim().parse::<usize>().ok()?;
@@ -1099,7 +1129,11 @@ pub(crate) fn parse_read_file_range_label(label: &str) -> Option<crate::agent_pr
     .normalized()
 }
 
-pub(crate) fn exact_line_range_excerpt(content: &str, start_line: usize, end_line: usize) -> Option<String> {
+pub(crate) fn exact_line_range_excerpt(
+    content: &str,
+    start_line: usize,
+    end_line: usize,
+) -> Option<String> {
     let content_lines = content.lines().collect::<Vec<_>>();
     if content_lines.is_empty() || start_line == 0 || end_line == 0 {
         return None;
@@ -1145,7 +1179,11 @@ pub(crate) fn render_honored_read_excerpt(
         .unwrap_or_else(|| content.to_string())
 }
 
-pub(crate) fn summarize_command_like_observation(label: &str, output_text: &str, char_cap: usize) -> String {
+pub(crate) fn summarize_command_like_observation(
+    label: &str,
+    output_text: &str,
+    char_cap: usize,
+) -> String {
     let lines = output_text.lines().collect::<Vec<_>>();
     if lines.is_empty() {
         return String::new();
@@ -1194,7 +1232,11 @@ pub(crate) fn is_important_validation_line(line: &str) -> bool {
         || normalized.contains("caused by")
 }
 
-pub(crate) fn anchored_excerpt(content: &str, needle_source: &str, radius: usize) -> Option<String> {
+pub(crate) fn anchored_excerpt(
+    content: &str,
+    needle_source: &str,
+    radius: usize,
+) -> Option<String> {
     let content_lines = content.lines().collect::<Vec<_>>();
     if content_lines.is_empty() {
         return None;
@@ -1388,7 +1430,10 @@ pub(crate) fn selector_matches_known_test(
     })
 }
 
-pub(crate) fn fast_loop_match_kind(ledger: &BenchmarkCaseLedger, command: &str) -> Option<FastLoopMatchKind> {
+pub(crate) fn fast_loop_match_kind(
+    ledger: &BenchmarkCaseLedger,
+    command: &str,
+) -> Option<FastLoopMatchKind> {
     let trimmed_command = command.trim();
     if trimmed_command.is_empty() {
         return None;
@@ -1627,11 +1672,19 @@ pub(crate) fn patch_phase_scaffold_action_is_valid(
     }
 }
 
-pub(crate) fn record_fast_loop_validation_failure(ledger: &mut BenchmarkCaseLedger, output_text: &str) {
+pub(crate) fn record_fast_loop_validation_failure(
+    ledger: &mut BenchmarkCaseLedger,
+    output_text: &str,
+) {
     let previous_patch_attempted = ledger.validation_details.post_fast_loop_patch_attempted;
     let previous_validation_rerun_attempted = ledger
         .validation_details
         .post_fast_loop_validation_rerun_attempted;
+    let previous_full_validation_before_fast_loop =
+        ledger.validation_details.full_validation_before_fast_loop;
+    let previous_prose_only_recovery_count = ledger.validation_details.prose_only_recovery_count;
+    let previous_bare_replace_block_retry_count =
+        ledger.validation_details.bare_replace_block_retry_count;
     let mut details = parse_benchmark_validation_details(
         output_text,
         &ledger.owner_files,
@@ -1642,6 +1695,13 @@ pub(crate) fn record_fast_loop_validation_failure(ledger: &mut BenchmarkCaseLedg
     details.post_fast_loop_patch_attempted = previous_patch_attempted;
     details.post_fast_loop_validation_rerun_attempted =
         previous_validation_rerun_attempted || previous_patch_attempted;
+    details.full_validation_before_fast_loop = previous_full_validation_before_fast_loop;
+    details.prose_only_recovery_count = details
+        .prose_only_recovery_count
+        .saturating_add(previous_prose_only_recovery_count);
+    details.bare_replace_block_retry_count = details
+        .bare_replace_block_retry_count
+        .saturating_add(previous_bare_replace_block_retry_count);
     details.patch_packet_injected = false;
     details.patch_packet_honored_range = None;
     details.recommended_rerun_command = recommended_fast_loop_rerun_command(ledger);
@@ -1687,6 +1747,9 @@ pub(crate) fn parse_benchmark_validation_details(
         repair_phase_invalid_action_count: 0,
         post_fast_loop_patch_attempted: false,
         post_fast_loop_validation_rerun_attempted: false,
+        full_validation_before_fast_loop: false,
+        prose_only_recovery_count: 0,
+        bare_replace_block_retry_count: 0,
         patch_packet_injected: false,
         patch_packet_honored_range: None,
         recommended_rerun_command: None,
@@ -1771,4 +1834,3 @@ pub(crate) fn benchmark_output_indicates_manifest_feature_error(lower: &str) -> 
         || lower.contains("chrono");
     serde_trait_gap && case_06_types
 }
-

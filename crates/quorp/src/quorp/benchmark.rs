@@ -5,41 +5,29 @@
     clippy::too_many_arguments
 )]
 
-use std::collections::BTreeSet;
-use std::env;
 use std::fs;
-use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::process::Stdio;
-use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Duration;
-use std::time::{Instant, SystemTime, UNIX_EPOCH};
+use std::time::Instant;
 
 use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
-use crate::quorp::agent_runner::{HeadlessRunOptions, resume_headless_agent, run_headless_agent};
-use crate::quorp::tui::chat_service::{
-    ChatServiceMessage, ChatServiceRole, StreamRequest, request_single_completion_details,
-};
-use quorp_agent_core::{PromptCompactionPolicy, TranscriptMessage, TranscriptRole};
+use crate::quorp::agent_runner::resume_headless_agent;
+use quorp_agent_core::PromptCompactionPolicy;
 use quorp_benchmark::{
-    AttemptReport, BatchCaseReport, BenchmarkReport, ChallengeCapsule, ChallengeJudgeOutcome,
-    ChallengeManifest, ChallengeMetadata, EvaluatorOutcome, PromptTokenTurnSample,
-    ReadRangeObservation, ResolvedBenchmark, ResolvedChallengeCase, RoutingSummary,
-    challenge_evaluation_env, challenge_evaluation_target_dir, copy_dir_all, ensure_git_baseline,
-    prepare_challenge_run as prepare_benchmark_challenge_run, rebase_attempt_path,
-    render_batch_report, render_report_markdown, render_run_summary,
+    AttemptReport, BatchCaseReport, BenchmarkReport, ChallengeManifest, ChallengeMetadata,
+    EvaluatorOutcome, PromptTokenTurnSample, ResolvedBenchmark, ResolvedChallengeCase,
+    challenge_evaluation_env, challenge_evaluation_target_dir,
+    prepare_challenge_run as prepare_benchmark_challenge_run, render_batch_report,
+    render_run_summary,
     reset_challenge_workspace_for_attempt as reset_benchmark_challenge_workspace_for_attempt,
-    resolve_benchmark, resolve_challenge_case, run_collector_evaluator, run_shell_command_with_env,
-    run_visible_evaluator, substitute_condition, summarize_batch_report, summarize_markdown_brief,
-    summarize_run_report, summarize_workspace_root,
+    resolve_benchmark, resolve_challenge_case, run_shell_command_with_env, substitute_condition,
+    summarize_batch_report, summarize_run_report,
 };
 pub use quorp_benchmark::{BenchmarkExecutor, BenchmarkScoreOptions, score_benchmark_reports};
-use quorp_core::{ProofReceipt, RawArtifact, ValidationRecord};
 
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_BOLD: &str = "\x1b[1m";
@@ -132,7 +120,7 @@ pub struct BenchmarkBatchRunOptions {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct BenchmarkManifest {
+pub(crate) struct BenchmarkManifest {
     resolved: ResolvedBenchmark,
     #[serde(default)]
     executor: BenchmarkExecutor,
@@ -161,7 +149,7 @@ struct BenchmarkManifest {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-struct BenchmarkBootstrapProgress {
+pub(crate) struct BenchmarkBootstrapProgress {
     attempt: usize,
     bootstrap_phase: String,
     #[serde(default)]
@@ -178,7 +166,7 @@ struct BenchmarkBootstrapProgress {
     bootstrap_stall_class: Option<String>,
 }
 
-struct BenchmarkBootstrapTracker {
+pub(crate) struct BenchmarkBootstrapTracker {
     root_progress_path: PathBuf,
     attempt_progress_path: PathBuf,
     attempt: usize,
@@ -186,7 +174,7 @@ struct BenchmarkBootstrapTracker {
 }
 
 #[derive(Debug, Clone, Default)]
-struct ActionEvidence {
+pub(crate) struct ActionEvidence {
     read_count: usize,
     write_count: usize,
     command_execution_count: usize,
@@ -195,7 +183,7 @@ struct ActionEvidence {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, Default)]
-struct CheckpointValidationState {
+pub(crate) struct CheckpointValidationState {
     #[serde(default)]
     validation_status: Option<String>,
     #[serde(default)]
@@ -239,6 +227,12 @@ struct CheckpointValidationState {
     #[serde(default)]
     post_fast_loop_validation_rerun_attempted: bool,
     #[serde(default)]
+    full_validation_before_fast_loop: bool,
+    #[serde(default)]
+    prose_only_recovery_count: usize,
+    #[serde(default)]
+    bare_replace_block_retry_count: usize,
+    #[serde(default)]
     patch_packet_injected: bool,
     #[serde(default)]
     patch_packet_honored_range: Option<String>,
@@ -255,7 +249,7 @@ struct CheckpointValidationState {
 }
 
 #[derive(Debug, Clone)]
-struct BenchmarkProviderSummary {
+pub(crate) struct BenchmarkProviderSummary {
     provider_kind: String,
     provider_base_url: Option<String>,
     auth_mode: String,
@@ -300,7 +294,7 @@ impl SingleCaseActionContractOverride {
     }
 }
 
-struct ChallengeJudgeContext<'a> {
+pub(crate) struct ChallengeJudgeContext<'a> {
     manifest: &'a BenchmarkManifest,
     metadata: &'a ChallengeMetadata,
     attempt_number: usize,
@@ -314,13 +308,13 @@ struct ChallengeJudgeContext<'a> {
 }
 
 #[derive(Debug, Clone)]
-struct SynthesizedObjective {
+pub(crate) struct SynthesizedObjective {
     path: PathBuf,
     prompt_token_estimate: u64,
 }
 
 #[derive(Debug, Clone, Default)]
-struct RequestMetricsSummary {
+pub(crate) struct RequestMetricsSummary {
     max_prompt_token_estimate: Option<u64>,
     max_completion_token_cap: Option<u32>,
     watchdog_near_limit: bool,
@@ -335,7 +329,7 @@ struct RequestMetricsSummary {
 }
 
 #[derive(Debug, Clone, Default)]
-struct ControlLoopSummary {
+pub(crate) struct ControlLoopSummary {
     path_resolution_failures: usize,
     recovery_turns: usize,
 }
@@ -343,6 +337,7 @@ struct ControlLoopSummary {
 #[derive(Debug)]
 struct BenchmarkRunLock {
     path: PathBuf,
+    enabled: bool,
 }
 
 pub fn run_benchmark(options: BenchmarkRunOptions) -> anyhow::Result<()> {
@@ -462,8 +457,7 @@ pub fn resume_benchmark(options: BenchmarkResumeOptions) -> anyhow::Result<()> {
     )
 }
 
-fn normalize_manifest_paths_for_runtime(_manifest: &mut BenchmarkManifest, _result_dir: &Path) {
-}
+fn normalize_manifest_paths_for_runtime(_manifest: &mut BenchmarkManifest, _result_dir: &Path) {}
 
 pub fn parse_prompt_compaction_policy(
     value: Option<&str>,
@@ -517,8 +511,18 @@ pub fn prepare_benchmark_prompt_bundle(
     })
 }
 
-pub fn run_benchmark_batch(options: BenchmarkBatchRunOptions) -> anyhow::Result<()> {
+pub fn run_benchmark_batch(mut options: BenchmarkBatchRunOptions) -> anyhow::Result<()> {
     fs::create_dir_all(&options.result_dir)?;
+    options.result_dir = fs::canonicalize(&options.result_dir)
+        .with_context(|| format!("failed to canonicalize {}", options.result_dir.display()))?;
+    if let Some(log_dir) = options.log_dir.as_ref() {
+        fs::create_dir_all(log_dir)
+            .with_context(|| format!("failed to create log dir {}", log_dir.display()))?;
+        options.log_dir = Some(
+            fs::canonicalize(log_dir)
+                .with_context(|| format!("failed to canonicalize {}", log_dir.display()))?,
+        );
+    }
     let case_roots = discover_challenge_case_roots(&options.cases_root)?;
     if case_roots.is_empty() {
         anyhow::bail!(
@@ -914,6 +918,7 @@ fn launch_single_case_run(
     if let Some(condition) = options.condition.as_ref() {
         command.arg("--condition").arg(condition);
     }
+    command.env("QUORP_BENCHMARK_SKIP_LOCK", "1");
     if let Some(native_tool_calls_override) = action_contract.native_tool_calls {
         command.env(
             "QUORP_BENCH_NATIVE_TOOL_CALLS",
@@ -1594,6 +1599,9 @@ fn finalize_challenge_attempt(
         post_fast_loop_patch_attempted: validation_state.post_fast_loop_patch_attempted,
         post_fast_loop_validation_rerun_attempted: validation_state
             .post_fast_loop_validation_rerun_attempted,
+        full_validation_before_fast_loop: validation_state.full_validation_before_fast_loop,
+        prose_only_recovery_count: validation_state.prose_only_recovery_count,
+        bare_replace_block_retry_count: validation_state.bare_replace_block_retry_count,
         patch_packet_injected: validation_state.patch_packet_injected,
         patch_packet_honored_range: validation_state.patch_packet_honored_range,
         recommended_rerun_command: validation_state.recommended_rerun_command,
@@ -1637,7 +1645,6 @@ fn finalize_challenge_attempt(
     })
 }
 
-
 mod engine;
 mod probe;
 mod reporting;
@@ -1654,4 +1661,3 @@ pub(crate) use state::*;
 
 #[cfg(test)]
 mod tests;
-

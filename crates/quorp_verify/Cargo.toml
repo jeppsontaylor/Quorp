@@ -16,6 +16,9 @@ workspace = true
 quorp_ids = { workspace = true }
 quorp_verify_model = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+sha2.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+tempfile.workspace = true

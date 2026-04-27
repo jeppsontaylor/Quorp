@@ -515,12 +515,16 @@ mod tests {
         let parsed: CallToolResult = serde_json::from_str(json).unwrap();
         assert_eq!(parsed.content.len(), 3);
         assert_eq!(parsed.is_error, Some(false));
-        assert!(matches!(&parsed.content[0], CallToolResultContent::Text { text } if text == "hello"));
+        assert!(
+            matches!(&parsed.content[0], CallToolResultContent::Text { text } if text == "hello")
+        );
         assert!(matches!(
             &parsed.content[1],
             CallToolResultContent::Image { mime_type, data } if mime_type == "image/png" && data == "AQID"
         ));
-        assert!(matches!(&parsed.content[2], CallToolResultContent::Resource { resource } if resource["uri"] == "file:///tmp/a"));
+        assert!(
+            matches!(&parsed.content[2], CallToolResultContent::Resource { resource } if resource["uri"] == "file:///tmp/a")
+        );
     }
 
     #[test]

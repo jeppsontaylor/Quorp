@@ -224,9 +224,7 @@ pub fn build_challenge_objective(
     Ok(sections.join("\n\n"))
 }
 
-pub fn collect_challenge_context_files(
-    metadata: &ChallengeMetadata,
-) -> Vec<PathBuf> {
+pub fn collect_challenge_context_files(metadata: &ChallengeMetadata) -> Vec<PathBuf> {
     vec![
         Some(metadata.workspace_dir.join("benchmark.json")),
         Some(metadata.objective_file.clone()),

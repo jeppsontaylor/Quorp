@@ -11,15 +11,20 @@
 
 pub mod caps;
 pub mod palette;
+pub mod permission_modal;
+pub mod session;
 pub mod shimmer;
 pub mod splash;
 pub mod status_footer;
 pub mod transcript;
-pub mod permission_modal;
 
 pub use caps::{ColorCapability, RenderProfile};
 pub use palette::{Rgb, lerp_rgb};
+pub use permission_modal::{PermissionPrompt, render_permission_modal};
+pub use session::{
+    CommandCard, CommandState, SessionFrame, TaskRow, TaskState, render_command_card,
+    render_session_frame,
+};
 pub use shimmer::{ShimmerStyle, render_shimmer};
 pub use splash::{SplashStep, render_splash};
 pub use status_footer::{StatusFooter, render_status_footer};
-pub use permission_modal::{PermissionPrompt, render_permission_modal};

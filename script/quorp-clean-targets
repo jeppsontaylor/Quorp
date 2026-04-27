@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+execute=0
+roots=()
+
+usage() {
+  cat <<'EOF'
+usage: quorp-clean-targets [--execute] [ROOT ...]
+
+Without ROOT arguments, scans Rust workspace roots under ~/Code for target directories.
+By default this is a dry run. Pass --execute to delete the matched target directories.
+EOF
+}
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --execute)
+      execute=1
+      shift
+      ;;
+    --dry-run)
+      execute=0
+      shift
+      ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      roots+=("$1")
+      shift
+      ;;
+  esac
+done
+
+if [[ ${#roots[@]} -eq 0 ]]; then
+  roots=("$HOME/Code")
+fi
+
+mapfile -t target_dirs < <(
+  for root in "${roots[@]}"; do
+    if [[ -d "$root" ]]; then
+      find "$root" -mindepth 1 -maxdepth 5 -type d -name target -prune
+    fi
+  done | sort -u
+)
+
+if [[ ${#target_dirs[@]} -eq 0 ]]; then
+  echo "no target directories found"
+  exit 0
+fi
+
+total_bytes=0
+for target_dir in "${target_dirs[@]}"; do
+  if [[ ! -d "$target_dir" ]]; then
+    continue
+  fi
+  size_human="$(du -sh "$target_dir" | awk '{print $1}')"
+  size_bytes="$(du -sk "$target_dir" | awk '{print $1 * 1024}')"
+  total_bytes=$((total_bytes + size_bytes))
+  printf '%s\t%s\n' "$size_human" "$target_dir"
+done
+
+echo "total reclaimable: ${total_bytes} bytes"
+
+if [[ "$execute" -ne 1 ]]; then
+  echo "dry run only; re-run with --execute to delete the directories above"
+  exit 0
+fi
+
+for target_dir in "${target_dirs[@]}"; do
+  if [[ -d "$target_dir" ]]; then
+    rm -rf "$target_dir"
+  fi
+done
+
+echo "target directories removed"

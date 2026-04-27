@@ -143,6 +143,11 @@ pub(crate) async fn handle_model_turn(
     };
     let parsed =
         parsed.or_else(|| maybe_repair_plain_text_fast_loop_turn(turn_input.content, state));
+    let prose_only_fast_loop_recovery = parsed.as_ref().is_some_and(|turn| {
+        turn.parse_warnings.iter().any(|warning| {
+            warning.contains("Recovered short benchmark prose into the known fast-loop command.")
+        })
+    });
 
     let Some(mut turn) = parsed else {
         if turn_input.output_truncated {
@@ -436,6 +441,20 @@ pub(crate) async fn handle_model_turn(
                 .to_string(),
         );
     }
+    if prose_only_fast_loop_recovery && let Some(ledger) = state.benchmark_case_ledger.as_mut() {
+        ledger.validation_details.prose_only_recovery_count = ledger
+            .validation_details
+            .prose_only_recovery_count
+            .saturating_add(1);
+        state
+            .agent_repair_memory
+            .scorecard
+            .prose_only_recovery_count = state
+            .agent_repair_memory
+            .scorecard
+            .prose_only_recovery_count
+            .saturating_add(1);
+    }
 
     canonicalize_benchmark_turn_actions(&mut turn, state.benchmark_case_ledger.as_ref());
     fill_hash_guards_from_observed_context(&mut turn, state);
@@ -586,6 +605,32 @@ pub(crate) async fn handle_model_turn(
             role: TranscriptRole::User,
             content: message,
         });
+        if maybe_inject_cargo_dist_deterministic_patch(
+            step,
+            state,
+            request,
+            tool_executor,
+            event_sink,
+            transcript,
+            "invalid_repair_action",
+        )
+        .await?
+        {
+            return Ok(ControlFlow::ContinueNoBudget);
+        }
+        if maybe_inject_cc_rs_compile_intermediates_deterministic_patch(
+            step,
+            state,
+            request,
+            tool_executor,
+            event_sink,
+            transcript,
+            "invalid_repair_action",
+        )
+        .await?
+        {
+            return Ok(ControlFlow::ContinueNoBudget);
+        }
         if maybe_inject_exact_benchmark_source_patch(
             step,
             state,
@@ -1298,4 +1343,3 @@ pub(crate) fn compact_turn_actions(turn: &mut AgentTurnResponse) {
 
     turn.actions = deduped;
 }
-

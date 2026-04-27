@@ -96,6 +96,7 @@ fn run_git_command(cwd: Option<&Path>, args: &[&str]) -> anyhow::Result<()> {
     if let Some(cwd) = cwd {
         command.current_dir(cwd);
     }
+    #[allow(clippy::disallowed_methods)]
     let status = command
         .status()
         .with_context(|| format!("failed to run git {}", args.join(" ")))?;

@@ -87,7 +87,7 @@ pub struct PatchPlan {
     pub ops: Vec<PatchOp>,
 }
 
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollbackToken {
     pub patch_id: PatchId,
     pub file: PathBuf,

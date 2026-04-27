@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1320" height="760" viewBox="0 0 1320 760" role="img" aria-label="Quorp Phase 1 terminal UX capture">
+  <rect width="1320" height="760" rx="18" fill="#05060A"/>
+  <rect x="28" y="28" width="1264" height="704" rx="12" fill="#080A10" stroke="#2B2144" stroke-width="2"/>
+  <text x="58" y="78" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="28" font-weight="700" fill="#FFD166">QUORP</text>
+  <text x="166" y="78" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="28" fill="#00C8E6">//</text>
+  <text x="212" y="78" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="28" fill="#E6EAF2">brilliant terminal coding</text>
+  <text x="58" y="116" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="19" fill="#7F8899">agent-first Rust runtime · truecolor stream · sandboxed tools</text>
+  <line x1="58" y1="145" x2="1260" y2="145" stroke="#A87EFF" stroke-width="4"/>
+
+  <text x="58" y="195" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" fill="#00C8E6">task list</text>
+  <text x="84" y="232" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" fill="#39FF88">✓</text>
+  <text x="122" y="232" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" fill="#E6EAF2">Plan task with proof gates</text>
+  <text x="84" y="268" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" fill="#00C8E6">*</text>
+  <text x="122" y="268" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" fill="#E6EAF2">Run command with live chroma</text>
+  <text x="84" y="304" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" fill="#A87EFF">·</text>
+  <text x="122" y="304" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="22" fill="#E6EAF2">Compress proof into receipt</text>
+
+  <rect x="58" y="336" width="1202" height="154" rx="10" fill="#07131A" stroke="#00C8E6" stroke-width="2"/>
+  <text x="88" y="380" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="23" fill="#E6EAF2">verify</text>
+  <text x="180" y="380" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="23" fill="#6FE3FF">running</text>
+  <text x="88" y="418" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="23" fill="#C77DFF">$ ./script/clippy</text>
+  <text x="88" y="456" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="21" fill="#E6EAF2">strict lane running · raw log retained · first error pins span</text>
+
+  <rect x="58" y="516" width="1202" height="132" rx="10" fill="#07140E" stroke="#39FF88" stroke-width="2"/>
+  <text x="88" y="558" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="23" fill="#E6EAF2">lib tests</text>
+  <text x="218" y="558" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="23" fill="#39FF88">passed exit=0 0.65s</text>
+  <text x="88" y="596" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="23" fill="#E6EAF2">$ cargo test --workspace --lib</text>
+  <text x="88" y="632" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="21" fill="#E6EAF2">421 passed across 39 suites</text>
+
+  <text x="58" y="694" font-family="Lilex, IBM Plex Mono, ui-monospace, SFMono-Regular, Menlo, Consolas, monospace" font-size="21" fill="#A87EFF">qwen3-coder@nvidia · --yolo sandbox · ctx 12.4k/64k · tasks 2/3</text>
+</svg>

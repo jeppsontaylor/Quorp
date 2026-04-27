@@ -215,6 +215,12 @@ pub struct BenchmarkValidationDetails {
     #[serde(default)]
     pub(crate) fast_loop_rerun_match_kind: Option<String>,
     #[serde(default)]
+    pub(crate) full_validation_before_fast_loop: bool,
+    #[serde(default)]
+    pub(crate) prose_only_recovery_count: usize,
+    #[serde(default)]
+    pub(crate) bare_replace_block_retry_count: usize,
+    #[serde(default)]
     pub(crate) failed_edit_records: Vec<FailedEditRecord>,
 }
 
@@ -536,7 +542,10 @@ pub(crate) fn canonical_action_target_path(action: &AgentAction) -> Option<Strin
     }
 }
 
-pub(crate) fn action_is_validation_like(action: &AgentAction, ledger: Option<&BenchmarkCaseLedger>) -> bool {
+pub(crate) fn action_is_validation_like(
+    action: &AgentAction,
+    ledger: Option<&BenchmarkCaseLedger>,
+) -> bool {
     match action {
         AgentAction::RunValidation { .. } => true,
         AgentAction::RunCommand { command, .. } => {
@@ -690,6 +699,20 @@ pub(crate) fn ranked_implementation_targets_for_ledger(
         diagnostic_class,
         Some("rust_compile_error" | "test_failure")
     );
+    let failure_text = ledger
+        .last_validation_failure
+        .as_deref()
+        .or(ledger.validation_details.assertion_excerpt.as_deref())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    let owner_first_without_diagnostic = diagnostic_class.is_none()
+        && (!ledger.owner_files.is_empty()
+            && (failure_text.contains("timed out")
+                || failure_text.contains("timeout")
+                || ledger
+                    .expected_touch_targets
+                    .iter()
+                    .any(|path| benchmark_support_surface_path(path))));
     if matches!(
         diagnostic_class,
         Some("manifest_dependency_error" | "manifest_feature_error")
@@ -706,11 +729,11 @@ pub(crate) fn ranked_implementation_targets_for_ledger(
             }
         }
     }
-    if source_diagnostic {
+    if source_diagnostic || owner_first_without_diagnostic {
         push_ranked_owner_targets(ledger, &mut targets, &mut seen);
     }
     for path in &ledger.expected_touch_targets {
-        if source_diagnostic
+        if (source_diagnostic || owner_first_without_diagnostic)
             && (path.ends_with("Cargo.toml") || benchmark_support_surface_path(path))
         {
             continue;
@@ -723,10 +746,10 @@ pub(crate) fn ranked_implementation_targets_for_ledger(
             });
         }
     }
-    if !source_diagnostic {
+    if !source_diagnostic && !owner_first_without_diagnostic {
         push_ranked_owner_targets(ledger, &mut targets, &mut seen);
     }
-    if source_diagnostic {
+    if source_diagnostic || owner_first_without_diagnostic {
         for path in ledger
             .expected_touch_targets
             .iter()
@@ -741,7 +764,7 @@ pub(crate) fn ranked_implementation_targets_for_ledger(
             }
         }
     }
-    if source_diagnostic {
+    if source_diagnostic || owner_first_without_diagnostic {
         for path in ledger
             .expected_touch_targets
             .iter()
@@ -1038,7 +1061,10 @@ pub(crate) fn patch_target_context_loaded(
         .any(|slice| canonical_path(&slice.path) == patch_target)
 }
 
-pub(crate) fn owner_slice_materially_loads_patch_target(slice: &OwnerSliceRecord, patch_target: &str) -> bool {
+pub(crate) fn owner_slice_materially_loads_patch_target(
+    slice: &OwnerSliceRecord,
+    patch_target: &str,
+) -> bool {
     if patch_target.ends_with(".toml") {
         return true;
     }
@@ -1137,7 +1163,9 @@ pub(crate) fn benchmark_required_action_label(
     }
 }
 
-pub(crate) fn repair_requirement_action_label(requirement: Option<&RepairRequirement>) -> Option<String> {
+pub(crate) fn repair_requirement_action_label(
+    requirement: Option<&RepairRequirement>,
+) -> Option<String> {
     let requirement = requirement?;
     if requirement.exact_reread_completed {
         return None;
@@ -1267,12 +1295,12 @@ pub async fn run_agent_task(
                         transcript: transcript.clone(),
                     });
                     event_sink.emit(RuntimeEvent::CheckpointSaved {
-                        checkpoint: AgentCheckpoint {
+                        checkpoint: Box::new(AgentCheckpoint {
                             snapshot: state.snapshot(),
                             transcript: transcript.clone(),
                             step: current_iteration,
                             request_counter,
-                        },
+                        }),
                     });
                     if verifier_drain_started && state.validation_queue.is_empty() {
                         event_sink.emit(RuntimeEvent::VerifierDrainFinished {
@@ -1432,12 +1460,12 @@ pub async fn run_agent_task(
                     transcript: transcript.clone(),
                 });
                 event_sink.emit(RuntimeEvent::CheckpointSaved {
-                    checkpoint: AgentCheckpoint {
+                    checkpoint: Box::new(AgentCheckpoint {
                         snapshot: state.snapshot(),
                         transcript: transcript.clone(),
                         step: current_iteration,
                         request_counter,
-                    },
+                    }),
                 });
                 if budget_exhausted_after_turn {
                     return finish_run(
@@ -1456,12 +1484,12 @@ pub async fn run_agent_task(
                     transcript: transcript.clone(),
                 });
                 event_sink.emit(RuntimeEvent::CheckpointSaved {
-                    checkpoint: AgentCheckpoint {
+                    checkpoint: Box::new(AgentCheckpoint {
                         snapshot: state.snapshot(),
                         transcript: transcript.clone(),
                         step: current_iteration,
                         request_counter,
-                    },
+                    }),
                 });
                 if budget_exhausted_after_turn {
                     return finish_run(
@@ -1514,4 +1542,3 @@ pub async fn run_agent_task(
         }
     }
 }
-

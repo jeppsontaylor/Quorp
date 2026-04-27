@@ -29,3 +29,7 @@ release: deep security
 loc-check:
     ./script/check-loc-cap 800 --warn
     ./script/check-loc-cap 2000 --error
+
+# CI helper: deterministic scoring tests plus optional live smoke/regression score.
+benchmark-gate:
+    ./script/quorp-benchmark-regression-gate

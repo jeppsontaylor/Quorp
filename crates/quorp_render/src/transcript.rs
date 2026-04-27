@@ -9,8 +9,16 @@ use crate::palette::{ACCENT_CYAN, DIM, FG_TEXT, RESET};
 pub enum TranscriptLine {
     UserPrompt(String),
     AssistantProse(String),
-    ToolCallSummary { tool: String, target: String, sample_chars: u32 },
-    RepairAttempt { attempt: u8, cap: u8, hypothesis: String },
+    ToolCallSummary {
+        tool: String,
+        target: String,
+        sample_chars: u32,
+    },
+    RepairAttempt {
+        attempt: u8,
+        cap: u8,
+        hypothesis: String,
+    },
 }
 
 pub fn render_transcript_line(line: &TranscriptLine, color: ColorCapability) -> String {
@@ -20,7 +28,11 @@ pub fn render_transcript_line(line: &TranscriptLine, color: ColorCapability) -> 
             if plain {
                 format!("> {text}")
             } else {
-                format!("{cyan}❯{reset} {text}", cyan = ACCENT_CYAN.fg(), reset = RESET)
+                format!(
+                    "{cyan}❯{reset} {text}",
+                    cyan = ACCENT_CYAN.fg(),
+                    reset = RESET
+                )
             }
         }
         TranscriptLine::AssistantProse(text) => {
@@ -30,7 +42,11 @@ pub fn render_transcript_line(line: &TranscriptLine, color: ColorCapability) -> 
                 format!("{fg}{text}{reset}", fg = FG_TEXT.fg(), reset = RESET)
             }
         }
-        TranscriptLine::ToolCallSummary { tool, target, sample_chars } => {
+        TranscriptLine::ToolCallSummary {
+            tool,
+            target,
+            sample_chars,
+        } => {
             let core = format!("⌐ {tool} {target} ({sample_chars} chars)");
             if plain {
                 core
@@ -38,7 +54,11 @@ pub fn render_transcript_line(line: &TranscriptLine, color: ColorCapability) -> 
                 format!("{dim}{core}{reset}", dim = DIM, reset = RESET)
             }
         }
-        TranscriptLine::RepairAttempt { attempt, cap, hypothesis } => {
+        TranscriptLine::RepairAttempt {
+            attempt,
+            cap,
+            hypothesis,
+        } => {
             let core = format!("  ↳ repair attempt {attempt}/{cap} — {hypothesis}");
             if plain {
                 core

@@ -1158,13 +1158,57 @@ impl AgentTaskState {
                         .to_string(),
                 );
             }
+            if phase == BenchmarkRepairPhase::NeedsPatch && !patch_target.ends_with(".toml") {
+                lines.push("[Patch Intent Packet]".to_string());
+                lines.push(format!("Patch target: `{patch_target}`"));
+                if let Some(range) = implementation_suggested_range.or(failure_anchor_range) {
+                    lines.push(format!("Preferred edit range: {}", range.label()));
+                }
+                if let Some(content_hash) = target_content_hash_for_patch(
+                    &repair_state_snapshot,
+                    &self.agent_repair_memory,
+                    patch_target.as_ref(),
+                ) {
+                    lines.push(format!("Observed target content_hash: `{content_hash}`"));
+                }
+                if let Some(command) = self
+                    .benchmark_case_ledger
+                    .as_ref()
+                    .and_then(recommended_fast_loop_rerun_command)
+                {
+                    lines.push(format!(
+                        "Rerun after patch: `{command}` with timeout_ms 120000"
+                    ));
+                }
+                lines.push(
+                    "This correction turn must contain exactly one patch-class action on the patch target. Do not read, search, list, inspect, or validate before the patch."
+                        .to_string(),
+                );
+                lines.push("Minimal JSON example:".to_string());
+                lines.push(source_patch_intent_example(
+                    patch_target.as_ref(),
+                    implementation_suggested_range.or(failure_anchor_range),
+                    target_content_hash_for_patch(
+                        &repair_state_snapshot,
+                        &self.agent_repair_memory,
+                        patch_target.as_ref(),
+                    )
+                    .as_deref(),
+                ));
+            }
         }
         let invalid_action_count = self
             .benchmark_repair_state
             .as_ref()
             .map(|repair_state| repair_state.invalid_action_count)
             .unwrap_or(0);
-        if invalid_action_count >= 2 {
+        let fatal_invalid_action_count =
+            if phase == BenchmarkRepairPhase::NeedsPatch && !patch_target.ends_with(".toml") {
+                4
+            } else {
+                2
+            };
+        if invalid_action_count >= fatal_invalid_action_count {
             if phase == BenchmarkRepairPhase::NeedsPatch
                 && write_locked
                 && self
@@ -1191,5 +1235,37 @@ impl AgentTaskState {
         }
         Ok(Some(lines.join("\n")))
     }
+}
 
+fn source_patch_intent_example(
+    patch_target: &str,
+    range: Option<crate::agent_protocol::ReadFileRange>,
+    content_hash: Option<&str>,
+) -> String {
+    let mut payload = serde_json::Map::new();
+    payload.insert("path".to_string(), serde_json::json!(patch_target));
+    if let Some(range) = range {
+        payload.insert(
+            "start_line".to_string(),
+            serde_json::json!(range.start_line),
+        );
+        payload.insert("end_line".to_string(), serde_json::json!(range.end_line));
+    }
+    if let Some(content_hash) = content_hash {
+        payload.insert(
+            "expected_content_hash".to_string(),
+            serde_json::json!(content_hash),
+        );
+    }
+    payload.insert(
+        "replacement".to_string(),
+        serde_json::json!("replace this with the minimal corrected source text"),
+    );
+    serde_json::json!({
+        "assistant_message": "patching leased target",
+        "actions": [{
+            "ReplaceRange": payload
+        }]
+    })
+    .to_string()
 }

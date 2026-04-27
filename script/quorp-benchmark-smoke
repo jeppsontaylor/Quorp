@@ -11,7 +11,13 @@ fi
 issue_dir="${QUORP_BENCHMARK_ISSUE_DIR:-$default_issue_dir}"
 max_steps="${QUORP_BENCHMARK_MAX_STEPS:-1}"
 max_seconds="${QUORP_BENCHMARK_MAX_SECONDS:-1800}"
-result_dir="${QUORP_BENCHMARK_RESULT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/quorp-benchmark-smoke.XXXXXX")}"
+benchmark_root="${QUORP_BENCHMARK_CACHE_ROOT:-${HOME}/Library/Caches/Quorp/benchmarks}"
+mkdir -p "$benchmark_root"
+result_dir="${QUORP_BENCHMARK_RESULT_DIR:-$(mktemp -d "${benchmark_root}/quorp-benchmark-smoke.XXXXXX")}"
+if [[ "${QUORP_ALLOW_TARGET_BENCHMARK_RESULTS:-0}" != "1" && ( "$result_dir" == */target || "$result_dir" == */target/* ) ]]; then
+  echo "[quorp-benchmark-smoke] refusing benchmark result_dir inside target: $result_dir" >&2
+  exit 1
+fi
 
 mkdir -p "$result_dir"
 

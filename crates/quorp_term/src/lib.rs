@@ -8,17 +8,40 @@ use unicode_width::UnicodeWidthStr;
 pub enum SlashCommand {
     Plan,
     Act,
+    Auto,
+    Manual,
     FullAuto,
     FullPermissions,
     Permissions(Option<String>),
     Sandbox(Option<SandboxMode>),
+    Clear,
+    Model(Option<String>),
+    Provider(Option<String>),
+    Memory,
+    Rules,
+    Session(Option<String>),
+    Status,
+    Init,
+    Edit(Option<String>),
+    Undo,
+    Redo,
+    Files,
     Hooks,
     Mcp,
     Diff,
     Apply,
     Revert,
+    Test,
+    Verify,
+    Save,
+    Load(Option<String>),
+    Think,
     Compact,
     Doctor,
+    Tasks,
+    Checkpoint,
+    Rollback,
+    Theme,
     Help,
     Unknown(String),
 }
@@ -33,18 +56,43 @@ pub fn parse_slash_command(input: &str) -> Option<SlashCommand> {
     Some(match name {
         "plan" => SlashCommand::Plan,
         "act" => SlashCommand::Act,
+        "auto" => SlashCommand::Auto,
+        "manual" => SlashCommand::Manual,
         "full-auto" => SlashCommand::FullAuto,
         "full-permissions" => SlashCommand::FullPermissions,
+        "clear" => SlashCommand::Clear,
+        "model" => SlashCommand::Model(argument),
+        "provider" => SlashCommand::Provider(argument),
         "permissions" => SlashCommand::Permissions(argument),
+        "perms" => SlashCommand::Permissions(argument),
         "sandbox" => SlashCommand::Sandbox(argument.and_then(|value| parse_sandbox_mode(&value))),
+        "memory" | "mem" => SlashCommand::Memory,
+        "rules" => SlashCommand::Rules,
+        "session" => SlashCommand::Session(argument),
+        "status" => SlashCommand::Status,
+        "init" => SlashCommand::Init,
+        "edit" => SlashCommand::Edit(argument),
+        "undo" => SlashCommand::Undo,
+        "redo" => SlashCommand::Redo,
+        "files" | "f" => SlashCommand::Files,
         "hooks" => SlashCommand::Hooks,
         "mcp" => SlashCommand::Mcp,
         "diff" => SlashCommand::Diff,
         "apply" => SlashCommand::Apply,
         "revert" => SlashCommand::Revert,
+        "test" => SlashCommand::Test,
+        "verify" => SlashCommand::Verify,
+        "save" => SlashCommand::Save,
+        "load" => SlashCommand::Load(argument),
+        "think" => SlashCommand::Think,
         "compact" => SlashCommand::Compact,
         "doctor" => SlashCommand::Doctor,
+        "tasks" => SlashCommand::Tasks,
+        "checkpoint" => SlashCommand::Checkpoint,
+        "rollback" => SlashCommand::Rollback,
+        "theme" => SlashCommand::Theme,
         "help" => SlashCommand::Help,
+        "h" | "?" => SlashCommand::Help,
         other => SlashCommand::Unknown(other.to_string()),
     })
 }
@@ -58,8 +106,15 @@ pub fn apply_mode_command(
     match command {
         SlashCommand::Plan => *run_mode = RunMode::Plan,
         SlashCommand::Act => *run_mode = RunMode::Act,
+        SlashCommand::Auto => *permission_mode = PermissionMode::FullAuto,
+        SlashCommand::Manual => *permission_mode = PermissionMode::Ask,
         SlashCommand::FullAuto => *permission_mode = PermissionMode::FullAuto,
         SlashCommand::FullPermissions => *permission_mode = PermissionMode::FullPermissions,
+        SlashCommand::Permissions(Some(value)) => {
+            if let Some(mode) = parse_permission_mode(value) {
+                *permission_mode = mode;
+            }
+        }
         SlashCommand::Sandbox(Some(mode)) => *sandbox = *mode,
         _ => {}
     }
@@ -173,6 +228,15 @@ fn parse_sandbox_mode(value: &str) -> Option<SandboxMode> {
     match value.trim() {
         "host" => Some(SandboxMode::Host),
         "tmp-copy" | "tmp_copy" => Some(SandboxMode::TmpCopy),
+        _ => None,
+    }
+}
+
+fn parse_permission_mode(value: &str) -> Option<PermissionMode> {
+    match value.trim() {
+        "ask" | "manual" => Some(PermissionMode::Ask),
+        "auto" | "auto-safe" | "full-auto" | "full_auto" => Some(PermissionMode::FullAuto),
+        "full-permissions" | "full_permissions" | "yolo" => Some(PermissionMode::FullPermissions),
         _ => None,
     }
 }

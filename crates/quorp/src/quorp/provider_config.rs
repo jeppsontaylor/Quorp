@@ -149,22 +149,7 @@ pub(crate) fn resolved_scenario_label() -> String {
 }
 
 pub(crate) fn normalize_remote_base_url(base_url: &str, append_v1: bool) -> anyhow::Result<String> {
-    let trimmed = base_url.trim().trim_end_matches('/');
-    if trimmed.is_empty() {
-        anyhow::bail!("base URL cannot be empty");
-    }
-    let parsed = url::Url::parse(trimmed)
-        .map_err(|error| anyhow::anyhow!("invalid base URL `{trimmed}`: {error}"))?;
-    match parsed.scheme() {
-        "http" | "https" => {}
-        scheme => anyhow::bail!("unsupported base URL scheme `{scheme}`"),
-    }
-    let normalized = if append_v1 && !parsed.path().ends_with("/v1") {
-        format!("{}/v1", trimmed)
-    } else {
-        trimmed.to_string()
-    };
-    Ok(normalized)
+    quorp_provider::openai_compatible_client::normalize_base_url(base_url, append_v1)
 }
 
 pub(crate) fn is_loopback_base_url(base_url: &str) -> bool {

@@ -9,8 +9,8 @@ use std::sync::RwLock;
 
 use anyhow::Result;
 use quorp_memory_model::{
-    EpisodicFact, MemoryHit, MemoryQuery, NegativeSignature, ProceduralSkill, RuleEntry,
-    SemanticFact, Tier, WorkingFact,
+    EpisodicFact, FailedAttemptRecord, FailureFingerprint, MemoryHit, MemoryQuery,
+    NegativeSignature, ProceduralSkill, RetryDecision, RuleEntry, SemanticFact, Tier, WorkingFact,
 };
 use serde::{Deserialize, Serialize};
 
@@ -21,6 +21,7 @@ struct TierStore {
     semantic: Vec<SemanticFact>,
     procedural: Vec<ProceduralSkill>,
     negative: Vec<NegativeSignature>,
+    failed_attempts: Vec<FailedAttemptRecord>,
     rule: Vec<RuleEntry>,
 }
 
@@ -36,6 +37,7 @@ pub enum MemoryEvent {
     RecordSemantic(SemanticFact),
     RecordProcedural(ProceduralSkill),
     RecordNegative(NegativeSignature),
+    RecordFailedAttempt(FailedAttemptRecord),
     UpsertRule(RuleEntry),
 }
 
@@ -45,13 +47,29 @@ impl Memory {
     }
 
     pub fn record(&self, event: MemoryEvent) -> Result<()> {
-        let mut inner = self.inner.write().map_err(|_| anyhow::anyhow!("memory poisoned"))?;
+        let mut inner = self
+            .inner
+            .write()
+            .map_err(|_| anyhow::anyhow!("memory poisoned"))?;
         match event {
             MemoryEvent::RecordWorking(f) => inner.working.push(f),
             MemoryEvent::RecordEpisodic(f) => inner.episodic.push(f),
             MemoryEvent::RecordSemantic(f) => inner.semantic.push(f),
             MemoryEvent::RecordProcedural(f) => inner.procedural.push(f),
             MemoryEvent::RecordNegative(f) => inner.negative.push(f),
+            MemoryEvent::RecordFailedAttempt(record) => {
+                if let Some(existing) = inner
+                    .failed_attempts
+                    .iter_mut()
+                    .find(|existing| existing.fingerprint == record.fingerprint)
+                {
+                    existing.seen_count = existing.seen_count.saturating_add(record.seen_count);
+                    existing.last_seen_unix = existing.last_seen_unix.max(record.last_seen_unix);
+                    existing.run_id = record.run_id.or_else(|| existing.run_id.clone());
+                } else {
+                    inner.failed_attempts.push(record);
+                }
+            }
             MemoryEvent::UpsertRule(rule) => {
                 if let Some(existing) = inner.rule.iter_mut().find(|r| r.id == rule.id) {
                     *existing = rule;
@@ -64,7 +82,10 @@ impl Memory {
     }
 
     pub fn recall(&self, query: &MemoryQuery) -> Result<Vec<MemoryHit>> {
-        let inner = self.inner.read().map_err(|_| anyhow::anyhow!("memory poisoned"))?;
+        let inner = self
+            .inner
+            .read()
+            .map_err(|_| anyhow::anyhow!("memory poisoned"))?;
         let needle = query.query_text.as_deref().map(str::to_ascii_lowercase);
         let mut hits = Vec::new();
 
@@ -74,7 +95,11 @@ impl Memory {
                 None => true,
             };
             if allow && (query.tier.is_none() || query.tier == Some(tier)) {
-                hits.push(MemoryHit { tier, snippet: candidate, score: 1.0 });
+                hits.push(MemoryHit {
+                    tier,
+                    snippet: candidate,
+                    score: 1.0,
+                });
             }
         };
 
@@ -85,13 +110,34 @@ impl Memory {
             push_if(Tier::Episodic, format!("{}: {}", f.session, f.summary));
         }
         for f in &inner.semantic {
-            push_if(Tier::Semantic, format!("{} {} {}", f.subject, f.predicate, f.object));
+            push_if(
+                Tier::Semantic,
+                format!("{} {} {}", f.subject, f.predicate, f.object),
+            );
         }
         for f in &inner.procedural {
-            push_if(Tier::Procedural, format!("{}: {}", f.name, f.trigger_pattern));
+            push_if(
+                Tier::Procedural,
+                format!("{}: {}", f.name, f.trigger_pattern),
+            );
         }
         for f in &inner.negative {
-            push_if(Tier::Negative, format!("{} ({}x)", f.signature, f.seen_count));
+            push_if(
+                Tier::Negative,
+                format!("{} ({}x)", f.signature, f.seen_count),
+            );
+        }
+        for f in &inner.failed_attempts {
+            push_if(
+                Tier::Negative,
+                format!(
+                    "{} fix={} evidence={} ({}x)",
+                    f.fingerprint.signature,
+                    f.fingerprint.attempted_fix_hash,
+                    f.fingerprint.evidence_hash,
+                    f.seen_count
+                ),
+            );
         }
         for f in &inner.rule {
             push_if(Tier::Rule, f.statement.clone());
@@ -104,10 +150,57 @@ impl Memory {
     /// Decay tick: shrinks counters and prunes the working tier. Real
     /// implementation will compute exponential decay and persist.
     pub fn decay_tick(&self) -> Result<()> {
-        let mut inner = self.inner.write().map_err(|_| anyhow::anyhow!("memory poisoned"))?;
+        let mut inner = self
+            .inner
+            .write()
+            .map_err(|_| anyhow::anyhow!("memory poisoned"))?;
         // Working tier is task-scoped; prune everything older than the tick.
         inner.working.clear();
         Ok(())
+    }
+
+    pub fn record_failed_attempt(
+        &self,
+        fingerprint: FailureFingerprint,
+        run_id: Option<quorp_ids::VerifyRunId>,
+        now_unix: i64,
+    ) -> Result<FailedAttemptRecord> {
+        let record = FailedAttemptRecord {
+            fingerprint,
+            run_id,
+            seen_count: 1,
+            last_seen_unix: now_unix,
+        };
+        self.record(MemoryEvent::RecordFailedAttempt(record.clone()))?;
+        Ok(record)
+    }
+
+    pub fn retry_decision(&self, fingerprint: &FailureFingerprint) -> Result<RetryDecision> {
+        let inner = self
+            .inner
+            .read()
+            .map_err(|_| anyhow::anyhow!("memory poisoned"))?;
+        let same_fix_seen = inner
+            .failed_attempts
+            .iter()
+            .find(|record| record.fingerprint == *fingerprint);
+        if let Some(record) = same_fix_seen {
+            return Ok(RetryDecision::Block {
+                reason: format!(
+                    "same failed fix already observed for {} ({}x); gather new evidence or change the patch",
+                    record.fingerprint.signature, record.seen_count
+                ),
+            });
+        }
+        Ok(RetryDecision::Allow)
+    }
+
+    pub fn failed_attempt_count(&self) -> Result<usize> {
+        let inner = self
+            .inner
+            .read()
+            .map_err(|_| anyhow::anyhow!("memory poisoned"))?;
+        Ok(inner.failed_attempts.len())
     }
 }
 
@@ -149,7 +242,11 @@ mod tests {
         .unwrap();
         mem.decay_tick().unwrap();
         let hits = mem
-            .recall(&MemoryQuery { query_text: None, tier: Some(Tier::Working), limit: 8 })
+            .recall(&MemoryQuery {
+                query_text: None,
+                tier: Some(Tier::Working),
+                limit: 8,
+            })
             .unwrap();
         assert!(hits.is_empty());
     }
@@ -164,8 +261,58 @@ mod tests {
         }))
         .unwrap();
         let hits = mem
-            .recall(&MemoryQuery { query_text: Some("borrow".into()), tier: None, limit: 4 })
+            .recall(&MemoryQuery {
+                query_text: Some("borrow".into()),
+                tier: None,
+                limit: 4,
+            })
             .unwrap();
         assert_eq!(hits.len(), 1);
+    }
+
+    #[test]
+    fn failed_attempt_blocks_same_fix_without_new_evidence() {
+        let mem = Memory::new();
+        let fingerprint = FailureFingerprint {
+            signature: "E0308:mismatched types".to_string(),
+            failure_kind: "E0308".to_string(),
+            owner: Some("domain".to_string()),
+            attempted_fix_hash: "patch-a".to_string(),
+            evidence_hash: "log-a".to_string(),
+        };
+
+        assert!(matches!(
+            mem.retry_decision(&fingerprint).unwrap(),
+            RetryDecision::Allow
+        ));
+        mem.record_failed_attempt(fingerprint.clone(), None, 10)
+            .unwrap();
+        assert_eq!(mem.failed_attempt_count().unwrap(), 1);
+        assert!(matches!(
+            mem.retry_decision(&fingerprint).unwrap(),
+            RetryDecision::Block { .. }
+        ));
+    }
+
+    #[test]
+    fn failed_attempt_allows_changed_patch_or_evidence() {
+        let mem = Memory::new();
+        let original = FailureFingerprint {
+            signature: "E0308:mismatched types".to_string(),
+            failure_kind: "E0308".to_string(),
+            owner: None,
+            attempted_fix_hash: "patch-a".to_string(),
+            evidence_hash: "log-a".to_string(),
+        };
+        let changed_evidence = FailureFingerprint {
+            evidence_hash: "log-b".to_string(),
+            ..original.clone()
+        };
+        mem.record_failed_attempt(original, None, 10).unwrap();
+
+        assert!(matches!(
+            mem.retry_decision(&changed_evidence).unwrap(),
+            RetryDecision::Allow
+        ));
     }
 }

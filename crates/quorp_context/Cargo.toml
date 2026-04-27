@@ -14,12 +14,16 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+globset.workspace = true
 quorp_context_model = { workspace = true }
 quorp_ids = { workspace = true }
 quorp_memory = { workspace = true }
 quorp_memory_model = { workspace = true }
 quorp_repo_graph = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+toml.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true
+tempfile.workspace = true

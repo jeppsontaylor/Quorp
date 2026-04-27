@@ -62,7 +62,7 @@ impl RelPath {
             path = prefix;
         }
 
-        if is_absolute(&path, path_style) {
+        if is_absolute(path, path_style) {
             return Err(anyhow!("absolute path not allowed: {path:?}"));
         }
 
@@ -78,7 +78,7 @@ impl RelPath {
 
         if result
             .components()
-            .any(|component| component == "" || component == "." || component == "..")
+            .any(|component| component.is_empty() || component == "." || component == "..")
         {
             let mut normaliquorp = RelPathBuf::new();
             for component in result.components() {
@@ -152,12 +152,10 @@ impl RelPath {
     }
 
     pub fn ends_with(&self, other: &Self) -> bool {
-        if let Some(suffix) = self.0.strip_suffix(&other.0) {
-            if suffix.ends_with('/') {
-                return true;
-            } else if suffix.is_empty() {
-                return true;
-            }
+        if let Some(suffix) = self.0.strip_suffix(&other.0)
+            && (suffix.ends_with('/') || suffix.is_empty())
+        {
+            return true;
         }
         false
     }
@@ -208,6 +206,7 @@ impl RelPath {
         RelPathBuf(self.0.to_string())
     }
 
+    #[allow(clippy::wrong_self_convention)]
     pub fn into_arc(&self) -> Arc<Self> {
         Arc::from(self)
     }
@@ -293,6 +292,12 @@ impl fmt::Debug for RelPathBuf {
     }
 }
 
+impl Default for RelPathBuf {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl RelPathBuf {
     pub fn new() -> Self {
         Self(String::new())
@@ -334,9 +339,9 @@ impl RelPathBuf {
     }
 }
 
-impl Into<Arc<RelPath>> for RelPathBuf {
-    fn into(self) -> Arc<RelPath> {
-        Arc::from(self.as_rel_path())
+impl From<RelPathBuf> for Arc<RelPath> {
+    fn from(val: RelPathBuf) -> Self {
+        Arc::from(val.as_rel_path())
     }
 }
 
@@ -452,7 +457,6 @@ impl<'a> DoubleEndedIterator for RelPathComponents<'a> {
 mod tests {
     use super::*;
     use itertools::Itertools;
-    use pretty_assertions::assert_matches;
 
     #[test]
     fn test_rel_path_new() {
@@ -462,11 +466,11 @@ mod tests {
 
         let path = RelPath::new("foo/".as_ref(), PathStyle::local()).unwrap();
         assert_eq!(path, rel_path("foo").into());
-        assert_matches!(path, Cow::Borrowed(_));
+        assert!(matches!(path, Cow::Borrowed(_)));
 
         let path = RelPath::new("foo\\".as_ref(), PathStyle::Windows).unwrap();
         assert_eq!(path, rel_path("foo").into());
-        assert_matches!(path, Cow::Borrowed(_));
+        assert!(matches!(path, Cow::Borrowed(_)));
 
         assert_eq!(
             RelPath::new("foo/bar/../baz/./quux/".as_ref(), PathStyle::local())
@@ -477,27 +481,27 @@ mod tests {
 
         let path = RelPath::new("./foo/bar".as_ref(), PathStyle::Posix).unwrap();
         assert_eq!(path.as_ref(), rel_path("foo/bar"));
-        assert_matches!(path, Cow::Borrowed(_));
+        assert!(matches!(path, Cow::Borrowed(_)));
 
         let path = RelPath::new(".\\foo".as_ref(), PathStyle::Windows).unwrap();
         assert_eq!(path, rel_path("foo").into());
-        assert_matches!(path, Cow::Borrowed(_));
+        assert!(matches!(path, Cow::Borrowed(_)));
 
         let path = RelPath::new("./.\\./foo/\\/".as_ref(), PathStyle::Windows).unwrap();
         assert_eq!(path, rel_path("foo").into());
-        assert_matches!(path, Cow::Borrowed(_));
+        assert!(matches!(path, Cow::Borrowed(_)));
 
         let path = RelPath::new("foo/./bar".as_ref(), PathStyle::Posix).unwrap();
         assert_eq!(path.as_ref(), rel_path("foo/bar"));
-        assert_matches!(path, Cow::Owned(_));
+        assert!(matches!(path, Cow::Owned(_)));
 
         let path = RelPath::new("./foo/bar".as_ref(), PathStyle::Windows).unwrap();
         assert_eq!(path.as_ref(), rel_path("foo/bar"));
-        assert_matches!(path, Cow::Borrowed(_));
+        assert!(matches!(path, Cow::Borrowed(_)));
 
         let path = RelPath::new(".\\foo\\bar".as_ref(), PathStyle::Windows).unwrap();
         assert_eq!(path.as_ref(), rel_path("foo/bar"));
-        assert_matches!(path, Cow::Owned(_));
+        assert!(matches!(path, Cow::Owned(_)));
     }
 
     #[test]
@@ -552,9 +556,7 @@ mod tests {
         for [lhs, rhs] in test_cases.iter().array_combinations::<2>() {
             assert_eq!(
                 Path::new(lhs).cmp(Path::new(rhs)),
-                RelPath::unix(lhs)
-                    .unwrap()
-                    .cmp(&RelPath::unix(rhs).unwrap())
+                RelPath::unix(lhs).unwrap().cmp(RelPath::unix(rhs).unwrap())
             );
         }
     }

@@ -26,9 +26,12 @@ impl OpenAiCompatibleProvider {
     }
 
     pub fn chat_completions_url(&self) -> anyhow::Result<Url> {
-        let base = self.profile.base_url.trim_end_matches('/');
-        Url::parse(&format!("{base}/chat/completions"))
-            .with_context(|| format!("invalid provider base URL `{base}`"))
+        Url::parse(&self.endpoint()?.chat_completions_url)
+            .with_context(|| format!("invalid provider base URL `{}`", self.profile.base_url))
+    }
+
+    pub fn endpoint(&self) -> anyhow::Result<OpenAiCompatibleEndpoint> {
+        OpenAiCompatibleEndpoint::from_profile(&self.profile)
     }
 
     pub fn chat_request(&self, messages: Vec<ChatMessage>) -> ChatCompletionRequest {
@@ -50,6 +53,33 @@ impl OpenAiCompatibleProvider {
             .post(self.chat_completions_url()?)
             .bearer_auth(api_key)
             .json(request))
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct OpenAiCompatibleEndpoint {
+    pub provider_name: String,
+    pub base_url: String,
+    pub chat_completions_url: String,
+    pub model_id: String,
+    pub api_key_env: String,
+    pub stream: bool,
+    pub include_usage: bool,
+}
+
+impl OpenAiCompatibleEndpoint {
+    pub fn from_profile(profile: &ProviderProfile) -> anyhow::Result<Self> {
+        let base_url = openai_compatible_client::normalize_base_url(&profile.base_url, false)?;
+        let chat_completions_url = openai_compatible_client::chat_completions_url(&base_url)?;
+        Ok(Self {
+            provider_name: profile.name.clone(),
+            base_url,
+            chat_completions_url,
+            model_id: profile.model.clone(),
+            api_key_env: profile.api_key_env.clone(),
+            stream: true,
+            include_usage: true,
+        })
     }
 }
 
@@ -104,5 +134,27 @@ mod tests {
         assert_eq!(request.model, DEFAULT_NVIDIA_MODEL);
         assert!(request.stream);
         assert_eq!(request.messages[0].role, ChatRole::User);
+    }
+
+    #[test]
+    fn endpoint_normalizes_profile_for_session_receipts() {
+        let provider = OpenAiCompatibleProvider::new(ProviderProfile {
+            name: "local-openai-compatible".to_string(),
+            base_url: "http://127.0.0.1:8080/v1/".to_string(),
+            model: "mock-model".to_string(),
+            api_key_env: "MOCK_API_KEY".to_string(),
+        });
+
+        let endpoint = provider.endpoint().expect("endpoint");
+
+        assert_eq!(endpoint.provider_name, "local-openai-compatible");
+        assert_eq!(endpoint.base_url, "http://127.0.0.1:8080/v1");
+        assert_eq!(
+            endpoint.chat_completions_url,
+            "http://127.0.0.1:8080/v1/chat/completions"
+        );
+        assert_eq!(endpoint.model_id, "mock-model");
+        assert!(endpoint.stream);
+        assert!(endpoint.include_usage);
     }
 }

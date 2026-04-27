@@ -344,7 +344,9 @@ pub(crate) fn repair_requirement_from_action(
     }
 }
 
-pub(crate) fn fallback_repair_read_range(path: &str) -> Option<crate::agent_protocol::ReadFileRange> {
+pub(crate) fn fallback_repair_read_range(
+    path: &str,
+) -> Option<crate::agent_protocol::ReadFileRange> {
     let trimmed = path.trim();
     if trimmed.is_empty() {
         return None;
@@ -447,7 +449,10 @@ pub(crate) fn failed_edit_record_from_action(
     })
 }
 
-pub(crate) fn failed_edit_signature_matches(left: &FailedEditRecord, right: &FailedEditRecord) -> bool {
+pub(crate) fn failed_edit_signature_matches(
+    left: &FailedEditRecord,
+    right: &FailedEditRecord,
+) -> bool {
     left.action_kind == right.action_kind
         && left.path == right.path
         && left.search_hash == right.search_hash
@@ -486,11 +491,13 @@ pub(crate) fn failed_edit_is_ambiguous(record: &FailedEditRecord) -> bool {
             .contains("ambiguous")
 }
 
-pub(crate) fn bare_replace_block_disallowed_for_path(path: &str, records: &[FailedEditRecord]) -> bool {
+pub(crate) fn bare_replace_block_disallowed_for_path(
+    path: &str,
+    records: &[FailedEditRecord],
+) -> bool {
     records
         .iter()
         .filter(|record| record.action_kind == "replace_block" && record.path == path)
-        .filter(|record| failed_edit_is_ambiguous(record))
         .count()
         >= 1
 }
@@ -1036,7 +1043,9 @@ pub(crate) fn benchmark_repair_phase_suggested_range(
     }
 }
 
-pub(crate) fn benchmark_allowed_implementation_targets(ledger: &BenchmarkCaseLedger) -> Vec<String> {
+pub(crate) fn benchmark_allowed_implementation_targets(
+    ledger: &BenchmarkCaseLedger,
+) -> Vec<String> {
     let mut targets = Vec::new();
     let mut seen = BTreeSet::new();
     for path in ledger
@@ -1086,7 +1095,9 @@ pub(crate) fn render_benchmark_target_list(targets: &[String]) -> String {
         .join(", ")
 }
 
-pub(crate) fn render_ranked_implementation_targets(targets: &[AgentRepairImplementationTarget]) -> String {
+pub(crate) fn render_ranked_implementation_targets(
+    targets: &[AgentRepairImplementationTarget],
+) -> String {
     if targets.is_empty() {
         return "[none]".to_string();
     }
@@ -1105,8 +1116,23 @@ pub(crate) fn recommended_fast_loop_rerun_command(ledger: &BenchmarkCaseLedger) 
         .find(|command| !command.trim().is_empty())?
         .trim()
         .to_string();
+    let failure_text = ledger
+        .last_validation_failure
+        .as_deref()
+        .or(ledger.validation_details.assertion_excerpt.as_deref())
+        .unwrap_or("")
+        .to_ascii_lowercase();
+    if failure_text.contains("timed out") || failure_text.contains("timeout") {
+        return Some(canonical);
+    }
     let failing_tests = fast_loop_selector_pool(ledger);
     if failing_tests.is_empty() {
+        return Some(canonical);
+    }
+    if failing_tests
+        .iter()
+        .any(|selector| !fast_loop_selector_is_safe(selector))
+    {
         return Some(canonical);
     }
     let Some((mut base_tokens, selector_prefix)) = split_fast_loop_candidate(&canonical) else {
@@ -1137,6 +1163,17 @@ pub(crate) fn recommended_fast_loop_rerun_command(ledger: &BenchmarkCaseLedger) 
         base_tokens.push(failing_test.clone());
     }
     Some(base_tokens.join(" "))
+}
+
+fn fast_loop_selector_is_safe(selector: &str) -> bool {
+    let selector = selector.trim();
+    !selector.is_empty()
+        && selector
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'_' | b':' | b'-'))
+        && !selector.contains(":::")
+        && !selector.starts_with("::")
+        && !selector.ends_with("::")
 }
 
 pub(crate) fn implementation_signature_window(lines: &[&str], start_index: usize) -> String {
@@ -1273,4 +1310,3 @@ pub(crate) fn benchmark_repair_state_from_ledger(
         invalid_action_count: 0,
     })
 }
-

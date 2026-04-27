@@ -15,4 +15,5 @@ quorp_core.workspace = true
 reqwest = { workspace = true, features = ["json", "stream"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sha2.workspace = true
 url.workspace = true

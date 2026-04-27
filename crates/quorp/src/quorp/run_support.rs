@@ -39,6 +39,7 @@ pub struct DiagnosticsPaths {
 }
 
 static RUN_RESULT_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+static BENCHMARK_RESULT_DIR_SEQUENCE: AtomicU64 = AtomicU64::new(0);
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LatestRunInfo {
@@ -196,6 +197,22 @@ pub fn default_run_result_dir(workspace: &Path, scope: &str) -> PathBuf {
             sequence,
             sanitize_component(workspace_name)
         ))
+}
+
+pub fn default_benchmark_run_result_dir() -> PathBuf {
+    default_benchmark_result_dir("run")
+}
+
+pub fn default_benchmark_batch_result_dir() -> PathBuf {
+    default_benchmark_result_dir("batch")
+}
+
+fn default_benchmark_result_dir(scope: &str) -> PathBuf {
+    let sequence = BENCHMARK_RESULT_DIR_SEQUENCE.fetch_add(1, Ordering::Relaxed);
+    ::paths::temp_dir()
+        .join("benchmark-runs")
+        .join(scope)
+        .join(format!("{}-{:04}", timestamp_ms(), sequence))
 }
 
 pub fn latest_run_dir(scope: Option<&str>) -> anyhow::Result<Option<LatestRunInfo>> {

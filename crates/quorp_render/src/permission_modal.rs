@@ -20,7 +20,10 @@ pub fn render_permission_modal(prompt: &PermissionPrompt, color: ColorCapability
     if matches!(color, ColorCapability::NoColor) {
         out.push_str(&format!("┌── {header} ──{line}\n"));
         out.push_str(&format!("│ {} {}\n", prompt.tool, prompt.command_repr));
-        out.push_str(&format!("│ cwd: {} · sandbox: {}\n", prompt.cwd, prompt.sandbox));
+        out.push_str(&format!(
+            "│ cwd: {} · sandbox: {}\n",
+            prompt.cwd, prompt.sandbox
+        ));
         out.push_str(&format!("│ rationale: {}\n", prompt.rationale));
         out.push_str("│\n");
         out.push_str("│ [y] approve once   [a] always for command pattern\n");
@@ -37,7 +40,10 @@ pub fn render_permission_modal(prompt: &PermissionPrompt, color: ColorCapability
     out.push_str(&ACCENT_YELLOW.fg());
     out.push_str("│ ");
     out.push_str(&FG_TEXT.fg());
-    out.push_str(&format!("cwd: {} · sandbox: {}\n", prompt.cwd, prompt.sandbox));
+    out.push_str(&format!(
+        "cwd: {} · sandbox: {}\n",
+        prompt.cwd, prompt.sandbox
+    ));
     out.push_str(&ACCENT_YELLOW.fg());
     out.push_str("│ ");
     out.push_str(&FG_TEXT.fg());

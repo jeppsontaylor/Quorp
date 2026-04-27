@@ -820,6 +820,7 @@ pub(crate) async fn request_single_completion_details(
     let mut finish_reason = None;
     let mut native_tool_builders = BTreeMap::new();
     let mut stream_finished = false;
+    let mut stream_payload_hashes = Vec::new();
     let mut first_token_latency_ms = None;
     let mut last_progress_at = started_at;
     let mut max_idle_gap_ms = 0u64;
@@ -893,37 +894,29 @@ pub(crate) async fn request_single_completion_details(
 
             if let Ok(chunk_val) = serde_json::from_str::<serde_json::Value>(payload) {
                 raw_response = chunk_val.clone(); // store the last chunk for raw response mapping
-                if let Some(id) = chunk_val.get("id").and_then(|value| value.as_str()) {
-                    response_id = Some(id.to_string());
-                }
-                if let Some(model) = chunk_val.get("model").and_then(|value| value.as_str()) {
-                    response_model = Some(model.to_string());
-                }
-                if let Some(reason) = chunk_val
-                    .get("choices")
-                    .and_then(|choices| choices.get(0))
-                    .and_then(|choice| choice.get("finish_reason"))
-                    .and_then(|value| value.as_str())
-                {
-                    finish_reason = Some(reason.to_string());
-                }
                 merge_native_tool_call_chunk(&chunk_val, &mut native_tool_builders);
-                if let Some(u) = chunk_val.get("usage") {
-                    usage_payload = Some(u.clone());
-                    let latency_ms = started_at.elapsed().as_millis() as u64;
-                    let provider_request_id = chunk_val.get("id").and_then(|v| v.as_str());
-                    usage = parse_usage_payload(
-                        u,
-                        latency_ms,
-                        finish_reason.clone(),
-                        provider_request_id,
-                    )
-                    .ok();
-                }
             }
 
-            if let Ok(events) = parse_sse_payload(payload) {
-                for event in events {
+            if let Ok(chunk) = parse_sse_chunk(payload) {
+                stream_payload_hashes.push(chunk.raw_payload_sha256.clone());
+                if let Some(id) = chunk.provider_request_id {
+                    response_id = Some(id);
+                }
+                if let Some(model) = chunk.model_id {
+                    response_model = Some(model);
+                }
+                if let Some(reason) = chunk.finish_reason {
+                    finish_reason = Some(reason);
+                }
+                if let Some(provider_usage) = chunk.usage {
+                    usage_payload = Some(serde_json::to_value(&provider_usage).unwrap_or_default());
+                    usage = Some(token_usage_from_openai_usage(
+                        provider_usage,
+                        started_at.elapsed().as_millis() as u64,
+                        finish_reason.clone(),
+                    ));
+                }
+                for event in chunk.events {
                     match event {
                         RemoteStreamEvent::TextDelta(fragment) => {
                             let now = std::time::Instant::now();
@@ -1049,6 +1042,14 @@ pub(crate) async fn request_single_completion_details(
             "usage": usage_payload,
         });
     }
+    if let Some(object) = raw_response.as_object_mut()
+        && !stream_payload_hashes.is_empty()
+    {
+        object.insert(
+            "stream_payload_sha256".to_string(),
+            serde_json::json!(stream_payload_hashes),
+        );
+    }
 
     Ok(SingleCompletionResult {
         content,
@@ -1074,4 +1075,23 @@ pub(crate) async fn request_single_completion_details(
         }),
         routing: client_config.routing,
     })
+}
+
+fn token_usage_from_openai_usage(
+    usage: quorp_provider::openai_compatible_client::OpenAiCompatibleUsage,
+    latency_ms: u64,
+    finish_reason: Option<String>,
+) -> quorp_agent_core::TokenUsage {
+    quorp_agent_core::TokenUsage {
+        input_tokens: usage.input_tokens,
+        output_tokens: usage.output_tokens,
+        total_billed_tokens: usage.total_tokens,
+        reasoning_tokens: usage.reasoning_tokens,
+        cache_read_input_tokens: usage.cache_read_input_tokens,
+        cache_write_input_tokens: usage.cache_write_input_tokens,
+        provider_request_id: usage.provider_request_id,
+        latency_ms,
+        finish_reason,
+        usage_source: quorp_agent_core::UsageSource::Reported,
+    }
 }

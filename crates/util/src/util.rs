@@ -291,16 +291,16 @@ pub fn get_shell_safe_quorp_path(shell_kind: shell::ShellKind) -> anyhow::Result
     use paths::PathExt;
     let mut quorp_path =
         std::env::current_exe().context("Failed to determine current quorp executable path.")?;
-    if cfg!(target_os = "linux") && !quorp_path.is_file() {
-        if let Some(truncated) = quorp_path
+    if cfg!(target_os = "linux")
+        && !quorp_path.is_file()
+        && let Some(truncated) = quorp_path
             .clone()
             .file_name()
             .and_then(|s| s.to_str())
             .and_then(|n| n.strip_suffix(" (deleted)"))
-        {
-            // Might have been deleted during update; let's use the new binary if there is one.
-            quorp_path.set_file_name(truncated);
-        }
+    {
+        // Might have been deleted during update; let's use the new binary if there is one.
+        quorp_path.set_file_name(truncated);
     }
 
     quorp_path

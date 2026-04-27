@@ -2,6 +2,7 @@ pub mod agent_runner;
 pub mod benchmark;
 pub mod cli_demos;
 pub mod executor;
+pub mod inline_composer;
 pub mod memory_fingerprint;
 pub mod prompt_compaction;
 pub mod provider_config;

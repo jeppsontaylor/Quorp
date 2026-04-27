@@ -136,22 +136,17 @@ pub fn run_doctor_command() -> anyhow::Result<()> {
         status: SplashStatus::Done,
     });
 
-    print!(
-        "{}",
-        render_splash("quorp · doctor", &steps, color)
-    );
+    print!("{}", render_splash("quorp · doctor", &steps, color));
     Ok(())
 }
 
-pub fn run_scan_command(
-    workspace: Option<PathBuf>,
-    harvest_symbols: bool,
-) -> anyhow::Result<()> {
+pub fn run_scan_command(workspace: Option<PathBuf>, harvest_symbols: bool) -> anyhow::Result<()> {
     use quorp_render::caps::RenderProfile;
     use quorp_render::splash::{SplashStatus, SplashStep, render_splash};
     use quorp_repo_scan::{Language, ScannedFile, harvest_rust_symbols, scan};
 
-    let workspace = workspace.unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| paths::home_dir().clone()));
+    let workspace = workspace
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| paths::home_dir().clone()));
     let workspace = std::fs::canonicalize(&workspace).unwrap_or(workspace);
     let color = RenderProfile::detect_from_env().color;
 
@@ -159,7 +154,8 @@ pub fn run_scan_command(
     let files: Vec<ScannedFile> = scan(&workspace);
     let scan_ms = scan_started.elapsed().as_millis();
 
-    let mut counts: std::collections::BTreeMap<&str, (u64, u64)> = std::collections::BTreeMap::new();
+    let mut counts: std::collections::BTreeMap<&str, (u64, u64)> =
+        std::collections::BTreeMap::new();
     let mut total_bytes: u64 = 0;
     for file in &files {
         let label = match file.language {
@@ -282,21 +278,19 @@ pub fn run_permissions_command(
     command: Option<String>,
     allow_commands: Vec<String>,
 ) -> anyhow::Result<()> {
-    use quorp_permissions::{Action, AllowEntry, AllowList, AllowPolicy, Capability, Decision, Permissions};
+    use quorp_permissions::{
+        AllowEntry, AllowList, AllowPolicy, Decision, Permissions, classify_tool_action,
+    };
     use quorp_render::caps::RenderProfile;
     use quorp_render::permission_modal::{PermissionPrompt, render_permission_modal};
     use quorp_render::splash::{SplashStatus, SplashStep, render_splash};
 
     let color = RenderProfile::detect_from_env().color;
 
-    let capability = capability.unwrap_or_else(|| match tool.as_str() {
-        "read_file" | "list_directory" | "search_text" | "search_symbols" | "find_files"
-        | "structural_search" | "cargo_diagnostics" | "get_repo_capsule" => Capability::Read,
-        "run_command" | "run_validation" => Capability::RunCommand,
-        "delete" | "delete_file" => Capability::DeleteFile,
-        "mcp_call_tool" => Capability::Mcp,
-        _ => Capability::WriteFile,
-    });
+    let mut action = classify_tool_action(&tool, command.clone(), None);
+    if let Some(capability) = capability {
+        action.capability = capability;
+    }
 
     let mut allow = AllowList::default();
     for pattern in &allow_commands {
@@ -307,15 +301,10 @@ pub fn run_permissions_command(
     }
 
     let permissions = Permissions::new(mode, allow);
-    let action = Action {
-        capability,
-        tool_name: tool.clone(),
-        command_repr: command.clone(),
-    };
     let decision = permissions.check(&action);
 
     let mode_label = format!("{:?}", mode);
-    let cap_label = format!("{:?}", capability);
+    let cap_label = format!("{:?}", action.capability);
     let decision_label = match decision {
         Decision::Allow => "Allow",
         Decision::Deny => "Deny",
@@ -382,35 +371,121 @@ pub fn run_permissions_command(
 pub fn run_render_demo() -> anyhow::Result<()> {
     use quorp_render::caps::{ColorCapability, RenderProfile};
     use quorp_render::permission_modal::{PermissionPrompt, render_permission_modal};
+    use quorp_render::session::{
+        CommandCard, CommandState, SessionFrame, TaskRow, TaskState, render_session_frame,
+    };
     use quorp_render::shimmer::{ShimmerStyle, render_shimmer};
     use quorp_render::splash::{SplashStatus, SplashStep, render_splash};
     use quorp_render::status_footer::{StatusFooter, render_status_footer};
     use quorp_render::transcript::{TranscriptLine, render_transcript_line};
+    use std::io::IsTerminal as _;
 
     let profile = RenderProfile::detect_from_env();
     let color = profile.color;
 
     let splash_steps = [
-        SplashStep { name: "workspace".into(), detail: "~/Code/quorp".into(), status: SplashStatus::Done },
-        SplashStep { name: "settings".into(), detail: "user + project".into(), status: SplashStatus::Done },
-        SplashStep { name: "env".into(), detail: ".quorp/.env (4 vars)".into(), status: SplashStatus::Done },
-        SplashStep { name: "provider".into(), detail: "nvidia/qwen3-coder · 47ms".into(), status: SplashStatus::Done },
-        SplashStep { name: "repo capsule".into(), detail: "412 files, 64kb cached".into(), status: SplashStatus::Done },
-        SplashStep { name: "memory + rules".into(), detail: "3 active rules · 42 facts".into(), status: SplashStatus::Running },
+        SplashStep {
+            name: "workspace".into(),
+            detail: "~/Code/quorp".into(),
+            status: SplashStatus::Done,
+        },
+        SplashStep {
+            name: "settings".into(),
+            detail: "user + project".into(),
+            status: SplashStatus::Done,
+        },
+        SplashStep {
+            name: "env".into(),
+            detail: ".quorp/.env (4 vars)".into(),
+            status: SplashStatus::Done,
+        },
+        SplashStep {
+            name: "provider".into(),
+            detail: "nvidia/qwen3-coder · 47ms".into(),
+            status: SplashStatus::Done,
+        },
+        SplashStep {
+            name: "repo capsule".into(),
+            detail: "412 files, 64kb cached".into(),
+            status: SplashStatus::Done,
+        },
+        SplashStep {
+            name: "memory + rules".into(),
+            detail: "3 active rules · 42 facts".into(),
+            status: SplashStatus::Running,
+        },
     ];
-    print!("{}", render_splash("quorp · brilliant terminal coding", &splash_steps, color));
+    let session_frame = SessionFrame {
+        title: "brilliant terminal coding".into(),
+        subtitle: "agent-first Rust runtime · truecolor stream · sandboxed tools".into(),
+        tasks: vec![
+            TaskRow {
+                label: "Plan task with proof gates".into(),
+                state: TaskState::Done,
+            },
+            TaskRow {
+                label: "Run command with live chroma".into(),
+                state: TaskState::Active,
+            },
+            TaskRow {
+                label: "Compress proof into receipt".into(),
+                state: TaskState::Pending,
+            },
+        ],
+        commands: vec![
+            CommandCard {
+                label: "verify".into(),
+                command: "./script/clippy".into(),
+                cwd: "~/Code/quorp".into(),
+                state: CommandState::Active { frame_time: 0.22 },
+                output_summary: "strict lane running · raw log retained · first error pins span"
+                    .into(),
+            },
+            CommandCard {
+                label: "lib tests".into(),
+                command: "cargo test --workspace --lib".into(),
+                cwd: "~/Code/quorp".into(),
+                state: CommandState::Passed {
+                    exit_code: 0,
+                    duration: "0.65s".into(),
+                },
+                output_summary: "421 passed across 39 suites".into(),
+            },
+        ],
+        footer: "qwen3-coder@nvidia · --yolo sandbox · ctx 12.4k/64k · tasks 2/3".into(),
+    };
+
+    println!("{}", render_session_frame(&session_frame, 86, color));
+    println!();
+
+    print!(
+        "{}",
+        render_splash("quorp · boot checklist", &splash_steps, color)
+    );
     println!();
 
     let frames = 18;
     let style = ShimmerStyle::default();
-    print!("\x1b[?25l");
-    for i in 0..frames {
-        let t = i as f32 * 0.06;
-        print!("\r  {} · ctx 12.4k/64k", render_shimmer("Cogitating", t, style, color));
-        let _ = std::io::Write::flush(&mut std::io::stdout());
-        std::thread::sleep(std::time::Duration::from_millis(55));
+    let static_demo =
+        std::env::var_os("QUORP_RENDER_DEMO_STATIC").is_some() || !std::io::stdout().is_terminal();
+    if static_demo {
+        println!(
+            "  {} · ctx 12.4k/64k",
+            render_shimmer("Cogitating", 0.0, style, color)
+        );
+    } else {
+        print!("\x1b[?25l");
+        for i in 0..frames {
+            let t = i as f32 * 0.06;
+            print!(
+                "\r  {} · ctx 12.4k/64k",
+                render_shimmer("Cogitating", t, style, color)
+            );
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            std::thread::sleep(std::time::Duration::from_millis(55));
+        }
+        print!("\x1b[?25h\r\x1b[2K");
     }
-    print!("\x1b[?25h\r\x1b[2K");
 
     let transcript = [
         TranscriptLine::UserPrompt("refactor agent_runner.rs into smaller modules".into()),
@@ -459,4 +534,3 @@ pub fn run_render_demo() -> anyhow::Result<()> {
     println!("(detected color profile: {color_label})");
     Ok(())
 }
-

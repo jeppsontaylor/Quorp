@@ -14,40 +14,210 @@ pub struct SlashCommandSpec {
 
 /// Built-in command set. Consumers may extend via `Registry::extend`.
 pub const BUILTIN: &[SlashCommandSpec] = &[
-    SlashCommandSpec { name: "help", aliases: &["h", "?"], description: "Show help and command list", takes_args: false },
-    SlashCommandSpec { name: "clear", aliases: &[], description: "Clear scrollback and reset transcript", takes_args: false },
-    SlashCommandSpec { name: "model", aliases: &[], description: "Switch active model", takes_args: true },
-    SlashCommandSpec { name: "provider", aliases: &[], description: "Switch active provider", takes_args: true },
-    SlashCommandSpec { name: "plan", aliases: &[], description: "Enter plan mode (read-only proposing)", takes_args: false },
-    SlashCommandSpec { name: "act", aliases: &[], description: "Exit plan mode and execute", takes_args: false },
-    SlashCommandSpec { name: "permissions", aliases: &["perms"], description: "Configure permission mode", takes_args: true },
-    SlashCommandSpec { name: "memory", aliases: &["mem"], description: "Inspect / edit memory store", takes_args: false },
-    SlashCommandSpec { name: "rules", aliases: &[], description: "Show active rule forge rules", takes_args: false },
-    SlashCommandSpec { name: "session", aliases: &[], description: "Save/load/new session", takes_args: true },
-    SlashCommandSpec { name: "status", aliases: &[], description: "Print full session status", takes_args: false },
-    SlashCommandSpec { name: "exit", aliases: &["quit"], description: "Quit Quorp", takes_args: false },
-    SlashCommandSpec { name: "init", aliases: &[], description: "Scaffold .quorp/ for the workspace", takes_args: false },
-    SlashCommandSpec { name: "compact", aliases: &[], description: "Compact transcript now", takes_args: false },
-    SlashCommandSpec { name: "edit", aliases: &[], description: "Open path in $EDITOR", takes_args: true },
-    SlashCommandSpec { name: "undo", aliases: &[], description: "Revert last assistant write batch", takes_args: false },
-    SlashCommandSpec { name: "redo", aliases: &[], description: "Redo last reverted write batch", takes_args: false },
-    SlashCommandSpec { name: "files", aliases: &["f"], description: "Fuzzy file picker", takes_args: false },
-    SlashCommandSpec { name: "diff", aliases: &[], description: "Show working tree or stored diff", takes_args: true },
-    SlashCommandSpec { name: "test", aliases: &[], description: "Run validation tests", takes_args: false },
-    SlashCommandSpec { name: "verify", aliases: &[], description: "Run configured proof lane", takes_args: false },
-    SlashCommandSpec { name: "save", aliases: &[], description: "Persist current session", takes_args: false },
-    SlashCommandSpec { name: "load", aliases: &[], description: "Load named session", takes_args: true },
-    SlashCommandSpec { name: "auto", aliases: &[], description: "Toggle to auto-safe permissions", takes_args: false },
-    SlashCommandSpec { name: "manual", aliases: &[], description: "Toggle to ask permissions", takes_args: false },
-    SlashCommandSpec { name: "think", aliases: &[], description: "Single-turn plan-only override", takes_args: false },
-    SlashCommandSpec { name: "doctor", aliases: &[], description: "Re-run quorp doctor inline", takes_args: false },
-    SlashCommandSpec { name: "sandbox", aliases: &[], description: "Set sandbox mode (host|tmp-copy)", takes_args: true },
-    SlashCommandSpec { name: "mcp", aliases: &[], description: "List MCP servers", takes_args: false },
-    SlashCommandSpec { name: "hooks", aliases: &[], description: "List lifecycle hooks", takes_args: false },
-    SlashCommandSpec { name: "tasks", aliases: &[], description: "Show task checklist", takes_args: false },
-    SlashCommandSpec { name: "checkpoint", aliases: &[], description: "Create git checkpoint", takes_args: false },
-    SlashCommandSpec { name: "rollback", aliases: &[], description: "Revert to last checkpoint", takes_args: false },
-    SlashCommandSpec { name: "theme", aliases: &[], description: "Cycle CLI theme", takes_args: false },
+    SlashCommandSpec {
+        name: "help",
+        aliases: &["h", "?"],
+        description: "Show help and command list",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "clear",
+        aliases: &[],
+        description: "Clear scrollback and reset transcript",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "model",
+        aliases: &[],
+        description: "Switch active model",
+        takes_args: true,
+    },
+    SlashCommandSpec {
+        name: "provider",
+        aliases: &[],
+        description: "Switch active provider",
+        takes_args: true,
+    },
+    SlashCommandSpec {
+        name: "plan",
+        aliases: &[],
+        description: "Enter plan mode (read-only proposing)",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "act",
+        aliases: &[],
+        description: "Exit plan mode and execute",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "permissions",
+        aliases: &["perms"],
+        description: "Configure permission mode",
+        takes_args: true,
+    },
+    SlashCommandSpec {
+        name: "memory",
+        aliases: &["mem"],
+        description: "Inspect / edit memory store",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "rules",
+        aliases: &[],
+        description: "Show active rule forge rules",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "session",
+        aliases: &[],
+        description: "Save/load/new session",
+        takes_args: true,
+    },
+    SlashCommandSpec {
+        name: "status",
+        aliases: &[],
+        description: "Print full session status",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "exit",
+        aliases: &["quit"],
+        description: "Quit Quorp",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "init",
+        aliases: &[],
+        description: "Scaffold .quorp/ for the workspace",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "compact",
+        aliases: &[],
+        description: "Compact transcript now",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "edit",
+        aliases: &[],
+        description: "Open path in $EDITOR",
+        takes_args: true,
+    },
+    SlashCommandSpec {
+        name: "undo",
+        aliases: &[],
+        description: "Revert last assistant write batch",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "redo",
+        aliases: &[],
+        description: "Redo last reverted write batch",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "files",
+        aliases: &["f"],
+        description: "Fuzzy file picker",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "diff",
+        aliases: &[],
+        description: "Show working tree or stored diff",
+        takes_args: true,
+    },
+    SlashCommandSpec {
+        name: "test",
+        aliases: &[],
+        description: "Run validation tests",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "verify",
+        aliases: &[],
+        description: "Run configured proof lane",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "save",
+        aliases: &[],
+        description: "Persist current session",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "load",
+        aliases: &[],
+        description: "Load named session",
+        takes_args: true,
+    },
+    SlashCommandSpec {
+        name: "auto",
+        aliases: &[],
+        description: "Toggle to auto-safe permissions",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "manual",
+        aliases: &[],
+        description: "Toggle to ask permissions",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "think",
+        aliases: &[],
+        description: "Single-turn plan-only override",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "doctor",
+        aliases: &[],
+        description: "Re-run quorp doctor inline",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "sandbox",
+        aliases: &[],
+        description: "Set sandbox mode (host|tmp-copy)",
+        takes_args: true,
+    },
+    SlashCommandSpec {
+        name: "mcp",
+        aliases: &[],
+        description: "List MCP servers",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "hooks",
+        aliases: &[],
+        description: "List lifecycle hooks",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "tasks",
+        aliases: &[],
+        description: "Show task checklist",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "checkpoint",
+        aliases: &[],
+        description: "Create git checkpoint",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "rollback",
+        aliases: &[],
+        description: "Revert to last checkpoint",
+        takes_args: false,
+    },
+    SlashCommandSpec {
+        name: "theme",
+        aliases: &[],
+        description: "Cycle CLI theme",
+        takes_args: false,
+    },
 ];
 
 #[derive(Debug, Clone)]
@@ -57,7 +227,9 @@ pub struct Registry {
 
 impl Default for Registry {
     fn default() -> Self {
-        Self { commands: BUILTIN.to_vec() }
+        Self {
+            commands: BUILTIN.to_vec(),
+        }
     }
 }
 
@@ -78,19 +250,27 @@ impl Registry {
     pub fn resolve(&self, name: &str) -> Option<&SlashCommandSpec> {
         let name = name.trim_start_matches('/');
         self.commands.iter().find(|c| {
-            c.name.eq_ignore_ascii_case(name) || c.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
+            c.name.eq_ignore_ascii_case(name)
+                || c.aliases.iter().any(|a| a.eq_ignore_ascii_case(name))
         })
     }
 
     /// Rank candidates for `prefix` using a cheap subsequence score.
     pub fn suggest(&self, prefix: &str) -> Vec<(&SlashCommandSpec, i32)> {
         let needle = prefix.trim_start_matches('/').to_ascii_lowercase();
+        if needle.is_empty() {
+            return self.commands.iter().map(|command| (command, 0)).collect();
+        }
         let mut scored: Vec<(&SlashCommandSpec, i32)> = self
             .commands
             .iter()
-            .filter_map(|c| subsequence_score(&needle, c.name).map(|score| (c, score)))
+            .filter_map(|c| command_score(&needle, c).map(|score| (c, score)))
             .collect();
-        scored.sort_by_key(|(_, score)| -*score);
+        scored.sort_by(|(left, left_score), (right, right_score)| {
+            right_score
+                .cmp(left_score)
+                .then_with(|| left.name.cmp(right.name))
+        });
         scored
     }
 }
@@ -132,7 +312,11 @@ fn subsequence_score(needle: &str, hay: &str) -> Option<i32> {
         for hay_char in hay_iter.by_ref() {
             current_index += 1;
             if hay_char.eq_ignore_ascii_case(&needle_char) {
-                let bonus = if last_index >= 0 && current_index == last_index + 1 { 4 } else { 1 };
+                let bonus = if last_index >= 0 && current_index == last_index + 1 {
+                    4
+                } else {
+                    1
+                };
                 score += bonus;
                 last_index = current_index;
                 matched = true;
@@ -144,6 +328,28 @@ fn subsequence_score(needle: &str, hay: &str) -> Option<i32> {
         }
     }
     Some(score)
+}
+
+fn command_score(needle: &str, command: &SlashCommandSpec) -> Option<i32> {
+    if needle.is_empty() {
+        return Some(0);
+    }
+    let mut best = subsequence_score(needle, command.name);
+    for alias in command.aliases {
+        best = match (best, subsequence_score(needle, alias)) {
+            (Some(current), Some(candidate)) => Some(current.max(candidate - 1)),
+            (None, Some(candidate)) => Some(candidate - 1),
+            (current, None) => current,
+        };
+    }
+    best.map(|score| {
+        let lower_name = command.name.to_ascii_lowercase();
+        if lower_name.starts_with(needle) {
+            score + 100
+        } else {
+            score
+        }
+    })
 }
 
 #[cfg(test)]

@@ -67,11 +67,26 @@ pub struct SymbolNode {
 /// An edge in the repo graph.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum Edge {
-    Defines { module: SymbolPath, symbol: SymbolPath },
-    Calls { caller: SymbolPath, callee: SymbolPath },
-    Implements { ty: SymbolPath, trait_path: SymbolPath },
-    TestedBy { target: SymbolPath, test: SymbolPath },
-    ImportsFrom { from: FileId, module: SymbolPath },
+    Defines {
+        module: SymbolPath,
+        symbol: SymbolPath,
+    },
+    Calls {
+        caller: SymbolPath,
+        callee: SymbolPath,
+    },
+    Implements {
+        ty: SymbolPath,
+        trait_path: SymbolPath,
+    },
+    TestedBy {
+        target: SymbolPath,
+        test: SymbolPath,
+    },
+    ImportsFrom {
+        from: FileId,
+        module: SymbolPath,
+    },
 }
 
 /// Coarse counters used for capacity planning. Fully populated in

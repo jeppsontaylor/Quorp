@@ -128,14 +128,14 @@ pub async fn extract_seekable_zip<R: AsyncRead + AsyncSeek + Unpin>(
                 .await
                 .with_context(|| format!("extracting into file {path:?}"))?;
 
-            if let Some(perms) = entry.unix_permissions() {
-                if perms != 0o000 {
-                    use std::os::unix::fs::PermissionsExt;
-                    let permissions = std::fs::Permissions::from_mode(u32::from(perms));
-                    file.set_permissions(permissions)
-                        .await
-                        .with_context(|| format!("setting permissions for file {path:?}"))?;
-                }
+            if let Some(perms) = entry.unix_permissions()
+                && perms != 0o000
+            {
+                use std::os::unix::fs::PermissionsExt;
+                let permissions = std::fs::Permissions::from_mode(u32::from(perms));
+                file.set_permissions(permissions)
+                    .await
+                    .with_context(|| format!("setting permissions for file {path:?}"))?;
             }
         }
     }
@@ -174,7 +174,7 @@ mod tests {
             #[cfg(unix)]
             {
                 let mut builder =
-                    ZipEntryBuilder::new(filename.into(), async_zip::Compression::Deflate);
+                    ZipEntryBuilder::new(filename.into(), async_zip::Compression::Stored);
                 use std::os::unix::fs::PermissionsExt;
                 let metadata = std::fs::metadata(path)?;
                 let perms = keep_file_permissions.then(|| metadata.permissions().mode() as u16);
@@ -183,8 +183,7 @@ mod tests {
             }
             #[cfg(not(unix))]
             {
-                let builder =
-                    ZipEntryBuilder::new(filename.into(), async_zip::Compression::Deflate);
+                let builder = ZipEntryBuilder::new(filename.into(), async_zip::Compression::Stored);
                 writer.write_entry_whole(builder, &data).await?;
             }
         }

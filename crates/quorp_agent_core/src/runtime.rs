@@ -1,23 +1,20 @@
-use std::borrow::Cow;
-use std::collections::{BTreeSet, HashSet, VecDeque};
-use std::fs;
-use std::hash::{DefaultHasher, Hash, Hasher};
-use std::path::{Path, PathBuf};
+use std::collections::{BTreeSet, VecDeque};
+use std::path::PathBuf;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::Instant;
+use std::sync::atomic::AtomicBool;
 
 use futures::future::BoxFuture;
 use serde::Serialize;
 
-use crate::agent_context::{
-    AgentConfig, AutonomyProfile, PolicyMode, PolicySettings, load_agent_config,
-    validation_commands_for_plan,
-};
-use crate::agent_protocol::{
-    ActionOutcome, AgentAction, AgentMode, PreviewEditPayload, ValidationPlan, stable_content_hash,
-};
-use crate::agent_turn::{AgentTurnResponse, parse_agent_turn_response};
+use crate::agent_context::{AgentConfig, AutonomyProfile, PolicySettings};
+#[cfg(test)]
+use crate::agent_protocol::PreviewEditPayload;
+use crate::agent_protocol::{ActionOutcome, AgentAction, AgentMode, ValidationPlan};
+use crate::agent_turn::AgentTurnResponse;
+#[cfg(test)]
+use crate::agent_turn::parse_agent_turn_response;
+#[cfg(test)]
+use std::fs;
 
 const LEGACY_REMOTE_SAFETY_LABEL: &str = concat!("safe_", "remote");
 
@@ -340,6 +337,12 @@ pub struct AgentRepairScorecard {
     pub rolled_back_non_support_edit_count: usize,
     #[serde(default)]
     pub final_failure_classification: Option<String>,
+    #[serde(default)]
+    pub full_validation_before_fast_loop_count: usize,
+    #[serde(default)]
+    pub prose_only_recovery_count: usize,
+    #[serde(default)]
+    pub bare_replace_block_retry_count: usize,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize)]
@@ -621,7 +624,7 @@ pub enum RuntimeEvent {
         reason: String,
     },
     CheckpointSaved {
-        checkpoint: AgentCheckpoint,
+        checkpoint: Box<AgentCheckpoint>,
     },
     RunFinished {
         reason: StopReason,
@@ -700,7 +703,7 @@ pub trait RuntimeEventSink: Send + Sync {
 }
 
 #[derive(Debug)]
-struct AgentTaskState {
+pub(crate) struct AgentTaskState {
     goal: String,
     current_mode: AgentMode,
     autonomy_profile: AutonomyProfile,
@@ -735,7 +738,6 @@ struct AgentTaskState {
     agent_repair_memory: AgentRepairMemory,
 }
 
-
 mod normalize;
 mod parse_helpers;
 mod path_intel;
@@ -763,4 +765,3 @@ pub use turn::*;
 
 #[cfg(test)]
 mod tests;
-

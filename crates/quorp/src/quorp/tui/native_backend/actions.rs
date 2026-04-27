@@ -18,9 +18,7 @@ use super::{COMMAND_OUTPUT_LIMIT, stash_file_for_rollback};
 use crate::quorp::tui::agent_context::{
     McpServerConfig, load_agent_config, validation_commands_for_plan,
 };
-use crate::quorp::tui::agent_protocol::{
-    ActionOutcome, AgentAction, TomlEditOperation,
-};
+use crate::quorp::tui::agent_protocol::{ActionOutcome, AgentAction, TomlEditOperation};
 use crate::quorp::tui::{ChatUiEvent, TuiEvent};
 use quorp_agent_core::{ReadFileRange, stable_content_hash};
 use quorp_tools::apply::apply_patch_edit;
@@ -758,4 +756,3 @@ pub(crate) fn run_command_streaming(
         anyhow::bail!(final_output);
     }
 }
-

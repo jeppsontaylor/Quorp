@@ -1,9 +1,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::{
-    BatchCaseReport, BatchReport, BenchmarkReport, RunSummary, RunSummaryCase,
-};
+use crate::{BatchCaseReport, BatchReport, BenchmarkReport, RunSummary, RunSummaryCase};
 
 pub fn summarize_batch_report(
     cases_root: PathBuf,
@@ -694,7 +692,7 @@ pub fn render_report_markdown(report: &BenchmarkReport) -> String {
         ));
     }
     lines.push(format!(
-        "- Agent scorecard: parser_recovery=`{}` line_tools=`{}` controller_reads=`{}` redundant_reads=`{}` first_write=`{}` repeated_edits=`{}` validation_rejects=`{}` test_edit_rejects=`{}` target_redirects=`{}` evidence_fixations=`{}` anchors=`{}` syntax_previews=`{}`/`{}` classification=`{}`",
+        "- Agent scorecard: parser_recovery=`{}` line_tools=`{}` controller_reads=`{}` redundant_reads=`{}` first_write=`{}` repeated_edits=`{}` bare_replace_block_retries=`{}` validation_rejects=`{}` test_edit_rejects=`{}` target_redirects=`{}` evidence_fixations=`{}` anchors=`{}` syntax_previews=`{}`/`{}` prose_recoveries=`{}` classification=`{}`",
         report.agent_repair_scorecard.parser_recovery_count,
         report.agent_repair_scorecard.line_oriented_parse_count,
         report.agent_repair_scorecard.controller_injected_read_count,
@@ -705,6 +703,7 @@ pub fn render_report_markdown(report: &BenchmarkReport) -> String {
             .map(|value| value.to_string())
             .unwrap_or_else(|| "none".to_string()),
         report.agent_repair_scorecard.repeated_failed_edit_count,
+        report.agent_repair_scorecard.bare_replace_block_retry_count,
         report.agent_repair_scorecard.rejected_validation_alias_count,
         report.agent_repair_scorecard.test_edit_rejection_count,
         report.agent_repair_scorecard.target_redirect_count,
@@ -712,6 +711,7 @@ pub fn render_report_markdown(report: &BenchmarkReport) -> String {
         report.agent_repair_scorecard.anchor_suggestion_count,
         report.agent_repair_scorecard.syntax_preview_failure_count,
         report.agent_repair_scorecard.syntax_preview_count,
+        report.agent_repair_scorecard.prose_only_recovery_count,
         report
             .agent_final_failure_classification
             .clone()
@@ -740,6 +740,10 @@ pub fn render_report_markdown(report: &BenchmarkReport) -> String {
     lines.push(format!(
         "- Post-fast-loop validation rerun attempted: `{}`",
         report.post_fast_loop_validation_rerun_attempted
+    ));
+    lines.push(format!(
+        "- Full validation requested before fast loop: `{}`",
+        report.full_validation_before_fast_loop
     ));
     lines.push(String::new());
     lines.push("## Attempts".to_string());
@@ -888,7 +892,7 @@ pub fn render_report_markdown(report: &BenchmarkReport) -> String {
             ));
         }
         lines.push(format!(
-            "  - Agent scorecard: parser_recovery={} line_tools={} controller_reads={} redundant_reads={} first_write={} repeated_edits={} validation_rejects={} test_edit_rejects={} target_redirects={} evidence_fixations={} anchors={} syntax_previews={}/{}",
+            "  - Agent scorecard: parser_recovery={} line_tools={} controller_reads={} redundant_reads={} first_write={} repeated_edits={} bare_replace_block_retries={} validation_rejects={} test_edit_rejects={} target_redirects={} evidence_fixations={} anchors={} syntax_previews={}/{} prose_recoveries={}",
             attempt.agent_repair_scorecard.parser_recovery_count,
             attempt.agent_repair_scorecard.line_oriented_parse_count,
             attempt.agent_repair_scorecard.controller_injected_read_count,
@@ -899,13 +903,15 @@ pub fn render_report_markdown(report: &BenchmarkReport) -> String {
                 .map(|value| value.to_string())
                 .unwrap_or_else(|| "none".to_string()),
             attempt.agent_repair_scorecard.repeated_failed_edit_count,
+            attempt.agent_repair_scorecard.bare_replace_block_retry_count,
             attempt.agent_repair_scorecard.rejected_validation_alias_count,
             attempt.agent_repair_scorecard.test_edit_rejection_count,
             attempt.agent_repair_scorecard.target_redirect_count,
             attempt.agent_repair_scorecard.evidence_file_fixation_count,
             attempt.agent_repair_scorecard.anchor_suggestion_count,
             attempt.agent_repair_scorecard.syntax_preview_failure_count,
-            attempt.agent_repair_scorecard.syntax_preview_count
+            attempt.agent_repair_scorecard.syntax_preview_count,
+            attempt.agent_repair_scorecard.prose_only_recovery_count
         ));
         lines.push(format!(
             "  - Repair submode: entered={} turns={} invalid_streak_max={} write_locked={} write_refusals={} scaffold_offered={} scaffold_honored={} write_emitted={} rolled_back_writes={} rolled_back_non_support={} soft_budget_inefficient={}",
@@ -932,6 +938,10 @@ pub fn render_report_markdown(report: &BenchmarkReport) -> String {
         lines.push(format!(
             "  - Post-fast-loop validation rerun attempted: {}",
             attempt.post_fast_loop_validation_rerun_attempted
+        ));
+        lines.push(format!(
+            "  - Full validation requested before fast loop: {}",
+            attempt.full_validation_before_fast_loop
         ));
         if !attempt.prompt_token_series_by_turn.is_empty() {
             let series = attempt
@@ -981,9 +991,7 @@ fn truncate_report_text(value: &str, char_limit: usize) -> String {
     truncated
 }
 
-fn render_failed_edit_records_for_report(
-    records: &[quorp_agent_core::FailedEditRecord],
-) -> String {
+fn render_failed_edit_records_for_report(records: &[quorp_agent_core::FailedEditRecord]) -> String {
     records
         .iter()
         .map(|record| {

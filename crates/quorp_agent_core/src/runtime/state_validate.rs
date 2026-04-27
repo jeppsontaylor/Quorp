@@ -27,7 +27,10 @@ use crate::agent_protocol::{
 use crate::agent_turn::{AgentTurnResponse, parse_agent_turn_response};
 
 impl AgentTaskState {
-    pub(crate) fn benchmark_narrow_repair_restricts_action(&self, action: &AgentAction) -> Option<String> {
+    pub(crate) fn benchmark_narrow_repair_restricts_action(
+        &self,
+        action: &AgentAction,
+    ) -> Option<String> {
         let ledger = self.benchmark_case_ledger.as_ref()?;
         if ledger.case_class != "narrow-owner-first" || !ledger.validation_details.repair_required {
             return None;
@@ -226,7 +229,11 @@ impl AgentTaskState {
         )
     }
 
-    pub(crate) fn repeated_validation_repair_message(&self, action_summary: &str, error: &str) -> String {
+    pub(crate) fn repeated_validation_repair_message(
+        &self,
+        action_summary: &str,
+        error: &str,
+    ) -> String {
         let mut lines = vec![format!(
             "[Repair Phase]\nThe action `{action_summary}` was rejected because validation already exposed the failure and no repair write has been made yet."
         )];
@@ -319,7 +326,10 @@ impl AgentTaskState {
             })
     }
 
-    pub(crate) fn repair_requirement_range_guidance(&self, actions: &[AgentAction]) -> Option<String> {
+    pub(crate) fn repair_requirement_range_guidance(
+        &self,
+        actions: &[AgentAction],
+    ) -> Option<String> {
         let requirement = self.repair_requirement.as_ref()?;
         if requirement.exact_reread_completed {
             return None;
@@ -440,10 +450,9 @@ impl AgentTaskState {
             .repair_requirement
             .as_ref()
             .is_some_and(|requirement| requirement.path == path)
+            && let Some(requirement) = self.repair_requirement.as_ref()
         {
-            if let Some(requirement) = self.repair_requirement.as_ref() {
-                return Self::repair_requirement_read_is_valid(requirement, path, range);
-            }
+            return Self::repair_requirement_read_is_valid(requirement, path, range);
         }
         let Some(ledger) = self.benchmark_case_ledger.as_ref() else {
             return false;
@@ -670,7 +679,10 @@ impl AgentTaskState {
         known_failure && patch_not_attempted
     }
 
-    pub(crate) fn action_repeats_validation_before_repair_write(&self, action: &AgentAction) -> bool {
+    pub(crate) fn action_repeats_validation_before_repair_write(
+        &self,
+        action: &AgentAction,
+    ) -> bool {
         if !self.repair_rejects_validation_before_first_write() {
             return false;
         }
@@ -685,6 +697,20 @@ impl AgentTaskState {
     }
 
     pub(crate) fn enqueue_full_validation(&mut self) {
+        let repair_aware_fast_loop = self.benchmark_fast_loop_validation_plan();
+        if repair_aware_fast_loop.is_some()
+            && self
+                .benchmark_case_ledger
+                .as_ref()
+                .is_some_and(|ledger| ledger.validation_details.repair_required)
+        {
+            if let Some(ledger) = self.benchmark_case_ledger.as_mut() {
+                ledger.validation_details.full_validation_before_fast_loop = true;
+            }
+            if let Some(plan) = repair_aware_fast_loop {
+                self.enqueue_validation_plan(plan);
+            }
+        }
         self.enqueue_validation_plan(ValidationPlan {
             fmt: true,
             clippy: true,
@@ -710,5 +736,4 @@ impl AgentTaskState {
             .map(ValidationPlan::summary)
             .collect()
     }
-
 }

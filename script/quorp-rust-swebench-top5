@@ -5,7 +5,13 @@ set -euo pipefail
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 source_root="${QUORP_RUST_SWE_CASES_ROOT:-${repo_root}/../WarpOS/challenges/cases}"
 cases_root="${QUORP_RUST_SWE_TOP5_WORKDIR:-$(mktemp -d "${TMPDIR:-/tmp}/quorp-warpos-rust-swe-5.XXXXXX")}"
-result_dir="${QUORP_BENCHMARK_RESULT_DIR:-$(mktemp -d "${TMPDIR:-/tmp}/quorp-rust-swe-top5.XXXXXX")}"
+benchmark_root="${QUORP_BENCHMARK_CACHE_ROOT:-${HOME}/Library/Caches/Quorp/benchmarks}"
+mkdir -p "$benchmark_root"
+result_dir="${QUORP_BENCHMARK_RESULT_DIR:-$(mktemp -d "${benchmark_root}/quorp-rust-swe-top5.XXXXXX")}"
+if [[ "${QUORP_ALLOW_TARGET_BENCHMARK_RESULTS:-0}" != "1" && ( "$result_dir" == */target || "$result_dir" == */target/* ) ]]; then
+  echo "[quorp-rust-swebench-top5] refusing benchmark result_dir inside target: $result_dir" >&2
+  exit 1
+fi
 
 mkdir -p "$cases_root" "$result_dir"
 
@@ -20,7 +26,12 @@ for case in \
     exit 1
   fi
   rm -rf "$cases_root/$(basename "$case")"
-  cp -R "$case" "$cases_root/"
+  rsync -a --delete \
+    --exclude 'target/' \
+    --exclude '.quorp-cargo-target/' \
+    --exclude '.quorp-cargo-target-eval/' \
+    --exclude '.git/' \
+    "$case"/ "$cases_root/$(basename "$case")"/
 done
 
 cd "$repo_root"
@@ -28,6 +39,8 @@ cd "$repo_root"
 echo "[quorp-rust-swebench-top5] cases_root=$cases_root"
 echo "[quorp-rust-swebench-top5] result_dir=$result_dir"
 echo "[quorp-rust-swebench-top5] model=qwen/qwen3-coder-480b-a35b-instruct"
+
+export CARGO_INCREMENTAL="${CARGO_INCREMENTAL:-0}"
 
 "${QUORP_BIN:-./target/release/quorp}" benchmark batch \
   --cases-root "$cases_root" \

@@ -9,12 +9,15 @@ use crate::{
     read_case_report_scorecard,
 };
 
+const SLOW_FIRST_TOKEN_LATENCY_MS: u64 = 30_000;
+
 #[derive(Debug, Clone)]
 pub struct BenchmarkScoreOptions {
     pub run_dirs: Vec<PathBuf>,
     pub suite: String,
     pub reports_root: PathBuf,
     pub output_root: Option<PathBuf>,
+    pub fail_on_regression: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -52,6 +55,9 @@ pub fn score_benchmark_reports(
     cases.sort_by(|left, right| left.case_id.cmp(&right.case_id));
     let total_cases = cases.len();
     let solved_cases = cases.iter().filter(|case| case.success).count();
+    let success_rate_ppm = rate_ppm(solved_cases, total_cases);
+    let secure_success_cases = cases.iter().filter(|case| case.secure_success).count();
+    let secure_success_rate_ppm = rate_ppm(secure_success_cases, total_cases);
     let valid_write_cases = cases
         .iter()
         .filter(|case| case.first_valid_write_step.is_some())
@@ -70,6 +76,24 @@ pub fn score_benchmark_reports(
         .count();
     let total_requests = cases.iter().map(|case| case.total_requests).sum();
     let total_billed_tokens = cases.iter().map(|case| case.total_billed_tokens).sum();
+    let secure_etts_tokens = cases.iter().map(|case| case.secure_etts_tokens).sum();
+    let total_wall_clock_ms = cases.iter().map(|case| case.wall_clock_ms).sum();
+    let median_wall_clock_ms = median(cases.iter().map(|case| case.wall_clock_ms).collect());
+    let total_patch_lines_changed = cases.iter().map(|case| case.patch_lines_changed).sum();
+    let total_retries = cases.iter().map(|case| case.retry_count).sum();
+    let proof_lane_counts = count_proof_lanes(&cases);
+    let slow_first_token_cases = cases
+        .iter()
+        .filter(|case| {
+            case.first_request_first_token_latency_ms
+                .is_some_and(|latency| latency >= SLOW_FIRST_TOKEN_LATENCY_MS)
+        })
+        .count();
+    let watchdog_near_limit_cases = cases.iter().filter(|case| case.watchdog_near_limit).count();
+    let patch_quality_risk_cases = cases
+        .iter()
+        .filter(|case| case.patch_quality_risk.is_some())
+        .count();
     let blocker_counts = count_blockers(&cases);
     let common_blocker = blocker_counts
         .iter()
@@ -87,8 +111,20 @@ pub fn score_benchmark_reports(
         post_write_validation_cases,
         diagnostic_classified_cases,
         tooling_healthy_cases,
+        success_rate_ppm,
+        secure_success_cases,
+        secure_success_rate_ppm,
         total_requests,
         total_billed_tokens,
+        secure_etts_tokens,
+        total_wall_clock_ms,
+        median_wall_clock_ms,
+        total_patch_lines_changed,
+        total_retries,
+        proof_lane_counts,
+        slow_first_token_cases,
+        watchdog_near_limit_cases,
+        patch_quality_risk_cases,
         common_blocker,
         blocker_counts,
         regressions: Vec::new(),
@@ -105,6 +141,13 @@ pub fn score_benchmark_reports(
     fs::write(output_dir.join("scoreboard.md"), &markdown)?;
     write_json(&output_root.join("latest.json"), &score)?;
     fs::write(output_root.join("latest.md"), &markdown)?;
+
+    if options.fail_on_regression && !score.regressions.is_empty() {
+        anyhow::bail!(
+            "benchmark score regressed: {}",
+            score.regressions.join("; ")
+        );
+    }
 
     Ok(BenchmarkScoreArtifacts {
         output_dir,
@@ -326,9 +369,18 @@ fn score_case_from_parts(
     let failure_classification = normalize_score_failure_classification(case, report, &scorecard);
     let progress_score = progress_score_for_case(case, report, &scorecard, post_write_validation);
     let general_tooling_gap = general_tooling_gap_for_case(case, &failure_classification);
+    let secure_success = case_secure_success(case, report);
+    let retry_count = report
+        .map(|report| report.attempts_run.saturating_sub(1))
+        .unwrap_or_default()
+        .max(usize::from(case.adaptive_action_mode_retry));
+    let proof_lanes = proof_lanes_for_case(case, report);
+    let patch_lines_changed = case.lines_added.saturating_add(case.lines_removed);
+    let patch_quality_risk = patch_quality_risk_for_case(report);
     BenchmarkScoreCase {
         case_id: case.case_id.clone(),
         success: case.success,
+        secure_success,
         progress_score,
         progress_phase: progress_phase_label(progress_score).to_string(),
         failure_classification,
@@ -359,12 +411,44 @@ fn score_case_from_parts(
         replace_range_count: scorecard.replace_range_count,
         apply_preview_count: scorecard.apply_preview_count,
         wall_clock_ms: case.wall_clock_ms,
+        secure_etts_tokens: if secure_success {
+            case.total_billed_tokens
+        } else {
+            0
+        },
+        memory_peak_mb: None,
+        patch_lines_changed,
+        retry_count,
+        proof_lanes,
+        first_request_first_token_latency_ms: case.first_request_first_token_latency_ms,
+        watchdog_near_limit: report.is_some_and(|report| report.watchdog_near_limit),
+        patch_quality_risk,
         total_requests: case.total_requests,
         total_billed_tokens: case.total_billed_tokens,
         lines_added: case.lines_added,
         lines_removed: case.lines_removed,
         general_tooling_gap,
     }
+}
+
+fn patch_quality_risk_for_case(report: Option<&BenchmarkReport>) -> Option<String> {
+    let report = report?;
+    if !report.success || report.write_count == 0 {
+        return None;
+    }
+    let structured_write_count = report
+        .preview_edit_count
+        .saturating_add(report.replace_range_count)
+        .saturating_add(report.modify_toml_count)
+        .saturating_add(report.apply_preview_count);
+    if structured_write_count == 0 && report.changed_files.len() > 1 {
+        return Some("multi_file_write_without_structured_edit".to_string());
+    }
+    if structured_write_count == 0 && report.lines_added.saturating_add(report.lines_removed) >= 120
+    {
+        return Some("large_write_without_structured_edit".to_string());
+    }
+    None
 }
 
 fn progress_score_for_case(
@@ -489,6 +573,70 @@ fn score_case_is_better(candidate: &BenchmarkScoreCase, current: &BenchmarkScore
         .is_gt()
 }
 
+fn rate_ppm(numerator: usize, denominator: usize) -> u32 {
+    if denominator == 0 {
+        return 0;
+    }
+    let scaled = numerator.saturating_mul(1_000_000) / denominator;
+    scaled.try_into().unwrap_or(u32::MAX)
+}
+
+fn median(mut values: Vec<u64>) -> u64 {
+    if values.is_empty() {
+        return 0;
+    }
+    values.sort_unstable();
+    values[values.len() / 2]
+}
+
+fn count_proof_lanes(cases: &[BenchmarkScoreCase]) -> BTreeMap<String, usize> {
+    let mut counts = BTreeMap::new();
+    for proof_lane in cases.iter().flat_map(|case| case.proof_lanes.iter()) {
+        *counts.entry(proof_lane.clone()).or_insert(0) += 1;
+    }
+    counts
+}
+
+fn case_secure_success(case: &BatchCaseReport, report: Option<&BenchmarkReport>) -> bool {
+    if !case.success {
+        return false;
+    }
+    let deterministic_passed = case
+        .deterministic_evaluation_passed
+        .or_else(|| report.and_then(|report| report.deterministic_evaluation_passed));
+    deterministic_passed.unwrap_or(true)
+}
+
+fn proof_lanes_for_case(case: &BatchCaseReport, report: Option<&BenchmarkReport>) -> Vec<String> {
+    let mut lanes = Vec::new();
+    if report.is_some_and(|report| {
+        report.fast_loop_command_seen || report.post_fast_loop_validation_rerun_attempted
+    }) {
+        lanes.push("fast".to_string());
+    }
+    if report.is_some_and(|report| report.validation_commands_run > 1) {
+        lanes.push("medium".to_string());
+    }
+    if report.is_some_and(|report| {
+        report.evaluation_commands_run > 0
+            || report.final_evaluate_command_seen
+            || report.agent_final_evaluate_command_seen
+    }) {
+        lanes.push("evaluation".to_string());
+    }
+    if case.deterministic_evaluation_passed.is_some()
+        || report.is_some_and(|report| report.deterministic_evaluation_passed.is_some())
+    {
+        lanes.push("deterministic".to_string());
+    }
+    if case.judge_passed.is_some() || report.is_some_and(|report| report.judge.is_some()) {
+        lanes.push("judge".to_string());
+    }
+    lanes.sort();
+    lanes.dedup();
+    lanes
+}
+
 fn count_blockers(cases: &[BenchmarkScoreCase]) -> BTreeMap<String, usize> {
     let mut counts = BTreeMap::new();
     for case in cases.iter().filter(|case| !case.success) {
@@ -537,6 +685,61 @@ fn detect_score_regressions(
             previous.post_write_validation_cases, current.post_write_validation_cases
         ));
     }
+    if current.secure_success_cases < previous.secure_success_cases {
+        regressions.push(format!(
+            "secure success cases decreased from {} to {}",
+            previous.secure_success_cases, current.secure_success_cases
+        ));
+    }
+    if current.success_rate_ppm < previous.success_rate_ppm {
+        regressions.push(format!(
+            "success rate decreased from {:.2}% to {:.2}%",
+            f64::from(previous.success_rate_ppm) / 10_000.0,
+            f64::from(current.success_rate_ppm) / 10_000.0
+        ));
+    }
+    if current.secure_success_rate_ppm < previous.secure_success_rate_ppm {
+        regressions.push(format!(
+            "secure success rate decreased from {:.2}% to {:.2}%",
+            f64::from(previous.secure_success_rate_ppm) / 10_000.0,
+            f64::from(current.secure_success_rate_ppm) / 10_000.0
+        ));
+    }
+    let comparable_cost_surface = current.total_cases == previous.total_cases
+        && current.solved_cases == previous.solved_cases
+        && current.secure_success_cases == previous.secure_success_cases;
+    if comparable_cost_surface {
+        if current.total_billed_tokens > previous.total_billed_tokens {
+            regressions.push(format!(
+                "total billed tokens increased from {} to {} at equal solved coverage",
+                previous.total_billed_tokens, current.total_billed_tokens
+            ));
+        }
+        if current.secure_etts_tokens > previous.secure_etts_tokens {
+            regressions.push(format!(
+                "SecureETTS tokens increased from {} to {} at equal secure coverage",
+                previous.secure_etts_tokens, current.secure_etts_tokens
+            ));
+        }
+        if current.median_wall_clock_ms > previous.median_wall_clock_ms {
+            regressions.push(format!(
+                "median wall time increased from {}ms to {}ms at equal solved coverage",
+                previous.median_wall_clock_ms, current.median_wall_clock_ms
+            ));
+        }
+        if current.total_retries > previous.total_retries {
+            regressions.push(format!(
+                "total retries increased from {} to {} at equal solved coverage",
+                previous.total_retries, current.total_retries
+            ));
+        }
+        if current.total_patch_lines_changed > previous.total_patch_lines_changed {
+            regressions.push(format!(
+                "total patch size increased from {} to {} changed lines at equal solved coverage",
+                previous.total_patch_lines_changed, current.total_patch_lines_changed
+            ));
+        }
+    }
     let previous_cases = previous
         .cases
         .iter()
@@ -579,6 +782,16 @@ fn render_scoreboard(report: &BenchmarkScoreReport) -> String {
             report.solved_cases, report.total_cases
         ),
         format!(
+            "- Success rate: `{:.2}%`",
+            f64::from(report.success_rate_ppm) / 10_000.0
+        ),
+        format!(
+            "- Secure success: `{}/{}` (`{:.2}%`)",
+            report.secure_success_cases,
+            report.total_cases,
+            f64::from(report.secure_success_rate_ppm) / 10_000.0
+        ),
+        format!(
             "- Valid implementation writes: `{}/{}`",
             report.valid_write_cases, report.total_cases
         ),
@@ -603,6 +816,26 @@ fn render_scoreboard(report: &BenchmarkScoreReport) -> String {
         ),
         format!("- Total requests: `{}`", report.total_requests),
         format!("- Total billed tokens: `{}`", report.total_billed_tokens),
+        format!("- SecureETTS tokens: `{}`", report.secure_etts_tokens),
+        format!("- Total wall time ms: `{}`", report.total_wall_clock_ms),
+        format!("- Median wall time ms: `{}`", report.median_wall_clock_ms),
+        format!(
+            "- Total patch size: `{} changed lines`",
+            report.total_patch_lines_changed
+        ),
+        format!("- Total retries: `{}`", report.total_retries),
+        format!(
+            "- Slow first-token cases: `{}` (>= {}ms)",
+            report.slow_first_token_cases, SLOW_FIRST_TOKEN_LATENCY_MS
+        ),
+        format!(
+            "- Watchdog near-limit cases: `{}`",
+            report.watchdog_near_limit_cases
+        ),
+        format!(
+            "- Patch quality risk cases: `{}`",
+            report.patch_quality_risk_cases
+        ),
         String::new(),
         "## Blockers".to_string(),
     ];
@@ -611,6 +844,15 @@ fn render_scoreboard(report: &BenchmarkScoreReport) -> String {
     } else {
         for (classification, count) in &report.blocker_counts {
             lines.push(format!("- `{classification}`: `{count}`"));
+        }
+    }
+    lines.push(String::new());
+    lines.push("## Proof Lanes".to_string());
+    if report.proof_lane_counts.is_empty() {
+        lines.push("- none".to_string());
+    } else {
+        for (lane, count) in &report.proof_lane_counts {
+            lines.push(format!("- `{lane}`: `{count}`"));
         }
     }
     lines.push(String::new());
@@ -626,11 +868,12 @@ fn render_scoreboard(report: &BenchmarkScoreReport) -> String {
     lines.push("## Cases".to_string());
     for case in &report.cases {
         lines.push(format!(
-            "- `{}` phase=`{}` progress={} success={} class=`{}` model={} first_write={} post_write_validation={} requests={} tokens={} changed=+{}/-{} gap={} report={}",
+            "- `{}` phase=`{}` progress={} success={} secure={} class=`{}` model={} first_write={} post_write_validation={} requests={} tokens={} secure_etts={} wall_ms={} first_token_ms={} near_limit={} changed=+{}/-{} retries={} lanes={} patch_risk={} memory_peak_mb={} gap={} report={}",
             case.case_id,
             case.progress_phase,
             case.progress_score,
             case.success,
+            case.secure_success,
             case.failure_classification,
             case.model_id
                 .clone()
@@ -641,8 +884,26 @@ fn render_scoreboard(report: &BenchmarkScoreReport) -> String {
             case.post_write_validation,
             case.total_requests,
             case.total_billed_tokens,
+            case.secure_etts_tokens,
+            case.wall_clock_ms,
+            case.first_request_first_token_latency_ms
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_string()),
+            case.watchdog_near_limit,
             case.lines_added,
             case.lines_removed,
+            case.retry_count,
+            if case.proof_lanes.is_empty() {
+                "none".to_string()
+            } else {
+                case.proof_lanes.join(",")
+            },
+            case.patch_quality_risk
+                .clone()
+                .unwrap_or_else(|| "none".to_string()),
+            case.memory_peak_mb
+                .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_string()),
             case.general_tooling_gap
                 .clone()
                 .unwrap_or_else(|| "none".to_string()),
@@ -672,4 +933,163 @@ fn write_json(path: &Path, value: &impl serde::Serialize) -> anyhow::Result<()> 
     let serialized = serde_json::to_string_pretty(value)
         .with_context(|| format!("failed to serialize {}", path.display()))?;
     fs::write(path, serialized).with_context(|| format!("failed to write {}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn detects_phase_nine_score_regressions() {
+        let previous = score_report_for_test(1, 1, 100, 100, 10, 0, 1);
+        let current = score_report_for_test(1, 0, 100, 100, 10, 0, 1);
+
+        let regressions = detect_score_regressions(Some(&previous), &current);
+
+        assert!(
+            regressions
+                .iter()
+                .any(|regression| regression.contains("secure success cases decreased"))
+        );
+        assert!(
+            regressions
+                .iter()
+                .any(|regression| regression.contains("secure success rate decreased"))
+        );
+    }
+
+    #[test]
+    fn detects_phase_nine_cost_regressions_at_equal_coverage() {
+        let previous = score_report_for_test(1, 1, 100, 100, 10, 0, 1);
+        let current = score_report_for_test(1, 1, 150, 125, 20, 1, 2);
+
+        let regressions = detect_score_regressions(Some(&previous), &current);
+
+        assert!(
+            regressions
+                .iter()
+                .any(|regression| regression.contains("total billed tokens increased"))
+        );
+        assert!(
+            regressions
+                .iter()
+                .any(|regression| regression.contains("SecureETTS tokens increased"))
+        );
+        assert!(
+            regressions
+                .iter()
+                .any(|regression| regression.contains("median wall time increased"))
+        );
+        assert!(
+            regressions
+                .iter()
+                .any(|regression| regression.contains("total retries increased"))
+        );
+        assert!(
+            regressions
+                .iter()
+                .any(|regression| regression.contains("total patch size increased"))
+        );
+    }
+
+    #[test]
+    fn fail_on_regression_writes_scoreboard_then_returns_error() {
+        let test_root = unique_temp_dir("quorp-score-gate");
+        let run_dir = test_root.join("run");
+        let output_root = test_root.join("scoreboards");
+        fs::create_dir_all(&run_dir).expect("run dir");
+        fs::create_dir_all(&output_root).expect("output root");
+        write_json(
+            &output_root.join("latest.json"),
+            &score_report_for_test(1, 1, 100, 100, 10, 0, 1),
+        )
+        .expect("previous score");
+        write_json(
+            &run_dir.join("benchmark-report.json"),
+            &serde_json::json!({
+                "benchmark_name": "Regression Fixture",
+                "issue_id": "case-a",
+                "success": false,
+                "attempts_run": 1,
+                "max_attempts": 1,
+                "total_billed_tokens": 150,
+                "max_total_tokens": null,
+                "final_stop_reason": "fatal_error",
+                "changed_files": [],
+                "widening_happened": false,
+                "attempts": [],
+                "run_dir": run_dir,
+                "wall_clock_ms": 20,
+                "total_requests": 1,
+                "first_model_turn_started": true,
+                "first_action_emitted": true,
+                "agent_final_failure_classification": "model_edit_strategy"
+            }),
+        )
+        .expect("benchmark report");
+
+        let error = score_benchmark_reports(BenchmarkScoreOptions {
+            run_dirs: vec![run_dir],
+            suite: String::new(),
+            reports_root: test_root.join("reports"),
+            output_root: Some(output_root.clone()),
+            fail_on_regression: true,
+        })
+        .expect_err("regression gate should fail");
+
+        assert!(error.to_string().contains("benchmark score regressed"));
+        assert!(output_root.join("latest.json").exists());
+        assert!(output_root.join("latest.md").exists());
+        fs::remove_dir_all(test_root).expect("cleanup");
+    }
+
+    fn score_report_for_test(
+        solved_cases: usize,
+        secure_success_cases: usize,
+        total_billed_tokens: u64,
+        secure_etts_tokens: u64,
+        median_wall_clock_ms: u64,
+        total_retries: usize,
+        total_patch_lines_changed: u64,
+    ) -> BenchmarkScoreReport {
+        let total_cases = 1;
+        BenchmarkScoreReport {
+            suite: "test".to_string(),
+            generated_at_unix_seconds: 1,
+            output_dir: PathBuf::from("/tmp/quorp-score-test"),
+            run_dirs: vec![PathBuf::from("/tmp/quorp-score-test/run")],
+            total_cases,
+            solved_cases,
+            valid_write_cases: solved_cases,
+            post_write_validation_cases: solved_cases,
+            diagnostic_classified_cases: total_cases,
+            tooling_healthy_cases: total_cases,
+            success_rate_ppm: rate_ppm(solved_cases, total_cases),
+            secure_success_cases,
+            secure_success_rate_ppm: rate_ppm(secure_success_cases, total_cases),
+            total_requests: 1,
+            total_billed_tokens,
+            secure_etts_tokens,
+            total_wall_clock_ms: median_wall_clock_ms,
+            median_wall_clock_ms,
+            total_patch_lines_changed,
+            total_retries,
+            proof_lane_counts: BTreeMap::new(),
+            slow_first_token_cases: 0,
+            watchdog_near_limit_cases: 0,
+            patch_quality_risk_cases: 0,
+            common_blocker: None,
+            blocker_counts: BTreeMap::new(),
+            regressions: Vec::new(),
+            cases: Vec::new(),
+        }
+    }
+
+    fn unique_temp_dir(prefix: &str) -> PathBuf {
+        let suffix = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .expect("system clock")
+            .as_nanos();
+        std::env::temp_dir().join(format!("{prefix}-{}-{suffix}", std::process::id()))
+    }
 }

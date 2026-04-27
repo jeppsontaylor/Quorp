@@ -2,9 +2,7 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use clap::ValueEnum;
-use quorp_agent_core::{
-    AgentRepairMemory, AgentRepairScorecard, FailedEditRecord, StopReason,
-};
+use quorp_agent_core::{AgentRepairMemory, AgentRepairScorecard, FailedEditRecord, StopReason};
 use serde::{Deserialize, Serialize};
 
 use crate::{ChallengeMetadata, EvaluatorOutcome};
@@ -272,6 +270,12 @@ pub struct AttemptReport {
     pub post_fast_loop_patch_attempted: bool,
     #[serde(default)]
     pub post_fast_loop_validation_rerun_attempted: bool,
+    #[serde(default)]
+    pub full_validation_before_fast_loop: bool,
+    #[serde(default)]
+    pub prose_only_recovery_count: usize,
+    #[serde(default)]
+    pub bare_replace_block_retry_count: usize,
     #[serde(default)]
     pub patch_packet_injected: bool,
     #[serde(default)]
@@ -572,6 +576,12 @@ pub struct BenchmarkReport {
     #[serde(default)]
     pub post_fast_loop_validation_rerun_attempted: bool,
     #[serde(default)]
+    pub full_validation_before_fast_loop: bool,
+    #[serde(default)]
+    pub prose_only_recovery_count: usize,
+    #[serde(default)]
+    pub bare_replace_block_retry_count: usize,
+    #[serde(default)]
     pub patch_packet_injected: bool,
     #[serde(default)]
     pub patch_packet_honored_range: Option<String>,
@@ -717,8 +727,32 @@ pub struct BenchmarkScoreReport {
     pub post_write_validation_cases: usize,
     pub diagnostic_classified_cases: usize,
     pub tooling_healthy_cases: usize,
+    #[serde(default)]
+    pub success_rate_ppm: u32,
+    #[serde(default)]
+    pub secure_success_cases: usize,
+    #[serde(default)]
+    pub secure_success_rate_ppm: u32,
     pub total_requests: usize,
     pub total_billed_tokens: u64,
+    #[serde(default)]
+    pub secure_etts_tokens: u64,
+    #[serde(default)]
+    pub total_wall_clock_ms: u64,
+    #[serde(default)]
+    pub median_wall_clock_ms: u64,
+    #[serde(default)]
+    pub total_patch_lines_changed: u64,
+    #[serde(default)]
+    pub total_retries: usize,
+    #[serde(default)]
+    pub proof_lane_counts: BTreeMap<String, usize>,
+    #[serde(default)]
+    pub slow_first_token_cases: usize,
+    #[serde(default)]
+    pub watchdog_near_limit_cases: usize,
+    #[serde(default)]
+    pub patch_quality_risk_cases: usize,
     pub common_blocker: Option<String>,
     pub blocker_counts: BTreeMap<String, usize>,
     pub regressions: Vec<String>,
@@ -729,6 +763,8 @@ pub struct BenchmarkScoreReport {
 pub struct BenchmarkScoreCase {
     pub case_id: String,
     pub success: bool,
+    #[serde(default)]
+    pub secure_success: bool,
     pub progress_score: u8,
     pub progress_phase: String,
     pub failure_classification: String,
@@ -755,6 +791,22 @@ pub struct BenchmarkScoreCase {
     pub replace_range_count: usize,
     pub apply_preview_count: usize,
     pub wall_clock_ms: u64,
+    #[serde(default)]
+    pub secure_etts_tokens: u64,
+    #[serde(default)]
+    pub memory_peak_mb: Option<u64>,
+    #[serde(default)]
+    pub patch_lines_changed: u64,
+    #[serde(default)]
+    pub retry_count: usize,
+    #[serde(default)]
+    pub proof_lanes: Vec<String>,
+    #[serde(default)]
+    pub first_request_first_token_latency_ms: Option<u64>,
+    #[serde(default)]
+    pub watchdog_near_limit: bool,
+    #[serde(default)]
+    pub patch_quality_risk: Option<String>,
     pub total_requests: usize,
     pub total_billed_tokens: u64,
     pub lines_added: u64,

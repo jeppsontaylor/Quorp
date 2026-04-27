@@ -7,7 +7,7 @@
 use unicode_width::UnicodeWidthStr;
 
 use crate::caps::ColorCapability;
-use crate::palette::{lerp_rgb, RESET, SHIMMER_COOL, SHIMMER_WARM};
+use crate::palette::{RESET, SHIMMER_COOL, SHIMMER_WARM, lerp_rgb};
 
 #[derive(Debug, Clone, Copy)]
 pub struct ShimmerStyle {
@@ -20,7 +20,10 @@ pub struct ShimmerStyle {
 
 impl Default for ShimmerStyle {
     fn default() -> Self {
-        Self { phase_per_column: 0.35, time_scale: 4.0 }
+        Self {
+            phase_per_column: 0.35,
+            time_scale: 4.0,
+        }
     }
 }
 
@@ -76,7 +79,12 @@ mod tests {
 
     #[test]
     fn truecolor_frame_contains_escapes_and_verb_chars() {
-        let s = render_shimmer("Cogitating", 0.5, ShimmerStyle::default(), ColorCapability::TrueColor);
+        let s = render_shimmer(
+            "Cogitating",
+            0.5,
+            ShimmerStyle::default(),
+            ColorCapability::TrueColor,
+        );
         assert!(s.contains("\x1b[38;2"));
         assert!(s.contains('C'));
         assert!(s.ends_with("\x1b[0m"));
@@ -84,15 +92,32 @@ mod tests {
 
     #[test]
     fn no_color_falls_back_to_braille() {
-        let s = render_shimmer("Reading", 0.0, ShimmerStyle::default(), ColorCapability::NoColor);
+        let s = render_shimmer(
+            "Reading",
+            0.0,
+            ShimmerStyle::default(),
+            ColorCapability::NoColor,
+        );
         assert!(s.contains("Reading"));
-        assert!(s.starts_with('⠋') || s.starts_with('⠙') || s.starts_with('⠹') || s.starts_with('⠸'));
+        assert!(
+            s.starts_with('⠋') || s.starts_with('⠙') || s.starts_with('⠹') || s.starts_with('⠸')
+        );
     }
 
     #[test]
     fn frame_at_zero_time_has_stable_first_color() {
-        let a = render_shimmer("X", 0.0, ShimmerStyle::default(), ColorCapability::TrueColor);
-        let b = render_shimmer("X", 0.0, ShimmerStyle::default(), ColorCapability::TrueColor);
+        let a = render_shimmer(
+            "X",
+            0.0,
+            ShimmerStyle::default(),
+            ColorCapability::TrueColor,
+        );
+        let b = render_shimmer(
+            "X",
+            0.0,
+            ShimmerStyle::default(),
+            ColorCapability::TrueColor,
+        );
         assert_eq!(a, b);
     }
 

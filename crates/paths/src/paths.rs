@@ -130,17 +130,17 @@ pub fn state_dir() -> &'static PathBuf {
         }
 
         if cfg!(any(target_os = "linux", target_os = "freebsd")) {
-            return if let Ok(flatpak_xdg_state) = std::env::var("FLATPAK_XDG_STATE_HOME") {
+            if let Ok(flatpak_xdg_state) = std::env::var("FLATPAK_XDG_STATE_HOME") {
                 flatpak_xdg_state.into()
             } else {
                 dirs::state_dir().expect("failed to determine XDG_STATE_HOME directory")
             }
-            .join("quorp");
+            .join("quorp")
         } else {
             // Windows
-            return dirs::data_local_dir()
+            dirs::data_local_dir()
                 .expect("failed to determine LocalAppData directory")
-                .join("Quorp");
+                .join("Quorp")
         }
     })
 }

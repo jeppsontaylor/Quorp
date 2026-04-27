@@ -64,7 +64,11 @@ mod tests {
     use super::*;
 
     fn step(name: &str, detail: &str, status: SplashStatus) -> SplashStep {
-        SplashStep { name: name.into(), detail: detail.into(), status }
+        SplashStep {
+            name: name.into(),
+            detail: detail.into(),
+            status,
+        }
     }
 
     #[test]

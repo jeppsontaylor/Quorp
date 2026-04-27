@@ -34,6 +34,10 @@ pub enum Source {
     Diagnostic,
     Memory,
     Rule,
+    OwnerMap,
+    TestMap,
+    ProofLane,
+    GeneratedZone,
     GitHistory,
     Vector,
     Lexical,
@@ -92,6 +96,12 @@ pub enum ContextItem {
         chunk: ChunkId,
         rule_id: RuleId,
         statement: String,
+        meta: ItemMeta,
+    },
+    AgentContract {
+        chunk: ChunkId,
+        title: String,
+        body: String,
         meta: ItemMeta,
     },
 }

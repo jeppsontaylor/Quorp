@@ -4,8 +4,8 @@
 //! Extracted from `agent_turn.rs` so the parser logic file stays under
 //! the 2000-LOC hard cap.
 
-use crate::agent_protocol::ActionApprovalPolicy;
 use crate::agent_context::AgentConfig;
+use crate::agent_protocol::ActionApprovalPolicy;
 use crate::agent_turn::AgentTurnResponse;
 use crate::effective_approval_policy;
 

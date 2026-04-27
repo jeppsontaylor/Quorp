@@ -1,9 +1,11 @@
 use std::path::{Component, Path, PathBuf};
 
 use quorp_agent_core::ReadFileRange;
+use quorp_ids::PatchId;
+use quorp_patch_vm::{
+    FileChange, FileChangeKind, PatchApplyProof, PatchRisk, PatchVm, PatchVmPolicy, hash_bytes,
+};
 use regex::Regex;
-
-use crate::edit::write_full_file_allow_create;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockReplacementMatch {
@@ -771,35 +773,110 @@ pub fn resolve_file_patches(
 }
 
 pub fn apply_resolved_file_patches(resolved: &[ResolvedFilePatch]) -> anyhow::Result<()> {
+    let changes = resolved_file_patches_to_vm_changes(resolved)?;
+    if changes.is_empty() {
+        return Ok(());
+    }
+    let vm = PatchVm::new();
+    let patch_id = patch_id_for_changes(&changes);
+    let policy = PatchVmPolicy::default();
+    let preview = vm.preview_file_changes(&patch_id, &changes, policy)?;
+    let proof = if preview.risk == PatchRisk::High {
+        PatchApplyProof::PreviewId(&preview.preview_id)
+    } else {
+        PatchApplyProof::HashesOnly
+    };
+    vm.apply_file_changes(&patch_id, &changes, proof, policy)?;
+    Ok(())
+}
+
+fn resolved_file_patches_to_vm_changes(
+    resolved: &[ResolvedFilePatch],
+) -> anyhow::Result<Vec<FileChange>> {
+    let mut changes = Vec::with_capacity(resolved.len());
     for patch in resolved {
         match &patch.operation {
-            PatchOperation::Add | PatchOperation::Update => {
+            PatchOperation::Add => {
                 let content = patch
                     .new_content
                     .as_deref()
-                    .ok_or_else(|| anyhow::anyhow!("apply_patch resolved without new content"))?;
-                write_full_file_allow_create(&patch.target_path, content)?;
+                    .ok_or_else(|| anyhow::anyhow!("apply_patch resolved add without content"))?;
+                changes.push(FileChange {
+                    path: patch.target_path.clone(),
+                    display_path: patch.display_path.clone(),
+                    expected_hash: None,
+                    kind: FileChangeKind::Add {
+                        content: content.as_bytes().to_vec(),
+                    },
+                });
+            }
+            PatchOperation::Update => {
+                let content = patch.new_content.as_deref().ok_or_else(|| {
+                    anyhow::anyhow!("apply_patch resolved update without content")
+                })?;
+                let current_bytes = std::fs::read(&patch.source_path)
+                    .map_err(|error| anyhow::anyhow!("Failed to read file: {error}"))?;
+                changes.push(FileChange {
+                    path: patch.source_path.clone(),
+                    display_path: patch.display_path.clone(),
+                    expected_hash: Some(hash_bytes(&current_bytes)),
+                    kind: FileChangeKind::Update {
+                        content: content.as_bytes().to_vec(),
+                    },
+                });
             }
             PatchOperation::Delete => {
-                if patch.source_path.exists() {
-                    std::fs::remove_file(&patch.source_path)
-                        .map_err(|error| anyhow::anyhow!("Failed to delete file: {error}"))?;
+                if !patch.source_path.exists() {
+                    continue;
                 }
+                let current_bytes = std::fs::read(&patch.source_path)
+                    .map_err(|error| anyhow::anyhow!("Failed to read file: {error}"))?;
+                changes.push(FileChange {
+                    path: patch.source_path.clone(),
+                    display_path: patch.display_path.clone(),
+                    expected_hash: Some(hash_bytes(&current_bytes)),
+                    kind: FileChangeKind::Delete,
+                });
             }
             PatchOperation::Move { .. } => {
                 let content = patch.new_content.as_deref().ok_or_else(|| {
                     anyhow::anyhow!("apply_patch resolved move without new content")
                 })?;
-                write_full_file_allow_create(&patch.target_path, content)?;
-                if patch.source_path.exists() {
-                    std::fs::remove_file(&patch.source_path).map_err(|error| {
-                        anyhow::anyhow!("Failed to remove moved source file: {error}")
-                    })?;
-                }
+                let current_bytes = std::fs::read(&patch.source_path)
+                    .map_err(|error| anyhow::anyhow!("Failed to read file: {error}"))?;
+                changes.push(FileChange {
+                    path: patch.source_path.clone(),
+                    display_path: patch.display_path.clone(),
+                    expected_hash: Some(hash_bytes(&current_bytes)),
+                    kind: FileChangeKind::Move {
+                        target: patch.target_path.clone(),
+                        content: content.as_bytes().to_vec(),
+                    },
+                });
             }
         }
     }
-    Ok(())
+    Ok(changes)
+}
+
+fn patch_id_for_changes(changes: &[FileChange]) -> PatchId {
+    let mut bytes = Vec::new();
+    for change in changes {
+        bytes.extend_from_slice(change.display_path.as_bytes());
+        bytes.push(0);
+        match &change.kind {
+            FileChangeKind::Add { content } | FileChangeKind::Update { content } => {
+                bytes.extend_from_slice(hash_bytes(content).0.as_bytes());
+            }
+            FileChangeKind::Delete => bytes.extend_from_slice(b"delete"),
+            FileChangeKind::Move { target, content } => {
+                bytes.extend_from_slice(target.to_string_lossy().as_bytes());
+                bytes.push(0);
+                bytes.extend_from_slice(hash_bytes(content).0.as_bytes());
+            }
+        }
+    }
+    PatchId::new(format!("patch-vm-{}", hash_bytes(&bytes).0))
 }
 
 fn render_added_file_content(hunks: &[Hunk]) -> String {

@@ -468,6 +468,12 @@ impl AgentTaskState {
         };
         ledger.validation_details.failed_edit_records = self.failed_edit_records.clone();
         ledger.validation_details.implementation_target_lease = target_lease_for_ledger(ledger);
+        ledger.validation_details.prose_only_recovery_count =
+            self.agent_repair_memory.scorecard.prose_only_recovery_count;
+        ledger.validation_details.bare_replace_block_retry_count = self
+            .agent_repair_memory
+            .scorecard
+            .bare_replace_block_retry_count;
         if let Some(repair_state) = self.benchmark_repair_state.as_ref() {
             let patch_target =
                 benchmark_patch_target_path(repair_state, ledger, &self.agent_repair_memory)
@@ -940,7 +946,10 @@ impl AgentTaskState {
         }
     }
 
-    pub(crate) fn benchmark_support_write_target_path(&self, action: &AgentAction) -> Option<String> {
+    pub(crate) fn benchmark_support_write_target_path(
+        &self,
+        action: &AgentAction,
+    ) -> Option<String> {
         let target_path = match action {
             AgentAction::PreviewEdit { path, .. }
             | AgentAction::ModifyToml { path, .. }
@@ -965,7 +974,10 @@ impl AgentTaskState {
         (path.ends_with(".toml") || is_obvious_test_file(path)).then(|| path.to_string())
     }
 
-    pub(crate) fn should_preserve_support_write_for_validation(&self, action: &AgentAction) -> bool {
+    pub(crate) fn should_preserve_support_write_for_validation(
+        &self,
+        action: &AgentAction,
+    ) -> bool {
         let Some(ledger) = self.benchmark_case_ledger.as_ref() else {
             return false;
         };
@@ -1108,6 +1120,15 @@ impl AgentTaskState {
                 .scorecard
                 .repeated_failed_edit_count
                 .saturating_add(1);
+            if record.action_kind == "replace_block" {
+                self.agent_repair_memory
+                    .scorecard
+                    .bare_replace_block_retry_count = self
+                    .agent_repair_memory
+                    .scorecard
+                    .bare_replace_block_retry_count
+                    .saturating_add(1);
+            }
             record = existing.clone();
         } else {
             record.attempts = 1;
@@ -1173,5 +1194,4 @@ impl AgentTaskState {
         }
         self.sync_benchmark_repair_state_to_ledger();
     }
-
 }

@@ -4,10 +4,10 @@ use std::time::Duration;
 
 use futures::StreamExt;
 
+use crate::quorp::tui::TuiEvent;
 use crate::quorp::tui::agent_context::load_agent_config;
 use crate::quorp::tui::agent_protocol::{ActionOutcome, AgentAction, PreviewEditPayload};
 use crate::quorp::tui::command_bridge::CommandBridgeRequest;
-use crate::quorp::tui::TuiEvent;
 use quorp_agent_core::{ReadFileRange, stable_content_hash};
 use quorp_tools::edit::{count_file_lines, list_directory_entries, read_file_contents};
 use quorp_tools::patch::sanitize_project_path;
@@ -1714,12 +1714,11 @@ mod actions;
 #[allow(unused_imports)]
 pub(crate) use actions::{
     emit_tool_error, emit_tool_finished, emit_tool_result, render_mcp_tool_result,
-    run_command_capture, run_command_streaming, spawn_apply_patch_task,
-    spawn_apply_preview_task, spawn_mcp_call_task, spawn_modify_toml_task,
-    spawn_replace_block_task, spawn_replace_range_task, spawn_run_validation_task,
-    spawn_set_executable_task, spawn_write_file_task, truncate_diagnostic_text,
+    run_command_capture, run_command_streaming, spawn_apply_patch_task, spawn_apply_preview_task,
+    spawn_mcp_call_task, spawn_modify_toml_task, spawn_replace_block_task,
+    spawn_replace_range_task, spawn_run_validation_task, spawn_set_executable_task,
+    spawn_write_file_task, truncate_diagnostic_text,
 };
 
 #[cfg(test)]
 mod tests;
-

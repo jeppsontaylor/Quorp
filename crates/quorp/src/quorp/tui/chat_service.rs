@@ -15,8 +15,8 @@ use quorp_provider::openai_compatible_client::{
     OpenAiCompatibleChatMessage as RemoteChatMessage,
     OpenAiCompatibleChatRequest as RemoteChatRequest,
     OpenAiCompatibleClientConfig as RemoteClientConfig,
-    OpenAiCompatibleStreamEvent as RemoteStreamEvent, build_request_body, parse_sse_data_line,
-    parse_sse_payload,
+    OpenAiCompatibleStreamEvent as RemoteStreamEvent, build_request_body, parse_sse_chunk,
+    parse_sse_data_line, parse_sse_payload,
 };
 
 mod provider;

@@ -2,6 +2,7 @@ use std::fs::{self, File};
 use std::io::{BufWriter, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Mutex;
+use std::sync::mpsc::SyncSender;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use anyhow::Context as _;
@@ -13,9 +14,9 @@ use quorp_agent_core::{
     ToolExecutor, TranscriptMessage, TranscriptRole, load_agent_config,
 };
 
-use crate::quorp::tui::TuiEvent;
 use crate::quorp::tui::chat_service::{ChatServiceMessage, ChatServiceRole, StreamRequest};
 use crate::quorp::tui::command_bridge::CommandBridgeRequest;
+use crate::quorp::tui::{ChatUiEvent, TuiEvent};
 
 const ANSI_RESET: &str = "\x1b[0m";
 const ANSI_BOLD: &str = "\x1b[1m";
@@ -283,6 +284,250 @@ pub struct RoutingSummary {
     pub provider_request_id: Option<String>,
     #[serde(default)]
     pub routing_status: Option<String>,
+}
+
+struct CompositeEventSink<'a> {
+    primary: &'a HeadlessEventRecorder,
+    secondary: Option<&'a dyn RuntimeEventSink>,
+}
+
+impl<'a> RuntimeEventSink for CompositeEventSink<'a> {
+    fn emit(&self, event: RuntimeEvent) {
+        self.primary.emit(event.clone());
+        if let Some(secondary) = self.secondary {
+            secondary.emit(event);
+        }
+    }
+}
+
+#[derive(Debug)]
+struct RuntimeEventProgressSink {
+    event_tx: SyncSender<TuiEvent>,
+}
+
+impl RuntimeEventProgressSink {
+    fn emit_summary(&self, message: String) {
+        if self
+            .event_tx
+            .send(TuiEvent::Chat(ChatUiEvent::CommandOutput(0, message)))
+            .is_err()
+        {
+            log::error!("progress sink dropped while sending runtime summary");
+        }
+    }
+
+    fn emit_error(&self, message: String) {
+        if self
+            .event_tx
+            .send(TuiEvent::Chat(ChatUiEvent::Error(0, message)))
+            .is_err()
+        {
+            log::error!("progress sink dropped while sending runtime error");
+        }
+    }
+}
+
+impl RuntimeEventSink for RuntimeEventProgressSink {
+    fn emit(&self, event: RuntimeEvent) {
+        let summary = match event {
+            RuntimeEvent::RunStarted { goal, model_id } => {
+                Some(format!("run started with model {model_id} · {goal}"))
+            }
+            RuntimeEvent::StatusUpdate { status } => {
+                Some(format!("status: {}", render_status(&status)))
+            }
+            RuntimeEvent::TurnCompleted { .. } => {
+                return;
+            }
+            RuntimeEvent::FatalError { error } => {
+                self.emit_error(format!("fatal error: {error}"));
+                return;
+            }
+            RuntimeEvent::CheckpointSaved { .. } => Some("checkpoint saved".to_string()),
+            RuntimeEvent::ModelRequestStarted {
+                step,
+                request_id,
+                message_count,
+                ..
+            } => Some(format!(
+                "step {step}: model request #{request_id} started ({message_count} messages)"
+            )),
+            RuntimeEvent::ModelRequestFinished {
+                step,
+                request_id,
+                usage: Some(usage),
+                ..
+            } => Some(format!(
+                "step {step}: model request #{request_id} finished · billed {}",
+                usage.total_billed_tokens
+            )),
+            RuntimeEvent::ModelRequestFinished {
+                step,
+                request_id,
+                usage: None,
+                ..
+            } => Some(format!("step {step}: model request #{request_id} finished")),
+            RuntimeEvent::PhaseChanged { phase, detail } => Some(match detail {
+                Some(detail) => format!("phase {phase} · {detail}"),
+                None => format!("phase {phase}"),
+            }),
+            RuntimeEvent::ToolCallStarted { step, action, .. } => {
+                Some(format!("step {step}: tool call started: {action}"))
+            }
+            RuntimeEvent::ToolCallFinished {
+                step,
+                action,
+                status,
+                ..
+            } => Some(format!(
+                "step {step}: tool call finished: {action} ({status})"
+            )),
+            RuntimeEvent::ValidationStarted { step, summary } => {
+                Some(format!("step {step}: validation started: {summary}"))
+            }
+            RuntimeEvent::ValidationFinished {
+                step,
+                summary,
+                status,
+            } => Some(format!("step {step}: validation {status}: {summary}")),
+            RuntimeEvent::PathResolutionFailed {
+                step,
+                action,
+                request_path,
+                suggested_path,
+                reason,
+                error,
+                ..
+            } => {
+                let suggested = suggested_path.unwrap_or_else(|| "<none>".to_string());
+                let reason_label = reason.unwrap_or_else(|| "<unknown>".to_string());
+                Some(format!(
+                    "step {step}: path resolution failed for {action} on {request_path} · {reason_label} · suggested {suggested} · {error}"
+                ))
+            }
+            RuntimeEvent::RecoveryTurnQueued {
+                step,
+                action,
+                message,
+                ..
+            } => Some(format!(
+                "step {step}: recovery queued for {action} · {message}"
+            )),
+            RuntimeEvent::RecoveryBudgetExhausted {
+                failures,
+                last_error,
+            } => Some(format!(
+                "recovery budget exhausted after {failures} failures: {last_error}"
+            )),
+            RuntimeEvent::ParseRecoveryQueued {
+                step,
+                error_class,
+                failures,
+                budget,
+                message,
+            } => Some(format!(
+                "step {step}: parse recovery queued ({failures}/{budget}) [{error_class}] · {message}"
+            )),
+            RuntimeEvent::ParseRecoveryExhausted {
+                failures,
+                error_class,
+                last_error,
+                ..
+            } => Some(format!(
+                "parse recovery exhausted ({failures}) [{error_class}]: {last_error}"
+            )),
+            RuntimeEvent::VerifierQueued {
+                step,
+                reason,
+                plans,
+                ..
+            } => Some(format!(
+                "step {step}: verifier queued · {reason} · {} plan(s)",
+                plans.len()
+            )),
+            RuntimeEvent::VerifierDrainStarted {
+                step,
+                plans,
+                budget,
+                ..
+            } => Some(format!(
+                "step {step}: verifier drain started (budget {budget}) · {} plan(s)",
+                plans.len()
+            )),
+            RuntimeEvent::VerifierDrainFinished {
+                step,
+                remaining,
+                verified_green,
+                ..
+            } => Some(format!(
+                "step {step}: verifier drain finished · remaining {remaining} · verified_green {verified_green}"
+            )),
+            RuntimeEvent::PendingValidationBlocked {
+                step,
+                queued_validations,
+                drain_budget,
+                ..
+            } => Some(format!(
+                "step {step}: pending validation blocked ({} queued) · drain budget {drain_budget}",
+                queued_validations.len()
+            )),
+            RuntimeEvent::PolicyDenied {
+                step,
+                action,
+                reason,
+            } => Some(format!("step {step}: policy denied {action}: {reason}")),
+            RuntimeEvent::FailedEditRecorded { step, .. } => {
+                Some(format!("step {step}: failed edit recorded"))
+            }
+            RuntimeEvent::ControllerReadInjected {
+                step,
+                action,
+                reason,
+            } => Some(format!(
+                "step {step}: controller read injected for {action} · {reason}"
+            )),
+            RuntimeEvent::AssistantTurnSummary {
+                step,
+                assistant_message,
+                wrote_files,
+                parse_warning_count,
+                ..
+            } => {
+                let summary = if wrote_files {
+                    format!("step {step}: wrote files and generated a summary")
+                } else {
+                    format!("step {step}: assistant summary generated")
+                };
+                self.emit_summary(summary);
+                let trim = truncate_console(&assistant_message, 200);
+                self.emit_summary(format!(
+                    "assistant summary: parse_warnings={parse_warning_count} · {trim}"
+                ));
+                return;
+            }
+            RuntimeEvent::RunFinished { reason, .. } => Some(format!("run finished: {reason:?}")),
+        };
+        if let Some(summary) = summary {
+            self.emit_summary(summary);
+        }
+    }
+}
+
+fn stream_command_events_to(
+    event_rx: std::sync::mpsc::Receiver<TuiEvent>,
+    command_event_tx: Option<SyncSender<TuiEvent>>,
+) -> std::thread::JoinHandle<()> {
+    std::thread::spawn(move || {
+        if let Some(command_event_tx) = command_event_tx {
+            while let Ok(event) = event_rx.recv() {
+                if command_event_tx.send(event).is_err() {
+                    break;
+                }
+            }
+        } else {
+            while event_rx.recv().is_ok() {}
+        }
+    })
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -718,6 +963,13 @@ pub struct HeadlessRunOptions {
 }
 
 pub fn run_headless_agent(options: HeadlessRunOptions) -> anyhow::Result<AgentRunOutcome> {
+    run_headless_agent_with_progress(options, None)
+}
+
+pub fn run_headless_agent_with_progress(
+    options: HeadlessRunOptions,
+    progress_tx: Option<SyncSender<TuiEvent>>,
+) -> anyhow::Result<AgentRunOutcome> {
     let objective_path = if options.objective_file.is_absolute() {
         options.objective_file.clone()
     } else {
@@ -779,7 +1031,7 @@ pub fn run_headless_agent(options: HeadlessRunOptions) -> anyhow::Result<AgentRu
     let (command_tx, command_rx) = mpsc::unbounded();
     let _command_thread =
         crate::quorp::tui::native_backend::spawn_command_service_loop(event_tx, command_rx);
-    std::thread::spawn(move || while event_rx.recv().is_ok() {});
+    let _command_event_forwarder = stream_command_events_to(event_rx, progress_tx.clone());
 
     let runtime = tokio::runtime::Runtime::new()?;
     let completion_client =
@@ -855,13 +1107,29 @@ pub fn run_headless_agent(options: HeadlessRunOptions) -> anyhow::Result<AgentRu
     }
     write_json(&options.result_dir.join("request.json"), &request_value)?;
 
-    let outcome = runtime.block_on(quorp_agent_core::run_agent_task(
-        &request,
-        &completion_client,
-        &tool_executor,
-        &event_recorder,
-        None,
-    ));
+    let outcome = if let Some(progress_tx) = progress_tx {
+        let event_sink = CompositeEventSink {
+            primary: &event_recorder,
+            secondary: Some(&RuntimeEventProgressSink {
+                event_tx: progress_tx,
+            }),
+        };
+        runtime.block_on(quorp_agent_core::run_agent_task(
+            &request,
+            &completion_client,
+            &tool_executor,
+            &event_sink,
+            None,
+        ))
+    } else {
+        runtime.block_on(quorp_agent_core::run_agent_task(
+            &request,
+            &completion_client,
+            &tool_executor,
+            &event_recorder,
+            None,
+        ))
+    };
 
     write_json(
         &options.result_dir.join("transcript.json"),
@@ -908,6 +1176,13 @@ pub fn run_headless_agent(options: HeadlessRunOptions) -> anyhow::Result<AgentRu
 }
 
 pub fn resume_headless_agent(result_dir: PathBuf) -> anyhow::Result<AgentRunOutcome> {
+    resume_headless_agent_with_progress(result_dir, None)
+}
+
+pub fn resume_headless_agent_with_progress(
+    result_dir: PathBuf,
+    progress_tx: Option<SyncSender<TuiEvent>>,
+) -> anyhow::Result<AgentRunOutcome> {
     let request_path = result_dir.join("request.json");
     let checkpoint_path = result_dir.join("checkpoint.json");
 
@@ -931,7 +1206,7 @@ pub fn resume_headless_agent(result_dir: PathBuf) -> anyhow::Result<AgentRunOutc
     let (command_tx, command_rx) = mpsc::unbounded();
     let _command_thread =
         crate::quorp::tui::native_backend::spawn_command_service_loop(event_tx, command_rx);
-    std::thread::spawn(move || while event_rx.recv().is_ok() {});
+    let _command_event_forwarder = stream_command_events_to(event_rx, progress_tx.clone());
 
     let runtime = tokio::runtime::Runtime::new()?;
     let completion_client =
@@ -942,13 +1217,29 @@ pub fn resume_headless_agent(result_dir: PathBuf) -> anyhow::Result<AgentRunOutc
 
     let options_workspace = request.project_root.clone();
 
-    let outcome = runtime.block_on(quorp_agent_core::run_agent_task(
-        &request,
-        &completion_client,
-        &tool_executor,
-        &event_recorder,
-        Some(checkpoint),
-    ));
+    let outcome = if let Some(progress_tx) = progress_tx {
+        let event_sink = CompositeEventSink {
+            primary: &event_recorder,
+            secondary: Some(&RuntimeEventProgressSink {
+                event_tx: progress_tx,
+            }),
+        };
+        runtime.block_on(quorp_agent_core::run_agent_task(
+            &request,
+            &completion_client,
+            &tool_executor,
+            &event_sink,
+            Some(checkpoint),
+        ))
+    } else {
+        runtime.block_on(quorp_agent_core::run_agent_task(
+            &request,
+            &completion_client,
+            &tool_executor,
+            &event_recorder,
+            Some(checkpoint),
+        ))
+    };
 
     write_json(&result_dir.join("transcript.json"), &outcome.transcript)?;
     write_json(

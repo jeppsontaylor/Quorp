@@ -92,13 +92,19 @@ pub mod inmem {
 
     impl EventLog for InMemoryEventLog {
         fn append(&self, event: serde_json::Value) -> Result<u64> {
-            let mut events = self.events.lock().map_err(|_| anyhow::anyhow!("event log poisoned"))?;
+            let mut events = self
+                .events
+                .lock()
+                .map_err(|_| anyhow::anyhow!("event log poisoned"))?;
             events.push(event);
             Ok(events.len() as u64)
         }
 
         fn count(&self) -> Result<u64> {
-            let events = self.events.lock().map_err(|_| anyhow::anyhow!("event log poisoned"))?;
+            let events = self
+                .events
+                .lock()
+                .map_err(|_| anyhow::anyhow!("event log poisoned"))?;
             Ok(events.len() as u64)
         }
     }
@@ -110,18 +116,28 @@ pub mod inmem {
 
     impl LexicalIndex for InMemoryLexicalIndex {
         fn upsert(&self, doc_id: &str, fields: BTreeMap<String, String>) -> Result<()> {
-            let mut docs = self.docs.write().map_err(|_| anyhow::anyhow!("lexical poisoned"))?;
+            let mut docs = self
+                .docs
+                .write()
+                .map_err(|_| anyhow::anyhow!("lexical poisoned"))?;
             docs.insert(doc_id.to_string(), fields);
             Ok(())
         }
 
         fn query(&self, q: &str, limit: usize) -> Result<Vec<LexicalHit>> {
-            let docs = self.docs.read().map_err(|_| anyhow::anyhow!("lexical poisoned"))?;
+            let docs = self
+                .docs
+                .read()
+                .map_err(|_| anyhow::anyhow!("lexical poisoned"))?;
             let q_lower = q.to_ascii_lowercase();
             let mut hits: Vec<LexicalHit> = docs
                 .iter()
                 .filter_map(|(id, fields)| {
-                    let total = fields.values().map(String::as_str).collect::<Vec<_>>().join("\n");
+                    let total = fields
+                        .values()
+                        .map(String::as_str)
+                        .collect::<Vec<_>>()
+                        .join("\n");
                     if total.to_ascii_lowercase().contains(&q_lower) {
                         Some(LexicalHit {
                             doc_id: id.clone(),
@@ -146,23 +162,35 @@ pub mod inmem {
 
     impl InMemoryVectorIndex {
         pub fn new(dim: usize) -> Self {
-            Self { dim, rows: RwLock::new(BTreeMap::new()) }
+            Self {
+                dim,
+                rows: RwLock::new(BTreeMap::new()),
+            }
         }
     }
 
     impl VectorIndex for InMemoryVectorIndex {
         fn upsert(&self, doc_id: &str, embedding: &[f32]) -> Result<()> {
             anyhow::ensure!(embedding.len() == self.dim, "wrong vector dim");
-            let mut rows = self.rows.write().map_err(|_| anyhow::anyhow!("vec poisoned"))?;
+            let mut rows = self
+                .rows
+                .write()
+                .map_err(|_| anyhow::anyhow!("vec poisoned"))?;
             rows.insert(doc_id.to_string(), embedding.to_vec());
             Ok(())
         }
 
         fn query(&self, embedding: &[f32], k: usize) -> Result<Vec<VectorHit>> {
-            let rows = self.rows.read().map_err(|_| anyhow::anyhow!("vec poisoned"))?;
+            let rows = self
+                .rows
+                .read()
+                .map_err(|_| anyhow::anyhow!("vec poisoned"))?;
             let mut scored: Vec<VectorHit> = rows
                 .iter()
-                .map(|(id, v)| VectorHit { doc_id: id.clone(), score: cosine(embedding, v) })
+                .map(|(id, v)| VectorHit {
+                    doc_id: id.clone(),
+                    score: cosine(embedding, v),
+                })
                 .collect();
             scored.sort_by(|a, b| b.score.total_cmp(&a.score));
             scored.truncate(k);
@@ -178,7 +206,11 @@ pub mod inmem {
         let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
         let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
         let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
-        if na == 0.0 || nb == 0.0 { 0.0 } else { dot / (na * nb) }
+        if na == 0.0 || nb == 0.0 {
+            0.0
+        } else {
+            dot / (na * nb)
+        }
     }
 
     /// Deterministic stand-in embedder: hashes input text into a small
@@ -250,11 +282,21 @@ pub mod inmem {
     }
 
     impl Storage for InMemoryStorage {
-        fn root(&self) -> &StorageRoot { &self.root }
-        fn events(&self) -> &dyn EventLog { &self.events }
-        fn lexical(&self) -> &dyn LexicalIndex { &self.lexical }
-        fn vectors(&self) -> &dyn VectorIndex { &self.vectors }
-        fn embedder(&self) -> &dyn Embedder { &self.embedder }
+        fn root(&self) -> &StorageRoot {
+            &self.root
+        }
+        fn events(&self) -> &dyn EventLog {
+            &self.events
+        }
+        fn lexical(&self) -> &dyn LexicalIndex {
+            &self.lexical
+        }
+        fn vectors(&self) -> &dyn VectorIndex {
+            &self.vectors
+        }
+        fn embedder(&self) -> &dyn Embedder {
+            &self.embedder
+        }
     }
 }
 
@@ -268,7 +310,10 @@ mod tests {
         let idx = InMemoryLexicalIndex::default();
         let mut fields = BTreeMap::new();
         fields.insert("path".into(), "src/main.rs".into());
-        fields.insert("text".into(), "fn main() { println!(\"hello quorp\"); }".into());
+        fields.insert(
+            "text".into(),
+            "fn main() { println!(\"hello quorp\"); }".into(),
+        );
         idx.upsert("doc-1", fields).unwrap();
         let hits = idx.query("quorp", 5).unwrap();
         assert_eq!(hits.len(), 1);

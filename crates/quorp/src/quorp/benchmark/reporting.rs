@@ -518,6 +518,18 @@ pub(crate) fn write_report(
             .is_some_and(|attempt| attempt.post_fast_loop_patch_attempted),
         post_fast_loop_validation_rerun_attempted: last_attempt
             .is_some_and(|attempt| attempt.post_fast_loop_validation_rerun_attempted),
+        full_validation_before_fast_loop: last_attempt
+            .is_some_and(|attempt| attempt.full_validation_before_fast_loop),
+        prose_only_recovery_count: last_attempt
+            .map(|attempt| attempt.agent_repair_scorecard.prose_only_recovery_count)
+            .unwrap_or(0),
+        bare_replace_block_retry_count: last_attempt
+            .map(|attempt| {
+                attempt
+                    .agent_repair_scorecard
+                    .bare_replace_block_retry_count
+            })
+            .unwrap_or(0),
         patch_packet_injected: last_attempt.is_some_and(|attempt| attempt.patch_packet_injected),
         patch_packet_honored_range: last_attempt
             .and_then(|attempt| attempt.patch_packet_honored_range.clone()),
@@ -763,6 +775,9 @@ pub(crate) fn write_synthetic_failure_report(
         repair_phase_invalid_action_count: 0,
         post_fast_loop_patch_attempted: false,
         post_fast_loop_validation_rerun_attempted: false,
+        full_validation_before_fast_loop: false,
+        prose_only_recovery_count: 0,
+        bare_replace_block_retry_count: 0,
         patch_packet_injected: false,
         patch_packet_honored_range: None,
         recommended_rerun_command: None,
@@ -903,4 +918,3 @@ pub(crate) fn write_benchmark_proof_receipt(
     }
     write_json(&result_dir.join("proof-receipt.json"), &receipt)
 }
-

@@ -329,6 +329,7 @@ pub(crate) fn render_toml_edit_operations_brief(
         .join("; ")
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn patch_phase_parser_recovery_example(
     patch_target: &str,
     recommended_rerun_command: Option<&str>,
@@ -419,7 +420,7 @@ pub(crate) fn patch_phase_parser_recovery_example(
         actions.push(serde_json::json!({
             "RunCommand": {
                 "command": command,
-                "timeout_ms": 30000
+                "timeout_ms": 120000
             }
         }));
     }
@@ -436,7 +437,7 @@ pub(crate) fn rerun_phase_parser_recovery_example(recommended_rerun_command: &st
         "actions": [{
             "RunCommand": {
                 "command": recommended_rerun_command,
-                "timeout_ms": 30000
+                "timeout_ms": 120000
             }
         }]
     })
@@ -765,4 +766,3 @@ pub(crate) fn maybe_repair_plain_text_fast_loop_turn(
         ],
     })
 }
-

@@ -45,6 +45,7 @@ pub fn run_shell_command_with_env(
     for (key, value) in environment {
         shell.env(key, value);
     }
+    #[allow(clippy::disallowed_methods)]
     let output = shell
         .output()
         .with_context(|| format!("failed to run {} command `{}`", name, command))?;
@@ -62,7 +63,10 @@ pub fn run_shell_command_with_env(
     })
 }
 
-pub fn run_visible_evaluator(script: &Path, workspace_dir: &Path) -> anyhow::Result<EvaluatorOutcome> {
+pub fn run_visible_evaluator(
+    script: &Path,
+    workspace_dir: &Path,
+) -> anyhow::Result<EvaluatorOutcome> {
     let started_at = std::time::Instant::now();
     #[allow(clippy::disallowed_methods)]
     let output = Command::new(script)

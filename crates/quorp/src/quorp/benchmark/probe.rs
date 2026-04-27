@@ -217,6 +217,9 @@ pub(crate) fn read_checkpoint_validation_state(
         repair_phase_invalid_action_count,
         post_fast_loop_patch_attempted,
         post_fast_loop_validation_rerun_attempted,
+        full_validation_before_fast_loop: false,
+        prose_only_recovery_count: 0,
+        bare_replace_block_retry_count: 0,
         patch_packet_injected,
         patch_packet_honored_range,
         recommended_rerun_command,
@@ -481,7 +484,9 @@ pub(crate) fn normalize_command_for_match(command: &str) -> String {
         .to_ascii_lowercase()
 }
 
-pub(crate) fn extract_control_loop_summary(events_path: &Path) -> anyhow::Result<ControlLoopSummary> {
+pub(crate) fn extract_control_loop_summary(
+    events_path: &Path,
+) -> anyhow::Result<ControlLoopSummary> {
     if !events_path.exists() {
         return Ok(ControlLoopSummary::default());
     }
@@ -524,7 +529,10 @@ pub(crate) fn resolve_benchmark_model_id(
     if let Some(model_id) = requested_model.filter(|value| {
         value.trim() == crate::quorp::provider_config::NVIDIA_QWEN_MODEL
             || value.trim()
-                == format!("nvidia/{}", crate::quorp::provider_config::NVIDIA_QWEN_MODEL)
+                == format!(
+                    "nvidia/{}",
+                    crate::quorp::provider_config::NVIDIA_QWEN_MODEL
+                )
     }) {
         return Ok(model_id);
     }
@@ -756,7 +764,9 @@ pub(crate) fn load_existing_attempts(result_dir: &Path) -> anyhow::Result<Vec<At
     Ok(attempts)
 }
 
-pub(crate) fn parse_autonomy_profile(value: &str) -> anyhow::Result<quorp_agent_core::AutonomyProfile> {
+pub(crate) fn parse_autonomy_profile(
+    value: &str,
+) -> anyhow::Result<quorp_agent_core::AutonomyProfile> {
     match value.trim() {
         "interactive" => Ok(quorp_agent_core::AutonomyProfile::Interactive),
         "autonomous_host" => Ok(quorp_agent_core::AutonomyProfile::AutonomousHost),
@@ -784,7 +794,9 @@ pub(crate) fn epoch_time_ms() -> u64 {
         .as_millis() as u64
 }
 
-pub(crate) fn read_bootstrap_progress(path: &Path) -> anyhow::Result<Option<BenchmarkBootstrapProgress>> {
+pub(crate) fn read_bootstrap_progress(
+    path: &Path,
+) -> anyhow::Result<Option<BenchmarkBootstrapProgress>> {
     if !path.exists() {
         return Ok(None);
     }
@@ -806,7 +818,11 @@ pub(crate) fn write_bootstrap_progress_files(
 }
 
 impl BenchmarkBootstrapTracker {
-    pub(crate) fn new(result_dir: &Path, attempt_dir: &Path, attempt: usize) -> anyhow::Result<Self> {
+    pub(crate) fn new(
+        result_dir: &Path,
+        attempt_dir: &Path,
+        attempt: usize,
+    ) -> anyhow::Result<Self> {
         let tracker = Self {
             root_progress_path: benchmark_bootstrap_progress_path(result_dir),
             attempt_progress_path: attempt_bootstrap_progress_path(attempt_dir),
@@ -889,6 +905,12 @@ pub(crate) fn log_phase(label: &str, color: &str, message: String) {
 
 impl BenchmarkRunLock {
     pub(crate) fn acquire() -> anyhow::Result<Self> {
+        if benchmark_run_lock_disabled() {
+            return Ok(Self {
+                path: PathBuf::new(),
+                enabled: false,
+            });
+        }
         Self::acquire_at(benchmark_run_lock_path()?)
     }
 
@@ -908,7 +930,10 @@ impl BenchmarkRunLock {
             Ok(mut file) => {
                 use std::io::Write as _;
                 file.write_all(serde_json::to_string_pretty(&metadata)?.as_bytes())?;
-                Ok(Self { path })
+                Ok(Self {
+                    path,
+                    enabled: true,
+                })
             }
             Err(error) if error.kind() == ErrorKind::AlreadyExists => {
                 if lock_is_stale(&path) {
@@ -947,6 +972,9 @@ pub(crate) fn lock_is_stale(path: &Path) -> bool {
 
 impl Drop for BenchmarkRunLock {
     fn drop(&mut self) {
+        if !self.enabled {
+            return;
+        }
         if let Err(error) = fs::remove_file(&self.path) {
             log::debug!(
                 "failed to remove benchmark lock file {}: {error}",
@@ -966,4 +994,15 @@ pub(crate) fn benchmark_run_lock_path_for_home(home: &Path) -> PathBuf {
         .join("quorp")
         .join("locks")
         .join("benchmark-run.lock")
+}
+
+fn benchmark_run_lock_disabled() -> bool {
+    matches!(
+        std::env::var("QUORP_BENCHMARK_SKIP_LOCK")
+            .ok()
+            .as_deref()
+            .map(str::trim)
+            .map(|value| value.to_ascii_lowercase()),
+        Some(value) if matches!(value.as_str(), "1" | "true" | "yes" | "on")
+    )
 }

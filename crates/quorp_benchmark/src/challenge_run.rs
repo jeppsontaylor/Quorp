@@ -112,13 +112,15 @@ where
             )
         },
     )?;
-    copy_file_if_different(&sandbox_success_source, &workspace_success_file).with_context(|| {
-        format!(
-            "failed to mirror challenge success file {} into {}",
-            sandbox_success_source.display(),
-            workspace_success_file.display()
-        )
-    })?;
+    copy_file_if_different(&sandbox_success_source, &workspace_success_file).with_context(
+        || {
+            format!(
+                "failed to mirror challenge success file {} into {}",
+                sandbox_success_source.display(),
+                workspace_success_file.display()
+            )
+        },
+    )?;
     copy_file_if_different(
         &sandbox_root.join("benchmark.json"),
         &workspace_benchmark_file,
