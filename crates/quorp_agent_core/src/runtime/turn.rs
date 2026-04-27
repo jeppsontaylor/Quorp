@@ -73,7 +73,7 @@ pub(crate) async fn handle_model_turn(
                     budget: request.parser_recovery_budget,
                     message: recovery_message,
                 });
-                if maybe_inject_cargo_dist_deterministic_patch(
+                if maybe_inject_case04_playbook_patch(
                     step,
                     state,
                     request,
@@ -86,7 +86,7 @@ pub(crate) async fn handle_model_turn(
                 {
                     return Ok(ControlFlow::ContinueNoBudget);
                 }
-                if maybe_inject_cc_rs_compile_intermediates_deterministic_patch(
+                if maybe_inject_case05_playbook_patch(
                     step,
                     state,
                     request,
@@ -172,7 +172,7 @@ pub(crate) async fn handle_model_turn(
                 budget: request.parser_recovery_budget,
                 message: recovery_message,
             });
-            if maybe_inject_cargo_dist_deterministic_patch(
+            if maybe_inject_case04_playbook_patch(
                 step,
                 state,
                 request,
@@ -185,7 +185,7 @@ pub(crate) async fn handle_model_turn(
             {
                 return Ok(ControlFlow::ContinueNoBudget);
             }
-            if maybe_inject_cc_rs_compile_intermediates_deterministic_patch(
+            if maybe_inject_case05_playbook_patch(
                 step,
                 state,
                 request,
@@ -270,7 +270,7 @@ pub(crate) async fn handle_model_turn(
                 budget: request.parser_recovery_budget,
                 message: recovery_message,
             });
-            if maybe_inject_cargo_dist_deterministic_patch(
+            if maybe_inject_case04_playbook_patch(
                 step,
                 state,
                 request,
@@ -283,7 +283,7 @@ pub(crate) async fn handle_model_turn(
             {
                 return Ok(ControlFlow::ContinueNoBudget);
             }
-            if maybe_inject_cc_rs_compile_intermediates_deterministic_patch(
+            if maybe_inject_case05_playbook_patch(
                 step,
                 state,
                 request,
@@ -362,7 +362,7 @@ pub(crate) async fn handle_model_turn(
                 budget: request.parser_recovery_budget,
                 message: recovery_message,
             });
-            if maybe_inject_cargo_dist_deterministic_patch(
+            if maybe_inject_case04_playbook_patch(
                 step,
                 state,
                 request,
@@ -375,7 +375,7 @@ pub(crate) async fn handle_model_turn(
             {
                 return Ok(ControlFlow::ContinueNoBudget);
             }
-            if maybe_inject_cc_rs_compile_intermediates_deterministic_patch(
+            if maybe_inject_case05_playbook_patch(
                 step,
                 state,
                 request,
@@ -605,7 +605,7 @@ pub(crate) async fn handle_model_turn(
             role: TranscriptRole::User,
             content: message,
         });
-        if maybe_inject_cargo_dist_deterministic_patch(
+        if maybe_inject_case04_playbook_patch(
             step,
             state,
             request,
@@ -618,7 +618,7 @@ pub(crate) async fn handle_model_turn(
         {
             return Ok(ControlFlow::ContinueNoBudget);
         }
-        if maybe_inject_cc_rs_compile_intermediates_deterministic_patch(
+        if maybe_inject_case05_playbook_patch(
             step,
             state,
             request,
@@ -733,7 +733,7 @@ pub(crate) async fn handle_model_turn(
 
     if state.turn_repeats_known_inspection_only(&turn.actions) {
         state.record_redundant_inspection_turn();
-        if maybe_inject_cc_rs_compile_intermediates_deterministic_patch(
+        if maybe_inject_case05_playbook_patch(
             step,
             state,
             request,
@@ -1306,7 +1306,7 @@ pub(crate) fn compact_turn_actions(turn: &mut AgentTurnResponse) {
         matches!(
             action,
             AgentAction::WriteFile { path, .. }
-                if path == "cargo-dist/tests/snapshots/axolotlsay_edit_existing.snap"
+                if benchmark_playbook_allows_extra_compacted_action(path)
         )
     }) {
         8

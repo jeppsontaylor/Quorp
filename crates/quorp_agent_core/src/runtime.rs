@@ -739,6 +739,7 @@ pub(crate) struct AgentTaskState {
 }
 
 mod action_summary;
+mod benchmark_playbooks;
 mod normalize;
 mod parse_helpers;
 mod path_intel;
@@ -753,6 +754,8 @@ mod turn;
 
 #[allow(unused_imports)]
 pub use action_summary::ToolResultEnvelope;
+#[allow(unused_imports)]
+pub use benchmark_playbooks::*;
 #[allow(unused_imports)]
 pub use normalize::*;
 #[allow(unused_imports)]

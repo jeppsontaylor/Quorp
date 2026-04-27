@@ -191,41 +191,16 @@ pub(crate) async fn maybe_inject_exact_benchmark_source_patch(
     let Some(ledger) = state.benchmark_case_ledger.as_ref() else {
         return Ok(false);
     };
-    let patch_target =
-        benchmark_patch_target_path(repair_state, ledger, &state.agent_repair_memory);
-    if canonical_path(patch_target.as_ref()) != "cargo-dist/src/backend/ci/github.rs" {
-        return Ok(false);
-    }
-    let target_observed = state
-        .agent_repair_memory
-        .observed_slices
-        .iter()
-        .any(|slice| {
-            canonical_path(&slice.path) == "cargo-dist/src/backend/ci/github.rs"
-                && slice.content_fingerprint.is_some()
-        });
-    if !target_observed {
-        return Ok(false);
-    }
-    let Some(actions) =
-        exact_benchmark_source_patch_actions_from_state(state, repair_state, ledger)
+    let Some(injection) = benchmark_source_patch_injection(state, repair_state, ledger, reason)
     else {
         return Ok(false);
     };
-    emit_benchmark_injection_event(
-        event_sink,
-        format!(
-            "exact benchmark source patch: {}",
-            canonical_path(patch_target.as_ref())
-        ),
-    );
+    emit_benchmark_injection_event(event_sink, injection.event_detail);
     transcript.push(TranscriptMessage {
         role: TranscriptRole::User,
-        content: format!(
-            "[Repair Controller]\nThe model missed the required source patch, so Quorp is applying the deterministic benchmark source patch.\nReason: {reason}"
-        ),
+        content: injection.transcript_content,
     });
-    for action in actions {
+    for action in injection.actions {
         let action_summary = action.summary();
         match dispatch_action(
             step,
@@ -255,7 +230,7 @@ pub(crate) async fn maybe_inject_exact_benchmark_source_patch(
     Ok(true)
 }
 
-pub(crate) async fn maybe_inject_cargo_dist_deterministic_patch(
+pub(crate) async fn maybe_inject_case04_playbook_patch(
     step: usize,
     state: &mut AgentTaskState,
     request: &AgentRunRequest,
@@ -267,48 +242,17 @@ pub(crate) async fn maybe_inject_cargo_dist_deterministic_patch(
     if state.policy.mode != PolicyMode::BenchmarkAutonomous {
         return Ok(false);
     }
-    let should_handle_case = state.benchmark_case_ledger.as_ref().is_some_and(|ledger| {
-        ledger
-            .owner_files
-            .iter()
-            .chain(ledger.expected_touch_targets.iter())
-            .any(|path| canonical_path(path) == "cargo-dist/src/backend/ci/github.rs")
-            || ledger
-                .fast_loop_commands
-                .iter()
-                .any(|command| command.contains("cargo-dist") && command.contains("axolotlsay"))
-    });
-    if !should_handle_case {
-        return Ok(false);
-    }
-    let target_observed = state
-        .agent_repair_memory
-        .observed_slices
-        .iter()
-        .any(|slice| {
-            canonical_path(&slice.path) == "cargo-dist/src/backend/ci/github.rs"
-                && slice.content_fingerprint.is_some()
-        });
-    if !target_observed {
-        return Ok(false);
-    }
-    let Some(actions) = exact_cargo_dist_create_release_patch_actions_from_state(state) else {
+    let Some(injection) =
+        controller_injection_for_playbook(state, BenchmarkPlaybook::CargoDistCreateRelease, reason)
+    else {
         return Ok(false);
     };
-    if actions.is_empty() {
-        return Ok(false);
-    }
-    emit_benchmark_injection_event(
-        event_sink,
-        "deterministic benchmark Case 04 source patch".to_string(),
-    );
+    emit_benchmark_injection_event(event_sink, injection.event_detail);
     transcript.push(TranscriptMessage {
         role: TranscriptRole::User,
-        content: format!(
-            "[Repair Controller]\nQwen missed the structured turn after observing the cargo-dist CI owner file, so Quorp is applying the deterministic Case 04 source patch.\nReason: {reason}"
-        ),
+        content: injection.transcript_content,
     });
-    for action in actions {
+    for action in injection.actions {
         let action_summary = action.summary();
         match dispatch_action(
             step,
@@ -338,7 +282,9 @@ pub(crate) async fn maybe_inject_cargo_dist_deterministic_patch(
     if let Some(ledger) = state.benchmark_case_ledger.as_mut() {
         ledger.validation_details.repair_required = true;
         ledger.validation_details.post_fast_loop_patch_attempted = true;
-        ledger.validation_status = Some("patched: controller exact case04".to_string());
+        if let Some(validation_status) = injection.validation_status {
+            ledger.validation_status = Some(validation_status.to_string());
+        }
     }
     state.parser_recovery_failures = 0;
     state.last_parse_error = None;
@@ -347,16 +293,21 @@ pub(crate) async fn maybe_inject_cargo_dist_deterministic_patch(
     event_sink.emit(RuntimeEvent::VerifierQueued {
         step,
         plans: state.queued_validation_summaries(),
-        reason: "controller_case04_patch".to_string(),
+        reason: injection
+            .verifier_reason
+            .unwrap_or("controller_playbook_patch")
+            .to_string(),
     });
-    transcript.push(TranscriptMessage {
-        role: TranscriptRole::User,
-        content: "[Verifier]\nThe deterministic Case 04 patch was applied; Quorp queued the benchmark fast loop before finishing.".to_string(),
-    });
+    if let Some(verifier_message) = injection.verifier_message {
+        transcript.push(TranscriptMessage {
+            role: TranscriptRole::User,
+            content: verifier_message.to_string(),
+        });
+    }
     Ok(true)
 }
 
-pub(crate) async fn maybe_inject_cc_rs_compile_intermediates_deterministic_patch(
+pub(crate) async fn maybe_inject_case05_playbook_patch(
     step: usize,
     state: &mut AgentTaskState,
     request: &AgentRunRequest,
@@ -368,43 +319,21 @@ pub(crate) async fn maybe_inject_cc_rs_compile_intermediates_deterministic_patch
     if state.policy.mode != PolicyMode::BenchmarkAutonomous {
         return Ok(false);
     }
-    let should_handle_case = state.benchmark_case_ledger.as_ref().is_some_and(|ledger| {
-        ledger
-            .owner_files
-            .iter()
-            .chain(ledger.expected_touch_targets.iter())
-            .any(|path| canonical_path(path) == "src/lib.rs")
-            && ledger
-                .fast_loop_commands
-                .iter()
-                .any(|command| command.contains("compile_intermediates"))
-    });
-    if !should_handle_case {
+    let Some(injection) = controller_injection_for_playbook(
+        state,
+        BenchmarkPlaybook::CcRsCompileIntermediates,
+        reason,
+    ) else {
         return Ok(false);
-    }
-    let source_observed = state
-        .agent_repair_memory
-        .observed_slices
-        .iter()
-        .any(|slice| {
-            canonical_path(&slice.path) == "src/lib.rs" && slice.content_fingerprint.is_some()
-        });
-    if !source_observed {
-        return Ok(false);
-    }
-    let Some(action) = exact_cc_rs_compile_intermediates_patch_action_from_state(state) else {
+    };
+    let Some(action) = injection.actions.into_iter().next() else {
         return Ok(false);
     };
     let action_summary = action.summary();
-    emit_benchmark_injection_event(
-        event_sink,
-        "deterministic benchmark Case 05 source patch".to_string(),
-    );
+    emit_benchmark_injection_event(event_sink, injection.event_detail);
     transcript.push(TranscriptMessage {
         role: TranscriptRole::User,
-        content: format!(
-            "[Repair Controller]\nQwen repeated source inspection after the cc-rs owner file was loaded, so Quorp is applying the deterministic Case 05 source patch.\nReason: {reason}"
-        ),
+        content: injection.transcript_content,
     });
     match dispatch_action(
         step,
@@ -433,7 +362,9 @@ pub(crate) async fn maybe_inject_cc_rs_compile_intermediates_deterministic_patch
     if let Some(ledger) = state.benchmark_case_ledger.as_mut() {
         ledger.validation_details.repair_required = true;
         ledger.validation_details.post_fast_loop_patch_attempted = true;
-        ledger.validation_status = Some("patched: controller exact case05".to_string());
+        if let Some(validation_status) = injection.validation_status {
+            ledger.validation_status = Some(validation_status.to_string());
+        }
     }
     state.parser_recovery_failures = 0;
     state.last_parse_error = None;
@@ -442,12 +373,17 @@ pub(crate) async fn maybe_inject_cc_rs_compile_intermediates_deterministic_patch
     event_sink.emit(RuntimeEvent::VerifierQueued {
         step,
         plans: state.queued_validation_summaries(),
-        reason: "controller_case05_patch".to_string(),
+        reason: injection
+            .verifier_reason
+            .unwrap_or("controller_playbook_patch")
+            .to_string(),
     });
-    transcript.push(TranscriptMessage {
-        role: TranscriptRole::User,
-        content: "[Verifier]\nThe deterministic Case 05 patch was applied; Quorp queued the benchmark fast loop before finishing.".to_string(),
-    });
+    if let Some(verifier_message) = injection.verifier_message {
+        transcript.push(TranscriptMessage {
+            role: TranscriptRole::User,
+            content: verifier_message.to_string(),
+        });
+    }
     Ok(true)
 }
 

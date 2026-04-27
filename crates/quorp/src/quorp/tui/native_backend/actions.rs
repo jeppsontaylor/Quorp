@@ -956,16 +956,23 @@ pub(crate) fn run_command_streaming(
     });
 
     let deadline = std::time::Instant::now() + timeout;
+    let mut cleanup_errors = Vec::new();
     let exit_code = loop {
         if std::time::Instant::now() >= deadline {
             #[cfg(unix)]
             if let Some(leader) = process_group_leader {
-                unsafe {
-                    libc::killpg(leader, libc::SIGKILL);
+                let result = unsafe { libc::killpg(leader, libc::SIGKILL) };
+                if result != 0 {
+                    cleanup_errors.push(format!(
+                        "failed to kill command process group {leader}: {}",
+                        std::io::Error::last_os_error()
+                    ));
                 }
             }
             #[cfg(not(unix))]
-            child.kill()?;
+            if let Err(error) = child.kill() {
+                cleanup_errors.push(format!("failed to kill timed-out command: {error}"));
+            }
             break Some(-1);
         }
         match child.try_wait()? {
@@ -974,8 +981,10 @@ pub(crate) fn run_command_streaming(
         }
     };
 
-    if exit_code == Some(-1) {
-        let _ = child.wait();
+    if exit_code == Some(-1)
+        && let Err(error) = child.wait()
+    {
+        cleanup_errors.push(format!("failed to wait on timed-out command: {error}"));
     }
     if reader_thread.join().is_err() {
         log::error!("tui: command reader thread panicked");
@@ -987,6 +996,7 @@ pub(crate) fn run_command_streaming(
         .unwrap_or_default();
     if exit_code == Some(-1) {
         final_output.push_str("\n[Command timed out]");
+        append_command_timeout_cleanup_errors(&mut final_output, &cleanup_errors);
         anyhow::bail!(final_output);
     }
     let exit_code = exit_code.unwrap_or_default();
@@ -995,5 +1005,36 @@ pub(crate) fn run_command_streaming(
         Ok(final_output)
     } else {
         anyhow::bail!(final_output);
+    }
+}
+
+fn append_command_timeout_cleanup_errors(final_output: &mut String, cleanup_errors: &[String]) {
+    if cleanup_errors.is_empty() {
+        return;
+    }
+    final_output.push_str("\n[Command cleanup failed: ");
+    final_output.push_str(&cleanup_errors.join("; "));
+    final_output.push(']');
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn timeout_cleanup_errors_are_included_in_failure_output() {
+        let mut output = String::from("partial output\n[Command timed out]");
+
+        append_command_timeout_cleanup_errors(
+            &mut output,
+            &[
+                "failed to kill command process group 123: no such process".to_string(),
+                "failed to wait on timed-out command: child already waited".to_string(),
+            ],
+        );
+
+        assert!(output.contains("[Command cleanup failed: "));
+        assert!(output.contains("failed to kill command process group 123"));
+        assert!(output.contains("failed to wait on timed-out command"));
     }
 }

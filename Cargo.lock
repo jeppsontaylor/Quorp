@@ -2608,6 +2608,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "ignore",
+ "log",
  "regex",
  "serde",
  "serde_json",

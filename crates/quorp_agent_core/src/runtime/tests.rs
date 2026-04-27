@@ -3080,7 +3080,7 @@ impl<'pkg_graph> DistGraphBuilder<'pkg_graph> {
     let sink = RecordingEventSink::default();
     let mut transcript = Vec::new();
 
-    let injected = futures::executor::block_on(maybe_inject_cargo_dist_deterministic_patch(
+    let injected = futures::executor::block_on(maybe_inject_case04_playbook_patch(
         1,
         &mut state,
         &request,
@@ -3147,7 +3147,7 @@ fn benchmark_deterministic_patch_is_gated_to_benchmark_policy() {
     let sink = RecordingEventSink::default();
     let mut transcript = Vec::new();
 
-    let injected = futures::executor::block_on(maybe_inject_cargo_dist_deterministic_patch(
+    let injected = futures::executor::block_on(maybe_inject_case04_playbook_patch(
         1,
         &mut state,
         &request,

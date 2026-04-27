@@ -327,8 +327,12 @@ impl Drop for RustLanguageServerSession {
         if let Ok(mut child) = self.child.lock()
             && let Some(mut child) = child.take()
         {
-            let _ = child.kill();
-            let _ = child.wait();
+            if let Err(error) = child.kill() {
+                log::warn!("failed to kill rust language server process: {error}");
+            }
+            if let Err(error) = child.wait() {
+                log::warn!("failed to wait on rust language server process: {error}");
+            }
         }
     }
 }

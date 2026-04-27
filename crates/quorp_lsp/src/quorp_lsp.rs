@@ -366,8 +366,9 @@ impl WorkspaceSemanticIndex {
                 }
             }
         }
-        let pattern = Regex::new(&format!(r"\b{}\b", regex::escape(symbol.trim())))
-            .unwrap_or_else(|_| Regex::new("$^").expect("valid empty regex"));
+        let Ok(pattern) = Regex::new(&format!(r"\b{}\b", regex::escape(symbol.trim()))) else {
+            return Vec::new();
+        };
         let mut locations = Vec::new();
         for file in &self.files {
             for (line_index, line) in file.content.lines().enumerate() {
