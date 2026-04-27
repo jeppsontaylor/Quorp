@@ -1,15 +1,16 @@
-//! Storage adapter facade for Quorp: SQLite (rusqlite WAL), lexical index
-//! (tantivy), vector index (usearch), embedder (fastembed-rs).
+//! Storage adapter facade for Quorp: SQLite-backed event log, lexical
+//! index, vector index, and embedder abstraction.
 //!
-//! Phase 6 ships the trait surface and an in-memory placeholder
-//! implementation so consumers can compile and unit-test against the
-//! traits without spinning up real backends. The on-disk implementations
-//! land when the runtime wire-up needs them.
+//! The crate keeps an in-memory implementation for tests, but the
+//! primary on-disk implementation now persists state in SQLite so the
+//! rest of the runtime can rely on durable storage.
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
+use std::sync::Mutex;
 
 use anyhow::Result;
+use rusqlite::params;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -77,6 +78,332 @@ pub trait Storage: Send + Sync {
     fn lexical(&self) -> &dyn LexicalIndex;
     fn vectors(&self) -> &dyn VectorIndex;
     fn embedder(&self) -> &dyn Embedder;
+}
+
+#[derive(Debug)]
+pub struct SqliteStorage {
+    root: StorageRoot,
+    events: SqliteEventLog,
+    lexical: SqliteLexicalIndex,
+    vectors: SqliteVectorIndex,
+    embedder: inmem::StubEmbedder,
+}
+
+impl SqliteStorage {
+    pub fn new(workspace: PathBuf) -> Result<Self> {
+        let root = StorageRoot::under(workspace);
+        ensure_storage_directories(&root)?;
+        let events = SqliteEventLog::new(root.sqlite_path.clone())?;
+        let lexical = SqliteLexicalIndex::new(root.sqlite_path.clone())?;
+        let vectors = SqliteVectorIndex::new(root.sqlite_path.clone(), 384)?;
+        let embedder = inmem::StubEmbedder::default();
+        Ok(Self {
+            root,
+            events,
+            lexical,
+            vectors,
+            embedder,
+        })
+    }
+}
+
+impl Storage for SqliteStorage {
+    fn root(&self) -> &StorageRoot {
+        &self.root
+    }
+
+    fn events(&self) -> &dyn EventLog {
+        &self.events
+    }
+
+    fn lexical(&self) -> &dyn LexicalIndex {
+        &self.lexical
+    }
+
+    fn vectors(&self) -> &dyn VectorIndex {
+        &self.vectors
+    }
+
+    fn embedder(&self) -> &dyn Embedder {
+        &self.embedder
+    }
+}
+
+#[derive(Debug)]
+struct StorageDatabase {
+    sqlite_path: PathBuf,
+}
+
+impl StorageDatabase {
+    fn new(sqlite_path: PathBuf) -> Result<Self> {
+        if let Some(parent) = sqlite_path.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+        let database = Self { sqlite_path };
+        database.initialize()?;
+        Ok(database)
+    }
+
+    fn open(&self) -> Result<rusqlite::Connection> {
+        let connection = rusqlite::Connection::open(&self.sqlite_path)?;
+        connection.execute_batch(
+            r#"
+                PRAGMA journal_mode = WAL;
+                PRAGMA foreign_keys = ON;
+            "#,
+        )?;
+        Ok(connection)
+    }
+
+    fn initialize(&self) -> Result<()> {
+        let connection = self.open()?;
+        connection.execute_batch(
+            r#"
+                CREATE TABLE IF NOT EXISTS event_log (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    event_json TEXT NOT NULL,
+                    created_unix INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS lexical_documents (
+                    doc_id TEXT PRIMARY KEY,
+                    fields_json TEXT NOT NULL,
+                    content_text TEXT NOT NULL,
+                    updated_unix INTEGER NOT NULL
+                );
+                CREATE TABLE IF NOT EXISTS vector_documents (
+                    doc_id TEXT PRIMARY KEY,
+                    embedding_json TEXT NOT NULL,
+                    updated_unix INTEGER NOT NULL
+                );
+            "#,
+        )?;
+        Ok(())
+    }
+}
+
+fn ensure_storage_directories(root: &StorageRoot) -> Result<()> {
+    if let Some(parent) = root.sqlite_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    if let Some(parent) = root.tantivy_dir.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::create_dir_all(&root.tantivy_dir)?;
+    if let Some(parent) = root.vectors_path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+pub struct SqliteEventLog {
+    database: Mutex<StorageDatabase>,
+}
+
+impl SqliteEventLog {
+    pub fn new(sqlite_path: PathBuf) -> Result<Self> {
+        Ok(Self {
+            database: Mutex::new(StorageDatabase::new(sqlite_path)?),
+        })
+    }
+}
+
+impl EventLog for SqliteEventLog {
+    fn append(&self, event: serde_json::Value) -> Result<u64> {
+        let database = self
+            .database
+            .lock()
+            .map_err(|_| anyhow::anyhow!("event log poisoned"))?;
+        let connection = database.open()?;
+        let created_unix = current_unix_seconds();
+        connection.execute(
+            "INSERT INTO event_log (event_json, created_unix) VALUES (?1, ?2)",
+            params![serde_json::to_string(&event)?, created_unix],
+        )?;
+        Ok(connection.last_insert_rowid() as u64)
+    }
+
+    fn count(&self) -> Result<u64> {
+        let database = self
+            .database
+            .lock()
+            .map_err(|_| anyhow::anyhow!("event log poisoned"))?;
+        let connection = database.open()?;
+        let count: u64 =
+            connection.query_row("SELECT COUNT(*) FROM event_log", [], |row| row.get(0))?;
+        Ok(count)
+    }
+}
+
+#[derive(Debug)]
+pub struct SqliteLexicalIndex {
+    database: Mutex<StorageDatabase>,
+}
+
+impl SqliteLexicalIndex {
+    pub fn new(sqlite_path: PathBuf) -> Result<Self> {
+        Ok(Self {
+            database: Mutex::new(StorageDatabase::new(sqlite_path)?),
+        })
+    }
+}
+
+impl LexicalIndex for SqliteLexicalIndex {
+    fn upsert(&self, doc_id: &str, fields: BTreeMap<String, String>) -> Result<()> {
+        let database = self
+            .database
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lexical poisoned"))?;
+        let connection = database.open()?;
+        let content_text = fields
+            .values()
+            .map(String::as_str)
+            .collect::<Vec<_>>()
+            .join("\n");
+        connection.execute(
+            r#"
+                INSERT INTO lexical_documents (doc_id, fields_json, content_text, updated_unix)
+                VALUES (?1, ?2, ?3, ?4)
+                ON CONFLICT(doc_id) DO UPDATE SET
+                    fields_json = excluded.fields_json,
+                    content_text = excluded.content_text,
+                    updated_unix = excluded.updated_unix
+            "#,
+            params![
+                doc_id,
+                serde_json::to_string(&fields)?,
+                content_text,
+                current_unix_seconds()
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn query(&self, q: &str, limit: usize) -> Result<Vec<LexicalHit>> {
+        if limit == 0 {
+            return Ok(Vec::new());
+        }
+        let database = self
+            .database
+            .lock()
+            .map_err(|_| anyhow::anyhow!("lexical poisoned"))?;
+        let connection = database.open()?;
+        let mut statement = connection.prepare(
+            "SELECT doc_id, content_text FROM lexical_documents ORDER BY updated_unix DESC, doc_id ASC",
+        )?;
+        let q_lower = q.to_ascii_lowercase();
+        let mut hits = Vec::new();
+        let mut rows = statement.query([])?;
+        while let Some(row) = rows.next()? {
+            let doc_id: String = row.get(0)?;
+            let content_text: String = row.get(1)?;
+            if content_text.to_ascii_lowercase().contains(&q_lower) {
+                hits.push(LexicalHit {
+                    doc_id,
+                    score: 1.0,
+                    snippet: content_text.chars().take(160).collect(),
+                });
+                if hits.len() >= limit {
+                    break;
+                }
+            }
+        }
+        Ok(hits)
+    }
+}
+
+#[derive(Debug)]
+pub struct SqliteVectorIndex {
+    database: Mutex<StorageDatabase>,
+    dimension: usize,
+}
+
+impl SqliteVectorIndex {
+    pub fn new(sqlite_path: PathBuf, dimension: usize) -> Result<Self> {
+        Ok(Self {
+            database: Mutex::new(StorageDatabase::new(sqlite_path)?),
+            dimension,
+        })
+    }
+}
+
+impl VectorIndex for SqliteVectorIndex {
+    fn upsert(&self, doc_id: &str, embedding: &[f32]) -> Result<()> {
+        anyhow::ensure!(embedding.len() == self.dimension, "wrong vector dim");
+        let database = self
+            .database
+            .lock()
+            .map_err(|_| anyhow::anyhow!("vector poisoned"))?;
+        let connection = database.open()?;
+        connection.execute(
+            r#"
+                INSERT INTO vector_documents (doc_id, embedding_json, updated_unix)
+                VALUES (?1, ?2, ?3)
+                ON CONFLICT(doc_id) DO UPDATE SET
+                    embedding_json = excluded.embedding_json,
+                    updated_unix = excluded.updated_unix
+            "#,
+            params![
+                doc_id,
+                serde_json::to_string(embedding)?,
+                current_unix_seconds()
+            ],
+        )?;
+        Ok(())
+    }
+
+    fn query(&self, embedding: &[f32], k: usize) -> Result<Vec<VectorHit>> {
+        if k == 0 {
+            return Ok(Vec::new());
+        }
+        anyhow::ensure!(embedding.len() == self.dimension, "wrong vector dim");
+        let database = self
+            .database
+            .lock()
+            .map_err(|_| anyhow::anyhow!("vector poisoned"))?;
+        let connection = database.open()?;
+        let mut statement =
+            connection.prepare("SELECT doc_id, embedding_json FROM vector_documents")?;
+        let mut rows = statement.query([])?;
+        let mut scored = Vec::new();
+        while let Some(row) = rows.next()? {
+            let doc_id: String = row.get(0)?;
+            let stored: String = row.get(1)?;
+            let stored_embedding: Vec<f32> = serde_json::from_str(&stored)?;
+            if stored_embedding.len() != self.dimension {
+                continue;
+            }
+            scored.push(VectorHit {
+                doc_id,
+                score: cosine(embedding, &stored_embedding),
+            });
+        }
+        scored.sort_by(|left, right| right.score.total_cmp(&left.score));
+        scored.truncate(k);
+        Ok(scored)
+    }
+
+    fn dimension(&self) -> usize {
+        self.dimension
+    }
+}
+
+fn current_unix_seconds() -> i64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_secs() as i64)
+        .unwrap_or_default()
+}
+
+fn cosine(a: &[f32], b: &[f32]) -> f32 {
+    let dot: f32 = a.iter().zip(b).map(|(x, y)| x * y).sum();
+    let na: f32 = a.iter().map(|x| x * x).sum::<f32>().sqrt();
+    let nb: f32 = b.iter().map(|x| x * x).sum::<f32>().sqrt();
+    if na == 0.0 || nb == 0.0 {
+        0.0
+    } else {
+        dot / (na * nb)
+    }
 }
 
 pub mod inmem {
@@ -304,6 +631,7 @@ pub mod inmem {
 mod tests {
     use super::inmem::*;
     use super::*;
+    use tempfile::TempDir;
 
     #[test]
     fn lexical_finds_substring() {
@@ -345,5 +673,54 @@ mod tests {
         let id = log.append(serde_json::json!({"kind": "test"})).unwrap();
         assert_eq!(id, 1);
         assert_eq!(log.count().unwrap(), 1);
+    }
+
+    #[test]
+    fn sqlite_storage_persists_event_lexical_and_vector_data() {
+        let workspace = TempDir::new().expect("tempdir");
+        let storage = SqliteStorage::new(workspace.path().to_path_buf()).expect("storage");
+        assert_eq!(storage.vectors().dimension(), 384);
+
+        let event_id = storage
+            .events()
+            .append(serde_json::json!({"kind": "memory", "value": 1}))
+            .expect("append");
+        assert_eq!(event_id, 1);
+
+        let mut lexical_fields = BTreeMap::new();
+        lexical_fields.insert("path".into(), "src/main.rs".into());
+        lexical_fields.insert("text".into(), "hello durable storage".into());
+        storage
+            .lexical()
+            .upsert("doc-1", lexical_fields)
+            .expect("lexical upsert");
+
+        let mut vector = vec![0.0_f32; 384];
+        vector[0] = 1.0;
+        storage
+            .vectors()
+            .upsert("doc-1", &vector)
+            .expect("vector upsert");
+
+        drop(storage);
+
+        let reopened = SqliteStorage::new(workspace.path().to_path_buf()).expect("reopen");
+        assert_eq!(reopened.events().count().expect("count"), 1);
+        let hits = reopened.lexical().query("durable", 10).expect("query");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].doc_id, "doc-1");
+        let vector_hits = reopened.vectors().query(&vector, 1).expect("vector query");
+        assert_eq!(vector_hits.len(), 1);
+        assert_eq!(vector_hits[0].doc_id, "doc-1");
+    }
+
+    #[test]
+    fn storage_root_under_places_files_inside_quorp_directory() {
+        let workspace = std::path::Path::new("/tmp/workspace-example").to_path_buf();
+        let root = StorageRoot::under(workspace.clone());
+        assert!(root.sqlite_path.ends_with(".quorp/memory.sqlite"));
+        assert!(root.tantivy_dir.ends_with(".quorp/index/tantivy"));
+        assert!(root.vectors_path.ends_with(".quorp/index/vectors.usearch"));
+        assert_eq!(root.workspace, workspace);
     }
 }

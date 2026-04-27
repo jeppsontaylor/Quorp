@@ -72,7 +72,11 @@ fn render_ansi_half_block_logo(
         .min(1.0);
     let width = ((source_width as f32 * scale).round() as u32).max(8);
     let height = ((source_height as f32 * scale).round() as u32).max(4);
-    let height = if height % 2 == 0 { height } else { height + 1 };
+    let height = if height.is_multiple_of(2) {
+        height
+    } else {
+        height + 1
+    };
     let resized = image
         .resize_exact(width, height, FilterType::Triangle)
         .to_rgba8();

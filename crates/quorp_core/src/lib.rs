@@ -9,6 +9,9 @@ use serde::{Deserialize, Serialize};
 pub const DEFAULT_NVIDIA_BASE_URL: &str = "https://integrate.api.nvidia.com/v1";
 pub const DEFAULT_NVIDIA_MODEL: &str = "qwen/qwen3-coder-480b-a35b-instruct";
 
+pub mod skills;
+pub mod validation_planner;
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 #[serde(rename_all = "kebab-case")]
 pub enum RunMode {
@@ -32,6 +35,59 @@ pub enum SandboxMode {
     Host,
     #[default]
     TmpCopy,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum SandboxRuntimeProfile {
+    #[default]
+    Local,
+    Container,
+}
+
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(rename_all = "kebab-case")]
+pub enum ContainerEnginePreference {
+    #[default]
+    Auto,
+    Docker,
+    Podman,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct ContainerRuntimeSettings {
+    pub engine: ContainerEnginePreference,
+    pub image: String,
+}
+
+impl Default for ContainerRuntimeSettings {
+    fn default() -> Self {
+        Self {
+            engine: ContainerEnginePreference::Auto,
+            image: default_container_image(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
+#[serde(default, deny_unknown_fields)]
+pub struct SandboxRuntimeSettings {
+    pub profile: SandboxRuntimeProfile,
+    pub container: ContainerRuntimeSettings,
+}
+
+impl Default for SandboxRuntimeSettings {
+    fn default() -> Self {
+        Self {
+            profile: SandboxRuntimeProfile::Local,
+            container: ContainerRuntimeSettings::default(),
+        }
+    }
+}
+
+fn default_container_image() -> String {
+    "docker.io/library/alpine:3.20".to_string()
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]

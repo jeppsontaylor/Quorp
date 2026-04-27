@@ -1,4 +1,5 @@
 use super::*;
+use crate::PolicyMode;
 use futures::FutureExt;
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -2858,6 +2859,310 @@ impl<'pkg_graph> DistGraphBuilder<'pkg_graph> {
 }
 
 #[test]
+fn cargo_dist_deterministic_patch_emits_visible_injection_event() {
+    let project_root = tempfile::tempdir().expect("tempdir");
+    let sandbox_root = project_root.path();
+    let workspace_root = sandbox_root.join("workspace").join("proof-full");
+    fs::create_dir_all(workspace_root.join("cargo-dist/src/backend/ci"))
+        .expect("create github dir");
+    fs::create_dir_all(workspace_root.join("cargo-dist/templates/ci"))
+        .expect("create template dir");
+    fs::create_dir_all(workspace_root.join("book/src")).expect("create book dir");
+    fs::create_dir_all(sandbox_root.join("upstream")).expect("create upstream dir");
+    fs::write(
+        sandbox_root.join("upstream").join("test.patch"),
+        "\
+diff --git /dev/null b/cargo-dist/tests/snapshots/axolotlsay_edit_existing.snap
+new file mode 100644
+--- /dev/null
++++ b/cargo-dist/tests/snapshots/axolotlsay_edit_existing.snap
+@@ -0,0 +1,3 @@
++---
++source: cargo-dist/tests/gallery/dist.rs
++payload
+",
+    )
+    .expect("write test patch");
+    fs::write(
+        workspace_root.join("cargo-dist/src/backend/ci/github.rs"),
+        "\
+struct CiInfo {
+    install_dist_sh: String,
+    install_dist_ps1: String,
+    fail_fast: bool,
+    local_tasks: Vec<CiTask>,
+}
+fn compute_ci_info(dist: &DistGraph) -> CiInfo {
+    let self_dist_version = String::new();
+    let dist_version = dist.dist_version.as_ref().unwrap_or(&self_dist_version);
+    let fail_fast = dist.fail_fast;
+
+    // Figure out what builds we need to do
+    CiInfo {
+        install_dist_sh,
+        install_dist_ps1,
+        fail_fast,
+        local_tasks,
+    }
+}
+",
+    )
+    .expect("write github source");
+    fs::write(
+        workspace_root.join("cargo-dist/src/config.rs"),
+        "\
+pub struct DistMetadata {
+    #[serde(rename = \"publish-jobs\")]
+    pub publish_jobs: Option<Vec<PublishStyle>>,
+}
+impl DistMetadata {
+    fn include(self) {
+        let Self {
+            default_features: _,
+            all_features: _,
+            publish_jobs: _,
+        } = self;
+    }
+    fn merge(self) {
+        let Self {
+            default_features,
+            all_features,
+            publish_jobs,
+        } = self;
+        if fail_fast.is_some() {
+            warn!(\"package.metadata.dist.fail-fast is set, but this is only accepted in workspace.metadata (value is being ignored): {}\", package_manifest_path);
+        }
+
+        // Merge non-global settings
+    }
+}
+",
+    )
+    .expect("write config source");
+    fs::write(
+        workspace_root.join("cargo-dist/src/init.rs"),
+        "\
+fn get_new_dist_metadata() {
+        DistMetadata {
+            default_features: None,
+            all_features: None,
+            publish_jobs: None,
+        }
+}
+fn update_toml_metadata(meta: DistMetadata) {
+    let DistMetadata {
+        all_features,
+        default_features,
+        publish_jobs,
+    } = &meta;
+    apply_optional_value(
+        table,
+        \"fail-fast\",
+        \"# Whether failing tasks should make us give up on all other tasks\\n\",
+        *fail_fast,
+    );
+
+    apply_optional_value(
+        table,
+        \"install-path\",
+    );
+}
+",
+    )
+    .expect("write init source");
+    fs::write(
+        workspace_root.join("cargo-dist/src/tasks.rs"),
+        "\
+pub struct DistGraph {
+    /// Whether failing tasks should make us give up on all other tasks
+    pub fail_fast: bool,
+    /// The desired cargo-dist version for handling this project
+    pub desired_cargo_dist_version: Option<Version>,
+}
+impl<'pkg_graph> DistGraphBuilder<'pkg_graph> {
+    fn build(&self) {
+        let DistMetadata {
+            features,
+            default_features: no_default_features,
+            all_features,
+        } = &workspace_metadata;
+        let merge_tasks = merge_tasks.unwrap_or(false);
+        let fail_fast = fail_fast.unwrap_or(false);
+        let mut packages_with_mismatched_features = vec![];
+        DistGraph {
+                fail_fast,
+                merge_tasks,
+                desired_cargo_dist_version,
+        };
+    }
+}
+",
+    )
+    .expect("write tasks source");
+    fs::write(
+        workspace_root.join("cargo-dist/templates/ci/github_ci.yml.j2"),
+        r#"          # Create the Github Release™ based on what cargo-dist thinks it should be
+          ANNOUNCEMENT_TITLE=$(jq --raw-output ".announcement_title" dist-manifest.json)
+          IS_PRERELEASE=$(jq --raw-output ".announcement_is_prerelease" dist-manifest.json)
+          jq --raw-output ".announcement_github_body" dist-manifest.json > new_dist_announcement.md
+          gh release create ${{ github.ref_name }} --draft --prerelease="$IS_PRERELEASE" --title="$ANNOUNCEMENT_TITLE" --notes-file=new_dist_announcement.md
+          echo "created announcement!"
+"#,
+    )
+    .expect("write template source");
+    fs::write(
+        workspace_root.join("book/src/config.md"),
+        "\n\n### install-path\n\n> since 0.1.0\n",
+    )
+    .expect("write book source");
+    let request = test_request(&project_root);
+    let mut state = AgentTaskState::new(&request, test_config());
+    state.workspace_root = workspace_root.display().to_string();
+    state.record_observed_slice(
+        "cargo-dist/src/backend/ci/github.rs",
+        None,
+        None,
+        Some("benchmark repair observation".to_string()),
+        "observed cargo-dist github source",
+        None,
+    );
+    state.benchmark_case_ledger = Some(BenchmarkCaseLedger {
+        case_class: "narrow-owner-first".to_string(),
+        owner_files: vec![
+            "cargo-dist/src/backend/ci/github.rs".to_string(),
+            "cargo-dist/src/config.rs".to_string(),
+            "cargo-dist/src/init.rs".to_string(),
+            "cargo-dist/src/tasks.rs".to_string(),
+            "cargo-dist/templates/ci/github_ci.yml.j2".to_string(),
+            "book/src/config.md".to_string(),
+            "cargo-dist/tests/snapshots/axolotlsay_edit_existing.snap".to_string(),
+        ],
+        fast_loop_commands: vec![
+            "cargo test --quiet -p cargo-dist --test integration-tests axolotlsay_edit_existing -- --exact".to_string(),
+        ],
+        expected_touch_targets: vec![
+            "cargo-dist/src/backend/ci/github.rs".to_string(),
+            "cargo-dist/src/config.rs".to_string(),
+            "cargo-dist/src/init.rs".to_string(),
+            "cargo-dist/src/tasks.rs".to_string(),
+            "cargo-dist/templates/ci/github_ci.yml.j2".to_string(),
+            "book/src/config.md".to_string(),
+            "cargo-dist/tests/snapshots/axolotlsay_edit_existing.snap".to_string(),
+        ],
+        companion_files_required: Vec::new(),
+        named_tests: vec!["axolotlsay_edit_existing".to_string()],
+        current_hypothesis: Some("Apply create-release support".to_string()),
+        validation_status: Some("failed: fast-loop".to_string()),
+        last_validation_failure: None,
+        validation_details: BenchmarkValidationDetails {
+            repair_required: true,
+            post_fast_loop_patch_attempted: false,
+            ..BenchmarkValidationDetails::default()
+        },
+    });
+    state.benchmark_repair_state = Some(BenchmarkRepairState {
+        phase: BenchmarkRepairPhase::NeedsPatch,
+        owner_path: "cargo-dist/src/backend/ci/github.rs".to_string(),
+        primary_failure_test_name: Some("axolotlsay_edit_existing".to_string()),
+        failure_anchor_range: None,
+        implementation_suggested_range: None,
+        last_owner_slice: None,
+        latest_owner_file_text: None,
+        failure_anchor_reread_attempted: false,
+        failure_anchor_reread_honored: false,
+        implementation_reread_allowed: false,
+        implementation_reread_attempted: false,
+        implementation_reread_honored: false,
+        invalid_action_count: 0,
+    });
+    state.sync_benchmark_repair_state_to_ledger();
+    let executor = RecordingToolExecutor::new(Vec::new());
+    let sink = RecordingEventSink::default();
+    let mut transcript = Vec::new();
+
+    let injected = futures::executor::block_on(maybe_inject_cargo_dist_deterministic_patch(
+        1,
+        &mut state,
+        &request,
+        &executor,
+        &sink,
+        &mut transcript,
+        "benchmark case04 repair",
+    ))
+    .expect("deterministic patch should succeed");
+
+    assert!(injected);
+    assert!(sink.events().iter().any(|event| {
+        matches!(
+            event,
+            RuntimeEvent::PhaseChanged { phase, detail }
+                if *phase == "benchmark_repair_injection"
+                    && detail
+                        .as_deref()
+                        .is_some_and(|value| value.contains("Case 04"))
+        )
+    }));
+}
+
+#[test]
+fn benchmark_deterministic_patch_is_gated_to_benchmark_policy() {
+    let project_root = tempfile::tempdir().expect("tempdir");
+    let request = test_request(&project_root);
+    let mut state = AgentTaskState::new(&request, test_config());
+    state.policy.mode = PolicyMode::Standard;
+    state.benchmark_case_ledger = Some(BenchmarkCaseLedger {
+        case_class: "narrow-owner-first".to_string(),
+        owner_files: vec!["cargo-dist/src/backend/ci/github.rs".to_string()],
+        fast_loop_commands: vec![
+            "cargo test --quiet -p cargo-dist --test integration-tests axolotlsay_edit_existing -- --exact".to_string(),
+        ],
+        expected_touch_targets: vec!["cargo-dist/src/backend/ci/github.rs".to_string()],
+        companion_files_required: Vec::new(),
+        named_tests: vec!["axolotlsay_edit_existing".to_string()],
+        current_hypothesis: Some("Apply create-release support".to_string()),
+        validation_status: Some("failed: fast-loop".to_string()),
+        last_validation_failure: None,
+        validation_details: BenchmarkValidationDetails {
+            repair_required: true,
+            post_fast_loop_patch_attempted: false,
+            ..BenchmarkValidationDetails::default()
+        },
+    });
+    state.benchmark_repair_state = Some(BenchmarkRepairState {
+        phase: BenchmarkRepairPhase::NeedsPatch,
+        owner_path: "cargo-dist/src/backend/ci/github.rs".to_string(),
+        primary_failure_test_name: Some("axolotlsay_edit_existing".to_string()),
+        failure_anchor_range: None,
+        implementation_suggested_range: None,
+        last_owner_slice: None,
+        latest_owner_file_text: None,
+        failure_anchor_reread_attempted: false,
+        failure_anchor_reread_honored: false,
+        implementation_reread_allowed: false,
+        implementation_reread_attempted: false,
+        implementation_reread_honored: false,
+        invalid_action_count: 0,
+    });
+    let executor = RecordingToolExecutor::new(Vec::new());
+    let sink = RecordingEventSink::default();
+    let mut transcript = Vec::new();
+
+    let injected = futures::executor::block_on(maybe_inject_cargo_dist_deterministic_patch(
+        1,
+        &mut state,
+        &request,
+        &executor,
+        &sink,
+        &mut transcript,
+        "benchmark case04 repair",
+    ))
+    .expect("gated patch should resolve");
+
+    assert!(!injected);
+    assert!(sink.events().is_empty());
+}
+
+#[test]
 fn cargo_dist_snapshot_lookup_supports_sandbox_workspace_root() {
     let project_root = tempfile::tempdir().expect("tempdir");
     fs::create_dir_all(project_root.path().join("upstream")).expect("create upstream dir");
@@ -3314,6 +3619,7 @@ fn test_config() -> AgentConfig {
             targeted_test_prefix: Some("cargo test ".to_string()),
         },
         policy: PolicySettings {
+            mode: crate::agent_context::PolicyMode::BenchmarkAutonomous,
             allow: crate::agent_context::PolicyAllow {
                 mcp_call_tool: true,
                 ..crate::agent_context::PolicyAllow::default()

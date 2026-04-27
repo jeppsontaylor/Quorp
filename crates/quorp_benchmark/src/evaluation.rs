@@ -7,6 +7,7 @@ use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
 use crate::ChallengeMetadata;
+use quorp_sandbox::{SandboxMount, build_command_plan, default_policy, sandbox_runtime_for_path};
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, JsonSchema)]
 pub struct EvaluatorOutcome {
@@ -40,15 +41,27 @@ pub fn run_shell_command_with_env(
 ) -> anyhow::Result<EvaluatorOutcome> {
     let started_at = std::time::Instant::now();
     #[allow(clippy::disallowed_methods)]
-    let mut shell = Command::new("bash");
-    shell.arg("-lc").arg(command).current_dir(current_dir);
-    for (key, value) in environment {
-        shell.env(key, value);
-    }
+    let policy = default_policy();
+    let runtime = sandbox_runtime_for_path(current_dir)?;
+    let plan = build_command_plan(quorp_sandbox::SandboxCommandSpec {
+        program: std::ffi::OsStr::new(&policy.default_shell),
+        args: &[std::ffi::OsStr::new("-lc"), std::ffi::OsStr::new(command)],
+        current_dir,
+        runtime: &runtime,
+        policy: &policy,
+        extra_environment: environment,
+        additional_mounts: &[],
+        interactive: false,
+    })?;
+    let mut shell = Command::new(&plan.program);
+    plan.apply_to_command(&mut shell);
+    #[cfg(unix)]
+    util::set_pre_exec_to_start_new_session(&mut shell);
+    let redacted_command = util::redact::redact_command(command);
     #[allow(clippy::disallowed_methods)]
     let output = shell
         .output()
-        .with_context(|| format!("failed to run {} command `{}`", name, command))?;
+        .with_context(|| format!("failed to run {} command `{}`", name, redacted_command))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     Ok(EvaluatorOutcome {
@@ -69,8 +82,24 @@ pub fn run_visible_evaluator(
 ) -> anyhow::Result<EvaluatorOutcome> {
     let started_at = std::time::Instant::now();
     #[allow(clippy::disallowed_methods)]
-    let output = Command::new(script)
-        .current_dir(workspace_dir)
+    let policy = default_policy();
+    let runtime = sandbox_runtime_for_path(workspace_dir)?;
+    let plan = build_command_plan(quorp_sandbox::SandboxCommandSpec {
+        program: script.as_os_str(),
+        args: &[],
+        current_dir: workspace_dir,
+        runtime: &runtime,
+        policy: &policy,
+        extra_environment: &[],
+        additional_mounts: &[],
+        interactive: false,
+    })?;
+    let mut command = Command::new(&plan.program);
+    plan.apply_to_command(&mut command);
+    #[cfg(unix)]
+    util::set_pre_exec_to_start_new_session(&mut command);
+    #[allow(clippy::disallowed_methods)]
+    let output = command
         .output()
         .with_context(|| format!("failed to run visible evaluator {}", script.display()))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -94,11 +123,27 @@ pub fn run_collector_evaluator(
 ) -> anyhow::Result<EvaluatorOutcome> {
     let started_at = std::time::Instant::now();
     #[allow(clippy::disallowed_methods)]
-    let output = Command::new(script)
-        .arg(workspace_dir)
-        .env("QUORP_BENCHMARK_WORKSPACE", workspace_dir)
-        .env("QUORP_BENCHMARK_ATTEMPT_DIR", attempt_dir)
-        .current_dir(script.parent().unwrap_or_else(|| Path::new("/")))
+    let policy = default_policy();
+    let runtime = sandbox_runtime_for_path(workspace_dir)?;
+    let plan = build_command_plan(quorp_sandbox::SandboxCommandSpec {
+        program: script.as_os_str(),
+        args: &[workspace_dir.as_os_str()],
+        current_dir: script.parent().unwrap_or_else(|| Path::new("/")),
+        runtime: &runtime,
+        policy: &policy,
+        extra_environment: &[
+            ("QUORP_BENCHMARK_WORKSPACE", workspace_dir.as_os_str()),
+            ("QUORP_BENCHMARK_ATTEMPT_DIR", attempt_dir.as_os_str()),
+        ],
+        additional_mounts: &collector_mounts(script, workspace_dir, attempt_dir),
+        interactive: false,
+    })?;
+    let mut command = Command::new(&plan.program);
+    plan.apply_to_command(&mut command);
+    #[cfg(unix)]
+    util::set_pre_exec_to_start_new_session(&mut command);
+    #[allow(clippy::disallowed_methods)]
+    let output = command
         .output()
         .with_context(|| format!("failed to run collector evaluator {}", script.display()))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
@@ -113,6 +158,18 @@ pub fn run_collector_evaluator(
         stdout,
         stderr,
     })
+}
+
+fn collector_mounts(script: &Path, workspace_dir: &Path, attempt_dir: &Path) -> Vec<SandboxMount> {
+    let mut mounts = Vec::new();
+    let current_dir = script.parent().unwrap_or_else(|| Path::new("/"));
+    if current_dir != workspace_dir {
+        mounts.push(SandboxMount::bind(workspace_dir, workspace_dir, false));
+    }
+    if current_dir != attempt_dir && attempt_dir != workspace_dir {
+        mounts.push(SandboxMount::bind(attempt_dir, attempt_dir, true));
+    }
+    mounts
 }
 
 pub fn challenge_evaluation_target_dir(

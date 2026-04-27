@@ -8,11 +8,14 @@
 //! relationship between `native_backend` and this submodule is
 //! explicit.
 
+use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
+use serde::Serialize;
+use url::Url;
 
 use super::{COMMAND_OUTPUT_LIMIT, stash_file_for_rollback};
 use crate::quorp::tui::agent_context::{
@@ -20,7 +23,9 @@ use crate::quorp::tui::agent_context::{
 };
 use crate::quorp::tui::agent_protocol::{ActionOutcome, AgentAction, TomlEditOperation};
 use crate::quorp::tui::{ChatUiEvent, TuiEvent};
+use quorp_agent_core::ToolResultEnvelope;
 use quorp_agent_core::{ReadFileRange, stable_content_hash};
+use quorp_sandbox::{build_command_plan, default_policy, sandbox_runtime_for_path};
 use quorp_tools::apply::apply_patch_edit;
 use quorp_tools::edit::{
     apply_toml_operations, perform_range_replacement, set_executable_bit, write_full_file,
@@ -94,6 +99,78 @@ pub(crate) fn render_mcp_tool_result(
     }
 }
 
+fn render_mcp_serialized_result<T: Serialize>(
+    server_name: &str,
+    tool_name: &str,
+    result: &T,
+) -> anyhow::Result<String> {
+    let rendered = serde_json::to_string_pretty(result)?;
+    Ok(format!("MCP {server_name}/{tool_name}\n{rendered}"))
+}
+
+fn mcp_workspace_roots(project_root: &Path) -> Vec<crate::quorp::tui::mcp_client::Root> {
+    let workspace_root_uri = Url::from_directory_path(project_root)
+        .map(|url| url.to_string())
+        .unwrap_or_else(|_| format!("file://{}", project_root.display()));
+    vec![crate::quorp::tui::mcp_client::Root {
+        uri: workspace_root_uri,
+        name: project_root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .map(|name| name.to_string()),
+    }]
+}
+
+#[allow(clippy::too_many_arguments)]
+fn spawn_mcp_serialized_task<F, Fut, T>(
+    event_tx: std::sync::mpsc::SyncSender<TuiEvent>,
+    session_id: usize,
+    project_root: PathBuf,
+    server_name: String,
+    tool_name: String,
+    action: AgentAction,
+    responder: Option<futures::channel::oneshot::Sender<ActionOutcome>>,
+    run: F,
+) where
+    F: FnOnce(crate::quorp::tui::mcp_client::McpBroker) -> Fut + Send + 'static,
+    Fut: Future<Output = anyhow::Result<T>> + 'static,
+    T: Serialize + 'static,
+{
+    let server_name_for_runtime = server_name.clone();
+    let tool_name_for_runtime = tool_name.clone();
+    std::thread::spawn(move || {
+        let result = (|| -> anyhow::Result<String> {
+            let server_config =
+                resolve_mcp_server_config(project_root.as_path(), &server_name_for_runtime)?;
+            let runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| anyhow::anyhow!("Failed to start MCP runtime: {error}"))?;
+            runtime.block_on(async move {
+                let client = crate::quorp::tui::mcp_client::McpClient::spawn_transport(
+                    crate::quorp::tui::mcp_client::McpTransport::Stdio {
+                        command: server_config.command.clone(),
+                        args: server_config.args.clone(),
+                    },
+                    mcp_workspace_roots(project_root.as_path()),
+                )
+                .await?;
+                let broker = crate::quorp::tui::mcp_client::McpBroker::new(
+                    client,
+                    crate::quorp::tui::mcp_client::McpBrokerPolicy::default(),
+                );
+                let output = run(broker).await?;
+                render_mcp_serialized_result(
+                    &server_name_for_runtime,
+                    &tool_name_for_runtime,
+                    &output,
+                )
+            })
+        })();
+        emit_tool_result(&event_tx, session_id, action, result, &tool_name, responder);
+    });
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn spawn_mcp_call_task(
     event_tx: std::sync::mpsc::SyncSender<TuiEvent>,
@@ -105,29 +182,38 @@ pub(crate) fn spawn_mcp_call_task(
     arguments: serde_json::Value,
     responder: Option<futures::channel::oneshot::Sender<ActionOutcome>>,
 ) {
+    let action = AgentAction::McpCallTool {
+        server_name: server_name.clone(),
+        tool_name: tool_name.clone(),
+        arguments: arguments.clone(),
+    };
+    let server_name_for_runtime = server_name.clone();
+    let tool_name_for_runtime = tool_name.clone();
     std::thread::spawn(move || {
-        let action = AgentAction::McpCallTool {
-            server_name: server_name.clone(),
-            tool_name: tool_name.clone(),
-            arguments: arguments.clone(),
-        };
         let result = (|| -> anyhow::Result<String> {
-            let server_config = resolve_mcp_server_config(project_root.as_path(), &server_name)?;
+            let server_config =
+                resolve_mcp_server_config(project_root.as_path(), &server_name_for_runtime)?;
             let runtime = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .map_err(|error| anyhow::anyhow!("Failed to start MCP runtime: {error}"))?;
             runtime.block_on(async move {
-                let args = server_config
-                    .args
-                    .iter()
-                    .map(String::as_str)
-                    .collect::<Vec<_>>();
-                let client =
-                    crate::quorp::tui::mcp_client::McpClient::spawn(&server_config.command, &args)
-                        .await?;
-                let result = client.call_tool(&tool_name, Some(arguments)).await?;
-                render_mcp_tool_result(&server_name, &tool_name, &result)
+                let client = crate::quorp::tui::mcp_client::McpClient::spawn_transport(
+                    crate::quorp::tui::mcp_client::McpTransport::Stdio {
+                        command: server_config.command.clone(),
+                        args: server_config.args.clone(),
+                    },
+                    mcp_workspace_roots(project_root.as_path()),
+                )
+                .await?;
+                let broker = crate::quorp::tui::mcp_client::McpBroker::new(
+                    client,
+                    crate::quorp::tui::mcp_client::McpBrokerPolicy::default(),
+                );
+                let result = broker
+                    .call_tool(&tool_name_for_runtime, Some(arguments))
+                    .await?;
+                render_mcp_tool_result(&server_name_for_runtime, &tool_name_for_runtime, &result)
             })
         })();
         emit_tool_result(
@@ -139,6 +225,131 @@ pub(crate) fn spawn_mcp_call_task(
             responder,
         );
     });
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_mcp_list_tools_task(
+    event_tx: std::sync::mpsc::SyncSender<TuiEvent>,
+    session_id: usize,
+    project_root: PathBuf,
+    server_name: String,
+    responder: Option<futures::channel::oneshot::Sender<ActionOutcome>>,
+) {
+    let action = AgentAction::McpListTools {
+        server_name: server_name.clone(),
+    };
+    spawn_mcp_serialized_task(
+        event_tx,
+        session_id,
+        project_root,
+        server_name,
+        "mcp_list_tools".to_string(),
+        action,
+        responder,
+        |broker| async move { broker.list_tools().await },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_mcp_list_resources_task(
+    event_tx: std::sync::mpsc::SyncSender<TuiEvent>,
+    session_id: usize,
+    project_root: PathBuf,
+    server_name: String,
+    cursor: Option<String>,
+    responder: Option<futures::channel::oneshot::Sender<ActionOutcome>>,
+) {
+    let action = AgentAction::McpListResources {
+        server_name: server_name.clone(),
+        cursor: cursor.clone(),
+    };
+    spawn_mcp_serialized_task(
+        event_tx,
+        session_id,
+        project_root,
+        server_name,
+        "mcp_list_resources".to_string(),
+        action,
+        responder,
+        move |broker| async move { broker.list_resources(cursor).await },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_mcp_read_resource_task(
+    event_tx: std::sync::mpsc::SyncSender<TuiEvent>,
+    session_id: usize,
+    project_root: PathBuf,
+    server_name: String,
+    uri: String,
+    responder: Option<futures::channel::oneshot::Sender<ActionOutcome>>,
+) {
+    let action = AgentAction::McpReadResource {
+        server_name: server_name.clone(),
+        uri: uri.clone(),
+    };
+    spawn_mcp_serialized_task(
+        event_tx,
+        session_id,
+        project_root,
+        server_name,
+        "mcp_read_resource".to_string(),
+        action,
+        responder,
+        move |broker| async move { broker.read_resource(&uri).await },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_mcp_list_prompts_task(
+    event_tx: std::sync::mpsc::SyncSender<TuiEvent>,
+    session_id: usize,
+    project_root: PathBuf,
+    server_name: String,
+    cursor: Option<String>,
+    responder: Option<futures::channel::oneshot::Sender<ActionOutcome>>,
+) {
+    let action = AgentAction::McpListPrompts {
+        server_name: server_name.clone(),
+        cursor: cursor.clone(),
+    };
+    spawn_mcp_serialized_task(
+        event_tx,
+        session_id,
+        project_root,
+        server_name,
+        "mcp_list_prompts".to_string(),
+        action,
+        responder,
+        move |broker| async move { broker.list_prompts(cursor).await },
+    );
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn spawn_mcp_get_prompt_task(
+    event_tx: std::sync::mpsc::SyncSender<TuiEvent>,
+    session_id: usize,
+    project_root: PathBuf,
+    server_name: String,
+    name: String,
+    arguments: Option<serde_json::Value>,
+    responder: Option<futures::channel::oneshot::Sender<ActionOutcome>>,
+) {
+    let action = AgentAction::McpGetPrompt {
+        server_name: server_name.clone(),
+        name: name.clone(),
+        arguments: arguments.clone(),
+    };
+    spawn_mcp_serialized_task(
+        event_tx,
+        session_id,
+        project_root,
+        server_name,
+        "mcp_get_prompt".to_string(),
+        action,
+        responder,
+        move |broker| async move { broker.get_prompt(&name, arguments).await },
+    );
 }
 
 pub(crate) fn spawn_write_file_task(
@@ -513,7 +724,7 @@ pub(crate) fn emit_tool_result(
         serde_json::json!({
             "session_id": session_id,
             "action": action_text,
-            "status": if matches!(outcome, ActionOutcome::Success { .. }) { "success" } else { "failure" },
+            "tool_result": ToolResultEnvelope::from_outcome(outcome.action(), &outcome),
             "output_preview": truncate_diagnostic_text(outcome.output_text(), 240),
         }),
     );
@@ -606,11 +817,20 @@ pub(crate) fn run_command_capture(
         pixel_height: 0,
     })?;
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let mut builder = CommandBuilder::new(shell);
-    builder.arg("-lc");
-    builder.arg(command);
-    builder.cwd(cwd);
+    let policy = default_policy();
+    let runtime = sandbox_runtime_for_path(cwd)?;
+    let plan = build_command_plan(quorp_sandbox::SandboxCommandSpec {
+        program: std::ffi::OsStr::new(&policy.default_shell),
+        args: &[std::ffi::OsStr::new("-lc"), std::ffi::OsStr::new(command)],
+        current_dir: cwd,
+        runtime: &runtime,
+        policy: &policy,
+        extra_environment: &[],
+        additional_mounts: &[],
+        interactive: false,
+    })?;
+    let mut builder = CommandBuilder::new(plan.program.clone());
+    plan.apply_to_command(&mut builder);
 
     let mut child = pair.slave.spawn_command(builder)?;
     drop(pair.slave);
@@ -684,15 +904,26 @@ pub(crate) fn run_command_streaming(
         pixel_height: 0,
     })?;
 
-    let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/sh".to_string());
-    let mut builder = CommandBuilder::new(shell);
-    builder.arg("-lc");
-    builder.arg(command);
-    builder.cwd(cwd);
+    let policy = default_policy();
+    let runtime = sandbox_runtime_for_path(cwd)?;
+    let plan = build_command_plan(quorp_sandbox::SandboxCommandSpec {
+        program: std::ffi::OsStr::new(&policy.default_shell),
+        args: &[std::ffi::OsStr::new("-lc"), std::ffi::OsStr::new(command)],
+        current_dir: cwd,
+        runtime: &runtime,
+        policy: &policy,
+        extra_environment: &[],
+        additional_mounts: &[],
+        interactive: true,
+    })?;
+    let mut builder = CommandBuilder::new(plan.program.clone());
+    plan.apply_to_command(&mut builder);
 
     let mut child = pair.slave.spawn_command(builder)?;
     drop(pair.slave);
 
+    #[cfg(unix)]
+    let process_group_leader = pair.master.process_group_leader();
     let mut reader = pair.master.try_clone_reader()?;
     drop(pair.master);
 
@@ -727,6 +958,13 @@ pub(crate) fn run_command_streaming(
     let deadline = std::time::Instant::now() + timeout;
     let exit_code = loop {
         if std::time::Instant::now() >= deadline {
+            #[cfg(unix)]
+            if let Some(leader) = process_group_leader {
+                unsafe {
+                    libc::killpg(leader, libc::SIGKILL);
+                }
+            }
+            #[cfg(not(unix))]
             child.kill()?;
             break Some(-1);
         }
@@ -736,6 +974,9 @@ pub(crate) fn run_command_streaming(
         }
     };
 
+    if exit_code == Some(-1) {
+        let _ = child.wait();
+    }
     if reader_thread.join().is_err() {
         log::error!("tui: command reader thread panicked");
     }

@@ -14,9 +14,11 @@ anyhow.workspace = true
 clap = { workspace = true, features = ["derive"] }
 quorp_agent_core = { path = "../quorp_agent_core" }
 quorp_core.workspace = true
+quorp_sandbox.workspace = true
 schemars = { workspace = true, features = ["derive"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+util.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

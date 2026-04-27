@@ -5,7 +5,7 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use anyhow::Context as _;
-use quorp_core::{PermissionMode, ProviderProfile, SandboxMode};
+use quorp_core::{PermissionMode, ProviderProfile, SandboxMode, SandboxRuntimeSettings};
 use schemars::JsonSchema;
 use serde::{Deserialize, Serialize};
 
@@ -59,6 +59,7 @@ impl Settings {
 pub struct SandboxSettings {
     pub mode: SandboxMode,
     pub keep_last_sandbox: bool,
+    pub runtime: SandboxRuntimeSettings,
 }
 
 impl Default for SandboxSettings {
@@ -66,6 +67,7 @@ impl Default for SandboxSettings {
         Self {
             mode: SandboxMode::TmpCopy,
             keep_last_sandbox: false,
+            runtime: SandboxRuntimeSettings::default(),
         }
     }
 }
@@ -209,5 +211,37 @@ mod tests {
         assert_eq!(loaded.settings.permissions.mode, PermissionMode::FullAuto);
         assert_eq!(loaded.settings.allowed_commands, ["cargo check"]);
         assert_eq!(loaded.settings.hooks.after_tool, ["just fast"]);
+        assert_eq!(
+            loaded.settings.sandbox.runtime,
+            SandboxRuntimeSettings::default()
+        );
+    }
+
+    #[test]
+    fn sandbox_runtime_round_trips() {
+        let settings = Settings {
+            sandbox: SandboxSettings {
+                mode: SandboxMode::Host,
+                keep_last_sandbox: true,
+                runtime: SandboxRuntimeSettings {
+                    profile: quorp_core::SandboxRuntimeProfile::Container,
+                    container: quorp_core::ContainerRuntimeSettings {
+                        engine: quorp_core::ContainerEnginePreference::Docker,
+                        image: "example/container:latest".to_string(),
+                    },
+                },
+            },
+            ..Settings::default()
+        };
+        let json = serde_json::to_string(&settings).expect("serialize");
+        let round_tripped: Settings = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(
+            round_tripped.sandbox.runtime.profile,
+            quorp_core::SandboxRuntimeProfile::Container
+        );
+        assert_eq!(
+            round_tripped.sandbox.runtime.container.image,
+            "example/container:latest"
+        );
     }
 }

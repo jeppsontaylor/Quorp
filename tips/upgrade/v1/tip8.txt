@@ -1,0 +1,736 @@
+I reviewed Quorp as a static source/codebase review rather than a runtime test run, so I won’t pretend I validated behavior by executing its tests. My strongest read is this: **Quorp already has a serious agent-runtime skeleton, but it is still missing the “developer-environment brain” that makes modern coding agents feel reliable: LSP, rich repo semantics, general validation, web/docs/package intelligence, full MCP, durable memory, browser/process orchestration, GitHub/CI workflows, and eval-driven tool tuning.**
+
+Quorp’s own support audit says it already has a stream-first CLI, headless autonomous runs, typed agent tools, tmp-copy/git-worktree sandboxing, permission primitives, Patch VM writes, proof packets, memory/rule scaffolding, benchmark scoreboards, and proof receipts. It also states the runtime parses structured turns, dispatches typed tools, tracks validation state, checkpoints, retries, and stops. That is a good base. But the same audit says deeper runtime mediation and durable long-term memory remain future work, packaging/signing is not represented, Docker re-exec is not claimed, and `gitleaks` is currently non-fatal. ([GitHub][1])
+
+## The big diagnosis
+
+Quorp is not failing because it lacks “agent vibes.” It is missing the **tooling substrate** that lets one model behave like a senior engineer instead of a clever terminal macro.
+
+Right now, the tool surface is strong for Rust-ish benchmark repair: file reads, search, symbol search, structural search/preview, cargo diagnostics, repo capsules, edit previews, hashed range edits, TOML edits, patch application, validation, shell commands, and MCP tool calls. The protocol has Ask/Plan/Act modes and read-only versus mutating approval policy. ([GitHub][2]) The runtime also has conservative action gates: interactive mode refuses background mutation, autonomous host blocks MCP tool execution, shell commands are allowlisted, network can be disallowed, and benchmark mode restricts edits to observed/leased targets. ([GitHub][3])
+
+But compared with the current bar, Quorp looks **Rust-benchmark-agent-first**, not yet **general coding-agent-first**. OpenCode advertises LSP, multi-session work, shareable sessions, broad provider/editor surfaces, and GitHub issue/PR execution; its docs list built-in tools for bash, edit/write/read, grep/glob, LSP, patch, skills, todo, webfetch, websearch, and user questions. ([OpenCode][4]) Crush has LSP context, MCP over `stdio`, HTTP, and SSE, project/global config, hooks, permission controls, and Agent Skills discovery. ([GitHub][5]) Goose’s differentiator is a broad MCP ecosystem: desktop/CLI/API, 70+ MCP extensions, recipes, MCP Apps, subagents, prompt-injection detection, permission controls, sandbox mode, adversary review, roots, elicitation, and sampling. ([Goose Docs][6])
+
+So the path is clear: **keep Quorp’s proof/patch/sandbox/runtime discipline, but add the missing environment intelligence and extension ecosystem.**
+
+---
+
+## Highest-impact gaps to close first
+
+### 1. Add a real multi-language LSP layer
+
+This is the biggest missing capability.
+
+Quorp’s current protocol has `SearchSymbols`, `CargoDiagnostics`, `SuggestImplementationTargets`, and `SuggestEditAnchors`, but I do not see the kind of LSP operations that make coding agents dramatically better: go-to-definition, references, hover, diagnostics, code actions, rename, implementation, document/workspace symbols, incoming/outgoing call hierarchy, and apply-workspace-edit. OpenCode explicitly integrates LSP servers for diagnostics and has an experimental LSP tool supporting definitions, references, hover, document/workspace symbols, implementation, and call hierarchy. ([OpenCode][7])
+
+Build a `quorp_lsp` crate with tools like:
+
+```text
+lsp.start(language, root)
+lsp.diagnostics(path?)
+lsp.definition(path, line, column)
+lsp.references(path, line, column)
+lsp.hover(path, line, column)
+lsp.document_symbols(path)
+lsp.workspace_symbols(query)
+lsp.code_actions(path, range)
+lsp.rename(path, line, column, new_name)
+lsp.call_hierarchy(path, line, column)
+lsp.apply_workspace_edit(edit_id)
+```
+
+This reduces failure because the agent stops guessing where code lives. It can ask the language server. The Language Server Protocol exists specifically to expose reusable language features like autocomplete, diagnostics, jump-to-definition, and related code intelligence across tools. ([Visual Studio Code][8])
+
+**Make this P0.** Without LSP, Quorp will lose to OpenCode and Crush on real codebases.
+
+---
+
+### 2. Replace regex-ish symbol/search with a semantic repo graph
+
+Quorp has repo scanning and symbol search, but its file handling is still constrained: normal file reads truncate at 64 KiB and reject non-UTF-8; directory listings truncate at 512 entries. ([GitHub][9]) That is okay for safety, but bad for large monorepos unless Quorp has a much richer index.
+
+Add a persistent semantic workspace graph:
+
+```text
+repo.index.build
+repo.index.status
+repo.symbol.find
+repo.callers
+repo.callees
+repo.import_graph
+repo.impact_analysis
+repo.find_implementations
+repo.find_tests_for_symbol
+repo.find_generated_regions
+repo.chunk_read(path, anchor | symbol | byte_range | line_range)
+```
+
+Use **Tree-sitter** for fast, incremental syntax trees across many languages; Tree-sitter is designed to build concrete syntax trees and update them efficiently as files change. ([GitHub][10]) A recent Codebase-Memory paper reports a Tree-sitter MCP knowledge graph across 66 languages with call-graph traversal and impact analysis, achieving much lower token/tool usage than file-exploration approaches on many tasks. ([arXiv][11])
+
+This is where Quorp can leap beyond peers: combine LSP precision with a cached Tree-sitter graph and Quorp’s proof receipts. Make every patch hunk trace back to graph evidence.
+
+---
+
+### 3. Generalize validation beyond Cargo/Rust
+
+Quorp’s verification baseline is Rust-centered: `cargo check --workspace`, `cargo test --workspace --lib`, clippy, benchmark gates, and optional deep/security gates. ([GitHub][1]) That is fine for Quorp itself, but a “best open source coding agent” needs validation intelligence for Python, TypeScript, Go, Java, C/C++, .NET, Ruby, PHP, mobile, frontend, and monorepos.
+
+Add a `quorp_verify` runtime planner that discovers validation from:
+
+```text
+package.json / pnpm-lock.yaml / bun.lock / yarn.lock
+pyproject.toml / poetry.lock / uv.lock / requirements.txt
+Cargo.toml / Cargo.lock
+go.mod
+pom.xml / build.gradle
+Makefile / Justfile / Taskfile
+Bazel / Pants / Buck
+.github/workflows/*
+.gitlab-ci.yml
+docker-compose.yml
+devcontainer.json
+```
+
+New tools:
+
+```text
+verify.discover
+verify.baseline
+verify.targeted(files_changed)
+verify.run_test(test_id)
+verify.run_ci_lane(lane_id)
+verify.parse_failure(output)
+verify.suggest_minimal_repair_scope
+verify.coverage_diff
+verify.flake_retry
+```
+
+The controller should run a **baseline before editing** when possible, then targeted checks after each edit, then full checks before final. Quorp already queues post-edit validation and has validation repair logic; the upgrade is to make that language- and project-agnostic, not Cargo-specific.
+
+---
+
+### 4. Add web/docs/package intelligence
+
+OpenCode has `webfetch` and `websearch`, and its docs explicitly position them for docs/current information lookup. ([OpenCode][12]) Goose’s extension catalog includes web/search/browser/database/API-style capabilities through MCP. ([Goose Docs][6])
+
+Quorp needs deterministic tools for:
+
+```text
+web.search
+web.fetch
+docs.search_official
+docs.fetch_api_reference
+package.lookup
+package.resolve_version
+package.diff_lockfile
+security.lookup_cve
+license.check
+```
+
+For coding agents, this prevents hallucinated APIs. The tool should prefer official docs and package registries:
+
+```text
+crates.io
+docs.rs
+npm
+PyPI
+Maven Central
+NuGet
+Go package docs
+MDN
+TypeScript docs
+Rust std docs
+React/Vue/Svelte/Next docs
+```
+
+The important design: **do not dump web pages into context.** Build “doc packs” that return compact signatures, examples, version constraints, and source URLs. This aligns with current context-engineering guidance: context is finite and should be curated into the smallest high-signal token set that drives desired behavior. ([Anthropic][13])
+
+---
+
+### 5. Complete MCP: transports, resources, prompts, roots, sampling, elicitation
+
+Quorp has MCP calls, and it extracted a `quorp_mcp` crate, but its current support appears narrower than Goose/Crush. Quorp’s own audit says MCP calls exist through the native backend path. ([GitHub][1]) Crush supports MCP over `stdio`, HTTP, and SSE. ([GitHub][5]) Goose has deeper MCP support, including roots, elicitation, sampling, and many documented extensions. ([Goose Docs][6])
+
+Implement the latest MCP client surface:
+
+```text
+stdio transport
+streamable HTTP transport
+SSE compatibility
+tools/list + tools/call
+resources/list + resources/read
+prompts/list + prompts/get
+roots/list + roots changed notifications
+sampling/createMessage, mediated through Quorp’s single model
+elicitation, rendered as structured user forms
+progress notifications
+cancellation
+dynamic tool-list updates
+OAuth / auth headers / env expansion
+per-server allowlist, denylist, network policy, and trust tier
+```
+
+MCP roots are especially important because they let the client expose the active workspace boundary to servers, reducing ambiguity. ([Goose Docs][14]) Elicitation lets an extension ask the user for structured input instead of guessing. ([Block][15]) Sampling lets MCP servers request model assistance through the host, which Quorp can route through the single allowed model. ([Goose Docs][16])
+
+---
+
+### 6. Add Agent Skills and recipes
+
+Crush supports the Agent Skills standard via `SKILL.md` packages discovered globally and inside projects. ([GitHub][5]) OpenCode also exposes Agent Skills in its tool/config surface. ([OpenCode][12]) Goose has recipes, a skills marketplace, prompt library, and recipe cookbook. ([Goose Docs][6])
+
+Quorp should support:
+
+```text
+.quorp/skills/*/SKILL.md
+.agents/skills/*/SKILL.md
+.claude/skills/*/SKILL.md
+.cursor/skills/*/SKILL.md
+global skills dirs
+skill manifest schema
+skill activation conditions
+skill tools/resources required
+skill safety policy
+skill evals
+```
+
+For a single-model system, skills are the best substitute for model routing. You do not need different models; you need **procedural expertise packs** for “debug a failing Jest test,” “migrate a Cargo dependency,” “fix a Rust lifetime issue,” “review auth code,” “use Playwright,” “update a Terraform module,” and so on.
+
+---
+
+### 7. Add GitHub/PR/CI workflow support
+
+OpenCode can be invoked in GitHub issues and PRs with `/opencode` or `/oc`; it can triage issues, fix/implement features in a new branch, and submit PRs in GitHub Actions runners. ([OpenCode][17]) Quorp should match this with:
+
+```text
+quorp github install
+quorp github run issue
+quorp github run pr-comment
+quorp github review
+quorp github triage
+```
+
+Tools:
+
+```text
+github.get_issue
+github.get_pr
+github.get_diff
+github.get_review_comments
+github.reply_comment
+github.create_branch
+github.commit
+github.open_pr
+github.update_pr
+github.read_ci_logs
+github.rerun_failed_job
+```
+
+This is not just product polish. It makes the agent better because real tasks arrive with issue context, PR diff context, failing CI logs, and review comments.
+
+---
+
+### 8. Add browser, UI, and app-running tools
+
+Modern coding tasks often require running the app, checking a browser, reading console logs, inspecting network calls, or verifying screenshots. Goose has a Computer Controller extension for web interactions and everyday automation, and its catalog includes Playwright/Selenium-style extensions. ([Goose Docs][18])
+
+Quorp needs first-class tools:
+
+```text
+process.start
+process.stop
+process.logs
+process.wait_for_port
+http.request
+browser.open
+browser.snapshot_accessibility_tree
+browser.click
+browser.type
+browser.screenshot
+browser.console_logs
+browser.network_log
+browser.visual_diff
+playwright.run_test
+docker.compose_up
+docker.compose_down
+db.query_local
+db.migrate
+```
+
+This is mandatory for frontend and full-stack work. The agent must be able to prove “the page works,” not just “the TypeScript compiles.”
+
+---
+
+### 9. Harden sandboxing into a real dev environment system
+
+Quorp already has host/tmp-copy/git-worktree sandboxing, permission primitives, and rejects direct-host `--yolo`. ([GitHub][1]) That is a strength. But to compete with the best agents, it needs repeatable environment isolation:
+
+```text
+Dev Containers
+Docker / Podman
+Nix flakes
+direnv
+VM/container snapshots
+network egress policy
+secret redaction
+filesystem read/write scopes
+resource limits
+process tree cleanup
+per-tool timeout budgets
+```
+
+The current support audit explicitly does not claim Docker re-exec. ([GitHub][1]) Add it. Then make dangerous modes only operate inside a disposable environment.
+
+Also make security gates stricter: the audit says `gitleaks` currently runs but findings are non-fatal. ([GitHub][1]) For a serious coding agent, secrets scanning should be fatal in release/PR mode, with an explicit override lane for local experimentation.
+
+---
+
+### 10. Make native structured tool calling the default
+
+Quorp currently parses structured turns and has typed actions. That is good. But for reliability, the single model should use provider-native structured tool calls whenever available, with text/JSON parsing only as fallback.
+
+The SWE-bench Verified page notes that newer mini-SWE-agent releases use tool calling to invoke actions, whereas older releases parsed actions from output strings. ([SWE-bench][19]) The lesson is simple: parsing free text is a failure source. Make tool schemas the primary interface.
+
+Add:
+
+```text
+strict JSON schema validation
+tool-call streaming repair
+tool argument canonicalization
+structured tool errors
+tool result schemas
+machine-readable recovery hints
+tool-call transcript linter
+```
+
+Every tool result should include:
+
+```json
+{
+  "status": "success | failure | partial",
+  "summary": "...",
+  "artifacts": [],
+  "next_suggested_tools": [],
+  "evidence": [],
+  "risk": "low | medium | high"
+}
+```
+
+---
+
+## Capability matrix: where Quorp should catch up
+
+| Capability          | Quorp today                                                           | Needed to match/beat OpenCode, Crush, Goose                                |
+| ------------------- | --------------------------------------------------------------------- | -------------------------------------------------------------------------- |
+| Agent loop          | Strong: typed actions, modes, validation state, retry, proof receipts | Keep and generalize beyond benchmark/Rust workflows                        |
+| LSP                 | Not a first-class visible tool layer                                  | Full multi-language LSP daemon and tools                                   |
+| Repo semantics      | Search/symbol/capsule scaffolding                                     | Persistent Tree-sitter + LSP graph, impact analysis, test mapping          |
+| Validation          | Cargo/just-centric baseline                                           | Language-agnostic verifier discovered from manifests and CI                |
+| MCP                 | Present but narrow                                                    | Full transports + tools/resources/prompts/roots/sampling/elicitation       |
+| Web/docs            | Missing as first-class coding tools                                   | Official-doc fetch, package registry, version/API resolver                 |
+| Skills              | Rule/memory scaffolding, not standard skills UX                       | Agent Skills + recipes + project/global discovery                          |
+| Browser/app testing | Missing                                                               | Playwright/browser/process/log/http/db tools                               |
+| GitHub/CI           | Not competitive yet                                                   | GitHub Action/app, PR review, CI log repair loop                           |
+| Memory              | Negative retry memory/scaffolding                                     | Durable project memory with evidence, TTL, and retrieval policies          |
+| Safety              | Strong start: sandbox/permissions/write guards                        | Devcontainer/Docker/Nix, fatal secret scanning, MCP trust broker           |
+| Eval                | Benchmark scoreboards exist                                           | SWE-bench, Multi-SWE, Terminal-Bench, tool-use evals, transcript analytics |
+
+---
+
+## The most powerful architecture upgrade: “Context Compiler + Semantic Kernel”
+
+Quorp has a pending smart-tooling vision in its own handoff notes: context compiler, memory, rule forge, patch VM, verification ladder, and runtime events. The handoff explicitly says several smart-tooling crates compile but are not yet called from the runtime, and Phase 10 is to wire context, memory, rule forge, verify, patch VM, and new tool actions into the agent loop. ([GitHub][20])
+
+Make that the heart of Quorp.
+
+The model should not directly “figure out the repo.” It should ask a **Semantic Kernel**:
+
+```text
+Context Compiler
+  -> builds the smallest useful task context
+
+Repo Graph
+  -> knows files, symbols, imports, call relationships, tests
+
+Memory Store
+  -> remembers project conventions, past failures, validation commands
+
+Patch VM
+  -> applies edits transactionally with syntax/LSP checks
+
+Verification Ladder
+  -> picks the cheapest useful validation first
+
+Rule Forge
+  -> mines durable project rules from repeated failures
+
+Proof Lens
+  -> forces every edit to cite evidence and validation
+```
+
+This would make Quorp feel more reliable than agents that just keep grepping and reading files.
+
+---
+
+## Concrete tools I would add
+
+### Code intelligence tools
+
+```text
+lsp_definition
+lsp_references
+lsp_hover
+lsp_diagnostics
+lsp_code_actions
+lsp_rename
+lsp_call_hierarchy
+repo_symbol_graph
+repo_impact_analysis
+repo_tests_for_change
+repo_read_large_file_chunk
+repo_read_symbol_body
+repo_find_generated_regions
+```
+
+### Editing tools
+
+```text
+ast_replace_node
+ast_insert_import
+ast_rename_symbol
+patch_transaction_begin
+patch_transaction_apply
+patch_transaction_preview
+patch_transaction_rollback
+patch_transaction_commit
+apply_lsp_workspace_edit
+format_changed_files
+```
+
+### Validation tools
+
+```text
+verify_discover
+verify_baseline
+verify_targeted
+verify_full
+verify_parse_failure
+verify_explain_failure
+verify_select_next_test
+verify_coverage_diff
+verify_flake_retry
+```
+
+### Runtime/application tools
+
+```text
+process_start
+process_logs
+process_stop
+wait_for_port
+http_request
+docker_compose_up
+docker_compose_down
+devcontainer_exec
+db_query
+db_migrate
+```
+
+### Browser/UI tools
+
+```text
+browser_open
+browser_snapshot
+browser_click
+browser_type
+browser_screenshot
+browser_console_logs
+browser_network_logs
+playwright_run
+visual_diff
+```
+
+### External knowledge tools
+
+```text
+web_search
+web_fetch
+docs_search_official
+docs_fetch_api_signature
+package_lookup
+package_resolve_version
+package_security_advisories
+dependency_lockfile_diff
+```
+
+### Collaboration tools
+
+```text
+git_status
+git_diff
+git_blame
+git_show
+git_branch
+git_commit
+github_issue_context
+github_pr_context
+github_review_comments
+github_create_pr
+github_reply
+ci_read_logs
+ci_rerun
+```
+
+### Memory/rules/tools
+
+```text
+memory_recall
+memory_write
+memory_forget
+rule_propose
+rule_accept
+skill_list
+skill_load
+recipe_run
+todo_update
+ask_user_structured
+```
+
+---
+
+## Novel ideas that could make Quorp unusually strong
+
+### 1. Evidence-locked patches
+
+Require every edit hunk to cite at least one evidence source:
+
+```text
+diagnostic
+test failure
+LSP reference
+file slice
+user requirement
+doc/package source
+```
+
+The Patch VM rejects edits with no evidence. This would prevent “creative” edits in unrelated files.
+
+### 2. Same-model patch tournament
+
+The user wants one model only. That still allows multiple isolated attempts from the same model.
+
+Flow:
+
+```text
+Create 3-5 sandboxes
+Generate candidate patches with same model + different controller hints
+Run targeted validation in each
+Pick the best patch deterministically
+Ask same model to reconcile only if multiple pass
+```
+
+This is not multi-model. It is **single-model multi-rollout with deterministic selection**, and it can drastically improve hard bug-fix success.
+
+### 3. Ghost tests
+
+When the issue has no test, Quorp creates temporary tests in a sandbox only. They are not committed unless the user asks. The goal is to force the patch to satisfy a concrete reproduction without poisoning the repo.
+
+### 4. Semantic edit leases
+
+Quorp already has benchmark target-lease ideas. Generalize them. Once the agent identifies likely files/symbols, issue a lease:
+
+```text
+Allowed edit set: src/auth/session.ts, src/auth/types.ts
+Allowed read expansion: callers/callees/tests only
+Widening requires evidence
+```
+
+This prevents broad, flailing edits.
+
+### 5. Taint-aware context compiler
+
+Mark web pages, issue comments, README text, logs, and MCP output as untrusted. The model can use them as data, but cannot obey instructions inside them unless they came from the user/system/project policy.
+
+This is especially important once Quorp has web/MCP/GitHub tools.
+
+### 6. Tool auto-tuner
+
+Anthropic recommends programmatic tool evaluations, collecting metrics such as task runtime, tool calls, token use, and tool errors; they also describe using transcripts to identify confusing schemas and improve tool descriptions. ([Anthropic][21]) Build this into Quorp:
+
+```text
+quorp tools eval
+quorp tools lint-descriptions
+quorp tools find-confusing-tools
+quorp tools suggest-schema-fixes
+```
+
+This is a rare but huge advantage: Quorp can improve its tool interface from its own failures.
+
+### 7. Compiler-as-oracle repair
+
+For typed languages, let compiler diagnostics drive deterministic repair candidates before asking the model again:
+
+```text
+missing import -> ask LSP/code action
+unused import -> auto-remove
+wrong method name -> references/symbol lookup
+trait bound mismatch -> show impl candidates
+TypeScript property mismatch -> interface definition + call sites
+```
+
+The model should not waste tokens on repairs the tools can infer.
+
+### 8. Project “black box recorder”
+
+Quorp already emits events/proof receipts. Extend that into a replayable flight recorder:
+
+```text
+all prompts
+tool calls
+file snapshots
+validation outputs
+diffs
+policy decisions
+memory writes
+context packs
+```
+
+Then add:
+
+```text
+quorp replay run-id
+quorp minimize-failure run-id
+quorp compare-runs run-a run-b
+```
+
+This will make Quorp easier to debug than most coding agents.
+
+### 9. Dependency twin
+
+Build a small dependency-state simulator:
+
+```text
+current lockfile
+available versions
+constraints
+security advisories
+license policy
+breaking-change notes
+```
+
+Before upgrading dependencies, Quorp predicts the minimal safe version set and then tests it in a sandbox.
+
+### 10. Proof-carrying final answer
+
+Every final answer should include:
+
+```text
+Files changed
+Why changed
+Evidence used
+Validation run
+Validation not run and why
+Residual risks
+Rollback token / commit hash
+```
+
+Quorp already has proof packets/receipts; make that a user-visible superpower.
+
+---
+
+## Evaluation upgrades
+
+Quorp has benchmark gates and scoreboards, but it should not optimize only for its own Rust benchmark. SWE-bench Verified is a human-filtered 500-instance benchmark for coding agents, and its leaderboard includes everything from simple agent loops to RAG and multi-rollout systems. ([SWE-bench][19]) Terminal-Bench 2.0 evaluates terminal agents on 89 tasks across software engineering, ML, security, data science, and system work. ([Terminal-Bench][22]) Multi-SWE-bench covers real-world issue resolution across Java, TypeScript, JavaScript, Go, Rust, C, and C++ with 1,632 instances. ([GitHub][23]) SWE-bench Multimodal adds 517 issues containing screenshots, mockups, diagrams, or visual error context. ([SWE-bench][24])
+
+Run Quorp against:
+
+```text
+SWE-bench Verified
+SWE-bench Multilingual / Multi-SWE-bench
+Terminal-Bench 2.0
+SWE-bench Multimodal, once browser/image tools exist
+Quorp’s own Rust challenge suite
+Custom tool-use evals for every built-in tool
+```
+
+Track not only pass rate:
+
+```text
+tool-call count
+invalid tool-call rate
+redundant read/search rate
+edit rollback rate
+validation latency
+time to first correct file
+context tokens per solved task
+broad-write frequency
+secret/network policy violations
+MCP tool failures
+```
+
+That directly supports better tools and better controller policy.
+
+---
+
+## Recommended build order
+
+**P0: Make Quorp reliably understand code.**
+Add LSP, semantic repo graph, large-file chunk/anchor reads, native tool calls by default, and generalized diagnostics.
+
+**P1: Make Quorp reliably prove changes.**
+Generalize validation discovery, targeted tests, failure parsers, Patch VM transactions, rollback, and proof-carrying final answers.
+
+**P2: Make Quorp useful on real projects.**
+Add web/docs/package tools, process/app/browser tools, GitHub/CI integration, and project initialization that creates `AGENTS.md` plus `.quorp/` contracts.
+
+**P3: Make Quorp extensible.**
+Complete MCP, add skills/recipes, add extension trust policies, add tool eval/linting.
+
+**P4: Make Quorp hard to break.**
+Devcontainer/Docker/Nix sandboxing, fatal secret scanning in release/PR mode, prompt-injection/taint tracking, and replayable flight recorder.
+
+---
+
+## My bottom-line recommendation
+
+Do **not** spend the next big push on more prompt tuning. Quorp’s advantage should be: **a Rust-native, proof-carrying, sandboxed, semantic coding-agent kernel.**
+
+The winning formula is:
+
+```text
+Single strong model
++ strict typed tools
++ LSP/code graph
++ deterministic validation ladder
++ transactional Patch VM
++ durable project memory
++ full MCP/skills ecosystem
++ browser/GitHub/CI/process tools
++ replayable proof receipts
+```
+
+That would let Quorp match the visible strengths of OpenCode, Crush, and Goose while going beyond them in one important way: **every action can be policy-checked, evidence-linked, validated, replayed, and rolled back.**
+
+[1]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/AGENT_SUPPORT.md "raw.githubusercontent.com"
+[2]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_agent_core/src/agent_protocol.rs "raw.githubusercontent.com"
+[3]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_agent_core/src/runtime/state_allow.rs "raw.githubusercontent.com"
+[4]: https://opencode.ai/ "OpenCode | The open source AI coding agent"
+[5]: https://github.com/charmbracelet/crush "GitHub - charmbracelet/crush: Glamourous agentic coding for all  · GitHub"
+[6]: https://goose-docs.ai/ "goose | Your open source AI agent"
+[7]: https://opencode.ai/docs/lsp/ "LSP Servers | OpenCode"
+[8]: https://code.visualstudio.com/api/language-extensions/language-server-extension-guide?utm_source=chatgpt.com "Language Server Extension Guide - Visual Studio Code"
+[9]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_tools/src/edit.rs "raw.githubusercontent.com"
+[10]: https://github.com/tree-sitter/tree-sitter?utm_source=chatgpt.com "Tree-sitter - GitHub"
+[11]: https://arxiv.org/abs/2603.27277?utm_source=chatgpt.com "Codebase-Memory: Tree-Sitter-Based Knowledge Graphs for LLM Code Exploration via MCP"
+[12]: https://opencode.ai/docs/tools/ "Tools | OpenCode"
+[13]: https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents "Effective context engineering for AI agents \ Anthropic"
+[14]: https://goose-docs.ai/docs/guides/mcp-roots/ "MCP Roots | goose | Your open source AI agent"
+[15]: https://block.github.io/goose/docs/guides/mcp-elicitation/ "MCP Elicitation | goose"
+[16]: https://goose-docs.ai/docs/guides/mcp-sampling "MCP Sampling Extensions | goose | Your open source AI agent"
+[17]: https://opencode.ai/docs/github/ "GitHub | OpenCode"
+[18]: https://goose-docs.ai/docs/mcp/computer-controller-mcp/ "Computer Controller Extension | goose | Your open source AI agent"
+[19]: https://www.swebench.com/verified.html "SWE-bench Verified"
+[20]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/HANDOFF.md "raw.githubusercontent.com"
+[21]: https://www.anthropic.com/engineering/writing-tools-for-agents "Writing effective tools for AI agents—using AI agents \ Anthropic"
+[22]: https://www.tbench.ai/ "Terminal-Bench"
+[23]: https://github.com/multi-swe-bench/multi-swe-bench "GitHub - multi-swe-bench/multi-swe-bench: Multi-SWE-bench: A Multilingual Benchmark for Issue Resolving · GitHub"
+[24]: https://www.swebench.com/multimodal "SWE-bench Multimodal"
+

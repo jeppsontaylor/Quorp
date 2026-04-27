@@ -401,6 +401,56 @@ fn parse_line_oriented_action(line: &str) -> Option<AgentAction> {
             command: parse_string_assignment(&rest, "command"),
             include_clippy: parse_bool_assignment(&rest, "include_clippy").unwrap_or(false),
         }),
+        "lspdiagnostics" | "lsp_diagnostics" => Some(AgentAction::LspDiagnostics {
+            path: parse_string_assignment(&rest, "path")
+                .or_else(|| first_non_assignment_token(&rest))?,
+        }),
+        "lspdefinition" | "lsp_definition" => Some(AgentAction::LspDefinition {
+            path: parse_string_assignment(&rest, "path")
+                .or_else(|| first_non_assignment_token(&rest))?,
+            symbol: parse_string_assignment(&rest, "symbol")
+                .or_else(|| first_non_assignment_token(&rest))?,
+            line: parse_usize_assignment(&rest, "line"),
+            character: parse_usize_assignment(&rest, "character"),
+        }),
+        "lspreferences" | "lsp_references" => Some(AgentAction::LspReferences {
+            path: parse_string_assignment(&rest, "path"),
+            symbol: parse_string_assignment(&rest, "symbol")
+                .or_else(|| first_non_assignment_token(&rest))?,
+            line: parse_usize_assignment(&rest, "line"),
+            character: parse_usize_assignment(&rest, "character"),
+            limit: parse_usize_assignment(&rest, "limit").unwrap_or(32),
+        }),
+        "lsphover" | "lsp_hover" => Some(AgentAction::LspHover {
+            path: parse_string_assignment(&rest, "path")
+                .or_else(|| first_non_assignment_token(&rest))?,
+            line: parse_usize_assignment(&rest, "line")?,
+            character: parse_usize_assignment(&rest, "character")?,
+        }),
+        "lspworkspacesymbols" | "lsp_workspace_symbols" => Some(AgentAction::LspWorkspaceSymbols {
+            query: parse_string_assignment(&rest, "query")
+                .or_else(|| first_non_assignment_token(&rest))?,
+            limit: parse_usize_assignment(&rest, "limit").unwrap_or(32),
+        }),
+        "lspdocumentsymbols" | "lsp_document_symbols" => Some(AgentAction::LspDocumentSymbols {
+            path: parse_string_assignment(&rest, "path")
+                .or_else(|| first_non_assignment_token(&rest))?,
+        }),
+        "lspcodeactions" | "lsp_code_actions" => Some(AgentAction::LspCodeActions {
+            path: parse_string_assignment(&rest, "path")
+                .or_else(|| first_non_assignment_token(&rest))?,
+            line: parse_usize_assignment(&rest, "line")?,
+            character: parse_usize_assignment(&rest, "character")?,
+        }),
+        "lsprenamepreview" | "lsp_rename_preview" => Some(AgentAction::LspRenamePreview {
+            path: parse_string_assignment(&rest, "path")
+                .or_else(|| first_non_assignment_token(&rest))?,
+            old_name: parse_string_assignment(&rest, "old_name")
+                .or_else(|| parse_string_assignment(&rest, "old"))?,
+            new_name: parse_string_assignment(&rest, "new_name")
+                .or_else(|| parse_string_assignment(&rest, "new"))?,
+            limit: parse_usize_assignment(&rest, "limit").unwrap_or(64),
+        }),
         "explainvalidationfailure" | "explain_validation_failure" => {
             if rest.trim().is_empty() {
                 return None;
@@ -1376,6 +1426,45 @@ fn parse_flat_action(value: &serde_json::Value) -> Option<AgentAction> {
         "cargodiagnostics" | "cargo_diagnostics" => Some(AgentAction::CargoDiagnostics {
             command: string_field(object, &["command", "cmd"]),
             include_clippy: bool_field(object, &["include_clippy", "clippy"]).unwrap_or(false),
+        }),
+        "lspdiagnostics" | "lsp_diagnostics" => Some(AgentAction::LspDiagnostics {
+            path: string_field(object, &["path", "file"])?,
+        }),
+        "lspdefinition" | "lsp_definition" => Some(AgentAction::LspDefinition {
+            path: string_field(object, &["path", "file"])?,
+            symbol: string_field(object, &["symbol", "name"])?,
+            line: usize_field(object, &["line"]),
+            character: usize_field(object, &["character", "column"]),
+        }),
+        "lspreferences" | "lsp_references" => Some(AgentAction::LspReferences {
+            path: string_field(object, &["path", "file"]),
+            symbol: string_field(object, &["symbol", "name"])?,
+            line: usize_field(object, &["line"]),
+            character: usize_field(object, &["character", "column"]),
+            limit: usize_field(object, &["limit"]).unwrap_or(32),
+        }),
+        "lsphover" | "lsp_hover" => Some(AgentAction::LspHover {
+            path: string_field(object, &["path", "file"])?,
+            line: usize_field(object, &["line"])?,
+            character: usize_field(object, &["character", "column"])?,
+        }),
+        "lspworkspacesymbols" | "lsp_workspace_symbols" => Some(AgentAction::LspWorkspaceSymbols {
+            query: string_field(object, &["query", "q"])?,
+            limit: usize_field(object, &["limit"]).unwrap_or(32),
+        }),
+        "lspdocumentsymbols" | "lsp_document_symbols" => Some(AgentAction::LspDocumentSymbols {
+            path: string_field(object, &["path", "file"])?,
+        }),
+        "lspcodeactions" | "lsp_code_actions" => Some(AgentAction::LspCodeActions {
+            path: string_field(object, &["path", "file"])?,
+            line: usize_field(object, &["line"])?,
+            character: usize_field(object, &["character", "column"])?,
+        }),
+        "lsprenamepreview" | "lsp_rename_preview" => Some(AgentAction::LspRenamePreview {
+            path: string_field(object, &["path", "file"])?,
+            old_name: string_field(object, &["old_name", "old"])?,
+            new_name: string_field(object, &["new_name", "new"])?,
+            limit: usize_field(object, &["limit"]).unwrap_or(64),
         }),
         "getrepocapsule" | "get_repo_capsule" => Some(AgentAction::GetRepoCapsule {
             query: string_field(object, &["query", "q"]),

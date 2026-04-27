@@ -121,6 +121,29 @@ pub struct MemoryHit {
     pub score: f32,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceRecord {
+    pub tier: Tier,
+    pub subject: String,
+    pub predicate: String,
+    pub object: String,
+    pub snippet: String,
+    pub search_text: String,
+    pub evidence_hash: String,
+    pub owner: Option<String>,
+    pub run_id: Option<VerifyRunId>,
+    pub updated_unix: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct EvidenceQuery {
+    pub query_text: Option<String>,
+    pub tier: Option<Tier>,
+    pub owner: Option<String>,
+    pub evidence_hash: Option<String>,
+    pub limit: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

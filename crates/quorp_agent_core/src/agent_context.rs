@@ -2,9 +2,11 @@ use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
+use url::Url;
 
 use crate::agent_protocol::{ActionApprovalPolicy, AgentAction, AgentMode, ValidationPlan};
 use crate::mention_links::{collect_file_mention_uris, file_uri_to_project_path};
+use quorp_core::skills::{SkillCatalog, discover_skill_catalog};
 
 const REPO_INSTRUCTION_FILES: &[&str] = &[".rules", "AGENTS.md", "QWEN.md", "CLAUDE.md"];
 
@@ -57,6 +59,8 @@ pub struct PolicyAllow {
     pub set_executable: bool,
     pub run_validation: bool,
     pub mcp_call_tool: bool,
+    pub process_control: bool,
+    pub browser_control: bool,
     pub network: bool,
     pub run_command: Vec<String>,
 }
@@ -75,6 +79,8 @@ impl Default for PolicyAllow {
             set_executable: true,
             run_validation: true,
             mcp_call_tool: false,
+            process_control: false,
+            browser_control: false,
             network: false,
             run_command: default_allowed_command_prefixes(),
         }
@@ -143,6 +149,7 @@ pub struct AgentToolsSettings {
     pub cargo_expand: ExternalToolSettings,
     pub rust_analyzer: ExternalToolSettings,
     pub serena: ExternalToolSettings,
+    pub browser: BrowserToolSettings,
 }
 
 impl Default for AgentToolsSettings {
@@ -197,6 +204,14 @@ impl Default for AgentToolsSettings {
                 max_runtime_seconds: Some(30),
                 max_output_bytes: Some(32 * 1024),
             },
+            browser: BrowserToolSettings {
+                enabled: false,
+                command: "node".to_string(),
+                args: vec!["-e".to_string()],
+                max_runtime_seconds: Some(120),
+                max_output_bytes: Some(128 * 1024),
+                url_policy: BrowserUrlPolicy::default(),
+            },
         }
     }
 }
@@ -207,6 +222,61 @@ pub struct ExternalToolSettings {
     pub command: String,
     pub max_runtime_seconds: Option<u64>,
     pub max_output_bytes: Option<usize>,
+}
+
+#[derive(Debug, Clone, Eq, PartialEq)]
+pub struct BrowserToolSettings {
+    pub enabled: bool,
+    pub command: String,
+    pub args: Vec<String>,
+    pub max_runtime_seconds: Option<u64>,
+    pub max_output_bytes: Option<usize>,
+    pub url_policy: BrowserUrlPolicy,
+}
+
+#[derive(Debug, Clone, Copy, Default, Eq, PartialEq)]
+pub enum BrowserUrlPolicy {
+    #[default]
+    LocalOnly,
+    AllowRemote,
+}
+
+impl BrowserUrlPolicy {
+    pub fn allows_url(self, url: &str) -> anyhow::Result<()> {
+        let parsed_url = Url::parse(url)
+            .map_err(|error| anyhow::anyhow!("invalid browser URL `{url}`: {error}"))?;
+        match self {
+            Self::AllowRemote => Ok(()),
+            Self::LocalOnly => {
+                let scheme = parsed_url.scheme();
+                if matches!(scheme, "file" | "data" | "about") {
+                    return Ok(());
+                }
+                if !matches!(scheme, "http" | "https") {
+                    return Err(anyhow::anyhow!(
+                        "browser URL scheme `{scheme}` is not allowed by the local-only policy"
+                    ));
+                }
+                if is_local_browser_host(parsed_url.host_str()) {
+                    Ok(())
+                } else {
+                    Err(anyhow::anyhow!(
+                        "browser URL `{url}` is not allowed by the local-only policy"
+                    ))
+                }
+            }
+        }
+    }
+}
+
+fn is_local_browser_host(host: Option<&str>) -> bool {
+    let Some(host) = host else {
+        return false;
+    };
+    host.eq_ignore_ascii_case("localhost")
+        || host.eq_ignore_ascii_case("127.0.0.1")
+        || host.eq_ignore_ascii_case("::1")
+        || host.ends_with(".localhost")
 }
 
 #[derive(Debug, Clone, Eq, PartialEq)]
@@ -292,8 +362,10 @@ pub struct InstructionDocument {
 
 #[derive(Debug, Clone, Default, Eq, PartialEq)]
 pub struct AgentInstructionContext {
+    pub project_root: PathBuf,
     pub documents: Vec<InstructionDocument>,
     pub config: AgentConfig,
+    pub skill_catalog: SkillCatalog,
 }
 
 #[derive(Debug, Deserialize)]
@@ -373,6 +445,10 @@ struct PolicyAllowSection {
     #[serde(default)]
     mcp_call_tool: Option<bool>,
     #[serde(default)]
+    process_control: Option<bool>,
+    #[serde(default)]
+    browser_control: Option<bool>,
+    #[serde(default)]
     network: Option<bool>,
     #[serde(default)]
     run_command: Option<Vec<String>>,
@@ -422,6 +498,24 @@ struct AgentToolsFile {
     rust_analyzer: ToolSection,
     #[serde(default)]
     serena: ToolSection,
+    #[serde(default)]
+    browser: BrowserToolSection,
+}
+
+#[derive(Debug, Default, Deserialize)]
+struct BrowserToolSection {
+    #[serde(default)]
+    enabled: Option<bool>,
+    #[serde(default)]
+    command: Option<String>,
+    #[serde(default)]
+    args: Option<Vec<String>>,
+    #[serde(default)]
+    max_runtime_seconds: Option<u64>,
+    #[serde(default)]
+    max_output_bytes: Option<usize>,
+    #[serde(default)]
+    allow_remote_urls: Option<bool>,
 }
 
 #[derive(Debug, Default, Deserialize)]
@@ -585,11 +679,7 @@ fn apply_agent_tools_section(
     project_override: bool,
 ) {
     if let Some(enabled) = section.enabled {
-        settings.enabled = if project_override {
-            settings.enabled && enabled
-        } else {
-            enabled
-        };
+        settings.enabled = enabled;
     }
     apply_external_tool_section(&mut settings.fd, section.tools.fd);
     apply_ast_grep_tool_section(
@@ -605,6 +695,7 @@ fn apply_agent_tools_section(
     apply_external_tool_section(&mut settings.cargo_expand, section.tools.cargo_expand);
     apply_external_tool_section(&mut settings.rust_analyzer, section.tools.rust_analyzer);
     apply_external_tool_section(&mut settings.serena, section.tools.serena);
+    apply_browser_tool_section(&mut settings.browser, section.tools.browser);
 }
 
 fn apply_external_tool_section(settings: &mut ExternalToolSettings, section: ToolSection) {
@@ -691,6 +782,31 @@ fn apply_nextest_tool_section(settings: &mut NextestToolSettings, section: ToolS
     }
     if let Some(prefer_for_workspace_tests) = section.prefer_for_workspace_tests {
         settings.prefer_for_workspace_tests = prefer_for_workspace_tests;
+    }
+}
+
+fn apply_browser_tool_section(settings: &mut BrowserToolSettings, section: BrowserToolSection) {
+    if let Some(enabled) = section.enabled {
+        settings.enabled = enabled;
+    }
+    if let Some(command) = non_empty_string(section.command) {
+        settings.command = command;
+    }
+    if let Some(args) = section.args {
+        settings.args = args;
+    }
+    if section.max_runtime_seconds.is_some() {
+        settings.max_runtime_seconds = section.max_runtime_seconds;
+    }
+    if section.max_output_bytes.is_some() {
+        settings.max_output_bytes = section.max_output_bytes;
+    }
+    if let Some(allow_remote_urls) = section.allow_remote_urls {
+        settings.url_policy = if allow_remote_urls {
+            BrowserUrlPolicy::AllowRemote
+        } else {
+            BrowserUrlPolicy::LocalOnly
+        };
     }
 }
 
@@ -792,6 +908,12 @@ fn merge_policy_allow(section: PolicyAllowSection) -> PolicyAllow {
             .run_validation
             .unwrap_or(default_allow.run_validation),
         mcp_call_tool: section.mcp_call_tool.unwrap_or(default_allow.mcp_call_tool),
+        process_control: section
+            .process_control
+            .unwrap_or(default_allow.process_control),
+        browser_control: section
+            .browser_control
+            .unwrap_or(default_allow.browser_control),
         network: section.network.unwrap_or(default_allow.network),
         run_command: section.run_command.unwrap_or(default_allow.run_command),
     }
@@ -828,6 +950,7 @@ fn default_allowed_command_prefixes() -> Vec<String> {
 
 pub fn load_instruction_context(project_root: &Path, user_input: &str) -> AgentInstructionContext {
     let config = load_agent_config(project_root);
+    let skill_catalog = discover_skill_catalog(project_root);
     let mut documents = Vec::new();
 
     for path in global_instruction_candidates() {
@@ -859,21 +982,33 @@ pub fn load_instruction_context(project_root: &Path, user_input: &str) -> AgentI
         });
     }
 
-    AgentInstructionContext { documents, config }
+    AgentInstructionContext {
+        project_root: project_root.to_path_buf(),
+        documents,
+        config,
+        skill_catalog,
+    }
 }
 
 pub fn render_instruction_context_for_prompt(context: &AgentInstructionContext) -> String {
-    if context.documents.is_empty() {
-        return String::new();
+    let mut rendered = String::new();
+    if !context.documents.is_empty() {
+        rendered.push_str("Follow these repo and user instructions in priority order:\n");
+        for document in &context.documents {
+            rendered.push_str(&format!(
+                "\n--- {} ({}) ---\n{}\n",
+                document.label,
+                document.path.display(),
+                document.content.trim()
+            ));
+        }
     }
-    let mut rendered = String::from("Follow these repo and user instructions in priority order:\n");
-    for document in &context.documents {
-        rendered.push_str(&format!(
-            "\n--- {} ({}) ---\n{}\n",
-            document.label,
-            document.path.display(),
-            document.content.trim()
-        ));
+    let skill_section = context.skill_catalog.render_prompt_section();
+    if !skill_section.trim().is_empty() {
+        if !rendered.is_empty() {
+            rendered.push('\n');
+        }
+        rendered.push_str(&skill_section);
     }
     rendered
 }
@@ -1034,7 +1169,13 @@ fn rule_matches_action(rule: &ApprovalRule, action: &AgentAction, config: &Agent
         | AgentAction::ReadFile { path, .. }
         | AgentAction::ListDirectory { path }
         | AgentAction::SuggestEditAnchors { path, .. }
-        | AgentAction::PreviewEdit { path, .. } => match rule.path_prefix.as_ref() {
+        | AgentAction::PreviewEdit { path, .. }
+        | AgentAction::LspDiagnostics { path }
+        | AgentAction::LspDefinition { path, .. }
+        | AgentAction::LspHover { path, .. }
+        | AgentAction::LspDocumentSymbols { path }
+        | AgentAction::LspCodeActions { path, .. }
+        | AgentAction::LspRenamePreview { path, .. } => match rule.path_prefix.as_ref() {
             Some(prefix) => path.starts_with(prefix),
             None => false,
         },
@@ -1044,10 +1185,55 @@ fn rule_matches_action(rule: &ApprovalRule, action: &AgentAction, config: &Agent
         | AgentAction::StructuralSearch { .. }
         | AgentAction::StructuralEditPreview { .. }
         | AgentAction::CargoDiagnostics { .. }
+        | AgentAction::LspReferences { .. }
+        | AgentAction::LspWorkspaceSymbols { .. }
         | AgentAction::GetRepoCapsule { .. }
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
-        | AgentAction::ApplyPreview { .. } => false,
+        | AgentAction::ApplyPreview { .. }
+        | AgentAction::ProcessStart { .. }
+        | AgentAction::ProcessRead { .. }
+        | AgentAction::ProcessWrite { .. }
+        | AgentAction::ProcessStop { .. }
+        | AgentAction::ProcessWaitForPort { .. }
+        | AgentAction::BrowserOpen { .. }
+        | AgentAction::BrowserScreenshot { .. }
+        | AgentAction::BrowserConsoleLogs { .. }
+        | AgentAction::BrowserNetworkErrors { .. }
+        | AgentAction::BrowserAccessibilitySnapshot { .. }
+        | AgentAction::BrowserClose { .. } => false,
+        AgentAction::McpListTools { server_name }
+        | AgentAction::McpListResources { server_name, .. }
+        | AgentAction::McpReadResource { server_name, .. }
+        | AgentAction::McpListPrompts { server_name, .. }
+        | AgentAction::McpGetPrompt { server_name, .. } => {
+            rule.mcp_server_name
+                .as_deref()
+                .is_none_or(|expected| expected.eq_ignore_ascii_case(server_name))
+                && match action {
+                    AgentAction::McpListTools { .. } => rule
+                        .mcp_tool_name
+                        .as_deref()
+                        .is_none_or(|expected| expected.eq_ignore_ascii_case("tools/list")),
+                    AgentAction::McpListResources { .. } => rule
+                        .mcp_tool_name
+                        .as_deref()
+                        .is_none_or(|expected| expected.eq_ignore_ascii_case("resources/list")),
+                    AgentAction::McpReadResource { .. } => rule
+                        .mcp_tool_name
+                        .as_deref()
+                        .is_none_or(|expected| expected.eq_ignore_ascii_case("resources/read")),
+                    AgentAction::McpListPrompts { .. } => rule
+                        .mcp_tool_name
+                        .as_deref()
+                        .is_none_or(|expected| expected.eq_ignore_ascii_case("prompts/list")),
+                    AgentAction::McpGetPrompt { .. } => rule
+                        .mcp_tool_name
+                        .as_deref()
+                        .is_none_or(|expected| expected.eq_ignore_ascii_case("prompts/get")),
+                    _ => false,
+                }
+        }
         AgentAction::McpCallTool {
             server_name,
             tool_name,
@@ -1313,6 +1499,13 @@ mod tests {
                     "allow_rewrite_preview": true,
                     "allow_apply": false
                   },
+                  "browser": {
+                    "enabled": true,
+                    "command": "node",
+                    "args": ["-e"],
+                    "max_runtime_seconds": 45,
+                    "max_output_bytes": 4096
+                  },
                   "cargo_diagnostics": {
                     "enabled": true,
                     "check_command": "cargo check --message-format=json"
@@ -1328,6 +1521,9 @@ mod tests {
         assert_eq!(parsed.agent_tools.fd.command, "fd");
         assert!(parsed.agent_tools.ast_grep.allow_rewrite_preview);
         assert!(!parsed.agent_tools.ast_grep.allow_apply);
+        assert!(parsed.agent_tools.browser.enabled);
+        assert_eq!(parsed.agent_tools.browser.command, "node");
+        assert_eq!(parsed.agent_tools.browser.args, vec!["-e".to_string()]);
         assert_eq!(
             parsed.agent_tools.cargo_diagnostics.check_command,
             "cargo check --message-format=json"
@@ -1347,11 +1543,15 @@ mod tests {
               "agent_tools": {
                 "enabled": true,
                 "tools": {
-                  "ast_grep": {
+                "ast_grep": {
                     "enabled": true,
                     "command": "ast-grep",
                     "allow_rewrite_preview": true,
                     "allow_apply": true
+                  },
+                  "browser": {
+                    "enabled": false,
+                    "command": "node"
                   }
                 }
               }
@@ -1368,6 +1568,11 @@ enabled = true
 [agent_tools.tools.ast_grep]
 allow_rewrite_preview = false
 allow_apply = true
+
+[agent_tools.tools.browser]
+enabled = true
+command = "node"
+args = ["-e"]
 "#,
         )
         .expect("agent toml");
@@ -1376,17 +1581,22 @@ allow_apply = true
         assert!(config.agent_tools.enabled);
         assert!(!config.agent_tools.ast_grep.allow_rewrite_preview);
         assert!(config.agent_tools.ast_grep.allow_apply);
+        assert!(config.agent_tools.browser.enabled);
 
         std::fs::write(
             project.path().join(".quorp/agent.toml"),
             r#"
 [agent_tools]
 enabled = false
+
+[agent_tools.tools.browser]
+enabled = false
 "#,
         )
         .expect("agent toml");
         let narrowed = load_agent_config(project.path());
         assert!(!narrowed.agent_tools.enabled);
+        assert!(!narrowed.agent_tools.browser.enabled);
     }
 
     #[test]

@@ -10,6 +10,7 @@ use async_zip::ZipEntryBuilder;
 use async_zip::base::write::ZipFileWriter;
 use futures::AsyncWriteExt as _;
 use futures::io::Cursor;
+use quorp_sandbox::{build_command_plan, default_policy, sandbox_runtime_for_path};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -600,12 +601,27 @@ pub fn append_named_event(path: &Path, event_name: &str, fields: Value) -> anyho
 
 pub fn run_command(cwd: &Path, command: &str) -> anyhow::Result<CommandOutcome> {
     #[allow(clippy::disallowed_methods)]
-    let output = Command::new("sh")
-        .arg("-lc")
-        .arg(command)
-        .current_dir(cwd)
+    let policy = default_policy();
+    let runtime = sandbox_runtime_for_path(cwd)?;
+    let plan = build_command_plan(quorp_sandbox::SandboxCommandSpec {
+        program: std::ffi::OsStr::new(&policy.default_shell),
+        args: &[std::ffi::OsStr::new("-lc"), std::ffi::OsStr::new(command)],
+        current_dir: cwd,
+        runtime: &runtime,
+        policy: &policy,
+        extra_environment: &[],
+        additional_mounts: &[],
+        interactive: false,
+    })?;
+    let mut shell = Command::new(&plan.program);
+    plan.apply_to_command(&mut shell);
+    #[cfg(unix)]
+    util::set_pre_exec_to_start_new_session(&mut shell);
+    let redacted_command = util::redact::redact_command(command);
+    #[allow(clippy::disallowed_methods)]
+    let output = shell
         .output()
-        .with_context(|| format!("failed to run `{command}` in {}", cwd.display()))?;
+        .with_context(|| format!("failed to run `{redacted_command}` in {}", cwd.display()))?;
     let stdout = String::from_utf8_lossy(&output.stdout).to_string();
     let stderr = String::from_utf8_lossy(&output.stderr).to_string();
     Ok(CommandOutcome {

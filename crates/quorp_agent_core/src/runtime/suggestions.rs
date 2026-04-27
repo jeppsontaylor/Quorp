@@ -333,6 +333,19 @@ pub(crate) fn repair_requirement_from_action(
         | AgentAction::StructuralSearch { .. }
         | AgentAction::StructuralEditPreview { .. }
         | AgentAction::CargoDiagnostics { .. }
+        | AgentAction::LspDiagnostics { .. }
+        | AgentAction::LspDefinition { .. }
+        | AgentAction::LspReferences { .. }
+        | AgentAction::LspHover { .. }
+        | AgentAction::LspWorkspaceSymbols { .. }
+        | AgentAction::LspDocumentSymbols { .. }
+        | AgentAction::LspCodeActions { .. }
+        | AgentAction::LspRenamePreview { .. }
+        | AgentAction::McpListTools { .. }
+        | AgentAction::McpListResources { .. }
+        | AgentAction::McpReadResource { .. }
+        | AgentAction::McpListPrompts { .. }
+        | AgentAction::McpGetPrompt { .. }
         | AgentAction::GetRepoCapsule { .. }
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
@@ -340,6 +353,17 @@ pub(crate) fn repair_requirement_from_action(
         | AgentAction::PreviewEdit { .. }
         | AgentAction::ApplyPreview { .. }
         | AgentAction::McpCallTool { .. }
+        | AgentAction::ProcessStart { .. }
+        | AgentAction::ProcessRead { .. }
+        | AgentAction::ProcessWrite { .. }
+        | AgentAction::ProcessStop { .. }
+        | AgentAction::ProcessWaitForPort { .. }
+        | AgentAction::BrowserOpen { .. }
+        | AgentAction::BrowserScreenshot { .. }
+        | AgentAction::BrowserConsoleLogs { .. }
+        | AgentAction::BrowserNetworkErrors { .. }
+        | AgentAction::BrowserAccessibilitySnapshot { .. }
+        | AgentAction::BrowserClose { .. }
         | AgentAction::RunValidation { .. } => None,
     }
 }
@@ -430,12 +454,36 @@ pub(crate) fn failed_edit_record_from_action(
         | AgentAction::StructuralSearch { .. }
         | AgentAction::StructuralEditPreview { .. }
         | AgentAction::CargoDiagnostics { .. }
+        | AgentAction::LspDiagnostics { .. }
+        | AgentAction::LspDefinition { .. }
+        | AgentAction::LspReferences { .. }
+        | AgentAction::LspHover { .. }
+        | AgentAction::LspWorkspaceSymbols { .. }
+        | AgentAction::LspDocumentSymbols { .. }
+        | AgentAction::LspCodeActions { .. }
+        | AgentAction::LspRenamePreview { .. }
+        | AgentAction::McpListTools { .. }
+        | AgentAction::McpListResources { .. }
+        | AgentAction::McpReadResource { .. }
+        | AgentAction::McpListPrompts { .. }
+        | AgentAction::McpGetPrompt { .. }
         | AgentAction::GetRepoCapsule { .. }
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
         | AgentAction::SuggestEditAnchors { .. }
         | AgentAction::PreviewEdit { .. }
         | AgentAction::McpCallTool { .. }
+        | AgentAction::ProcessStart { .. }
+        | AgentAction::ProcessRead { .. }
+        | AgentAction::ProcessWrite { .. }
+        | AgentAction::ProcessStop { .. }
+        | AgentAction::ProcessWaitForPort { .. }
+        | AgentAction::BrowserOpen { .. }
+        | AgentAction::BrowserScreenshot { .. }
+        | AgentAction::BrowserConsoleLogs { .. }
+        | AgentAction::BrowserNetworkErrors { .. }
+        | AgentAction::BrowserAccessibilitySnapshot { .. }
+        | AgentAction::BrowserClose { .. }
         | AgentAction::RunValidation { .. } => return None,
     };
     Some(FailedEditRecord {

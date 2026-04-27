@@ -2460,6 +2460,7 @@ dependencies = [
  "quorp_config",
  "quorp_core",
  "quorp_log",
+ "quorp_lsp",
  "quorp_mcp",
  "quorp_permissions",
  "quorp_provider",
@@ -2477,6 +2478,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "smol",
  "syntect",
  "tempfile",
  "tokio",
@@ -2492,9 +2494,11 @@ dependencies = [
 name = "quorp_agent_core"
 version = "0.1.0"
 dependencies = [
+ "anyhow",
  "futures",
  "ignore",
  "log",
+ "quorp_core",
  "serde",
  "serde_json",
  "shlex",
@@ -2520,10 +2524,12 @@ dependencies = [
  "clap",
  "quorp_agent_core",
  "quorp_core",
+ "quorp_sandbox",
  "schemars",
  "serde",
  "serde_json",
  "tempfile",
+ "util",
 ]
 
 [[package]]
@@ -2573,6 +2579,8 @@ dependencies = [
  "schemars",
  "serde",
  "serde_json",
+ "tempfile",
+ "toml",
 ]
 
 [[package]]
@@ -2595,6 +2603,23 @@ dependencies = [
 ]
 
 [[package]]
+name = "quorp_lsp"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "ignore",
+ "regex",
+ "serde",
+ "serde_json",
+ "shlex",
+ "syn",
+ "tempfile",
+ "toml",
+ "url",
+ "walkdir",
+]
+
+[[package]]
 name = "quorp_mcp"
 version = "0.1.0"
 dependencies = [
@@ -2613,8 +2638,10 @@ dependencies = [
  "quorp_ids",
  "quorp_memory_model",
  "quorp_storage",
+ "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]
@@ -2750,10 +2777,14 @@ name = "quorp_sandbox"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "libc",
  "log",
+ "portable-pty",
+ "quorp_config",
  "quorp_core",
  "serde",
  "tempfile",
+ "util",
  "walkdir",
 ]
 
@@ -2767,8 +2798,10 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "quorp_ids",
+ "rusqlite",
  "serde",
  "serde_json",
+ "tempfile",
 ]
 
 [[package]]

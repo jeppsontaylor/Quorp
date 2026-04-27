@@ -36,6 +36,12 @@ impl AgentTaskState {
                 self.current_mode.label()
             ));
         }
+        if is_process_action(action) && !self.policy.allow.process_control {
+            return Err("process control is disabled in policy".into());
+        }
+        if is_browser_action(action) && !self.policy.allow.browser_control {
+            return Err("browser control is disabled in policy".into());
+        }
         match self.policy.mode {
             PolicyMode::BenchmarkAutonomous => self.allow_action_for_benchmark_policy(action),
             PolicyMode::Standard => match self.autonomy_profile {
@@ -160,6 +166,34 @@ impl AgentTaskState {
             AgentAction::ListDirectory { .. } if self.policy.allow.list_directory => Ok(()),
             AgentAction::SearchText { .. } if self.policy.allow.search_text => Ok(()),
             AgentAction::SearchSymbols { .. } if self.policy.allow.search_symbols => Ok(()),
+            AgentAction::LspDiagnostics { .. } if self.policy.allow.read_file => Ok(()),
+            AgentAction::LspDefinition { .. } if self.policy.allow.read_file => Ok(()),
+            AgentAction::LspReferences { .. } if self.policy.allow.search_symbols => Ok(()),
+            AgentAction::LspHover { .. } if self.policy.allow.read_file => Ok(()),
+            AgentAction::LspWorkspaceSymbols { .. } if self.policy.allow.search_symbols => Ok(()),
+            AgentAction::LspDocumentSymbols { .. } if self.policy.allow.read_file => Ok(()),
+            AgentAction::LspCodeActions { .. } if self.policy.allow.read_file => Ok(()),
+            AgentAction::LspRenamePreview { .. } if self.policy.allow.read_file => Ok(()),
+            AgentAction::McpListTools { .. } if self.policy.allow.mcp_call_tool => Ok(()),
+            AgentAction::McpListResources { .. } if self.policy.allow.mcp_call_tool => Ok(()),
+            AgentAction::McpReadResource { .. } if self.policy.allow.mcp_call_tool => Ok(()),
+            AgentAction::McpListPrompts { .. } if self.policy.allow.mcp_call_tool => Ok(()),
+            AgentAction::McpGetPrompt { .. } if self.policy.allow.mcp_call_tool => Ok(()),
+            AgentAction::ProcessRead { .. } if self.policy.allow.process_control => Ok(()),
+            AgentAction::ProcessWaitForPort { .. } if self.policy.allow.process_control => Ok(()),
+            AgentAction::ProcessStart { .. } if self.policy.allow.process_control => Ok(()),
+            AgentAction::ProcessWrite { .. } if self.policy.allow.process_control => Ok(()),
+            AgentAction::ProcessStop { .. } if self.policy.allow.process_control => Ok(()),
+            AgentAction::BrowserOpen { .. } if self.policy.allow.browser_control => Ok(()),
+            AgentAction::BrowserScreenshot { .. } if self.policy.allow.browser_control => Ok(()),
+            AgentAction::BrowserConsoleLogs { .. } if self.policy.allow.browser_control => Ok(()),
+            AgentAction::BrowserNetworkErrors { .. } if self.policy.allow.browser_control => Ok(()),
+            AgentAction::BrowserAccessibilitySnapshot { .. }
+                if self.policy.allow.browser_control =>
+            {
+                Ok(())
+            }
+            AgentAction::BrowserClose { .. } if self.policy.allow.browser_control => Ok(()),
             AgentAction::FindFiles { .. } if self.policy.allow.list_directory => Ok(()),
             AgentAction::StructuralSearch { .. } if self.policy.allow.search_text => Ok(()),
             AgentAction::StructuralEditPreview { .. } if self.policy.allow.read_file => Ok(()),
@@ -296,4 +330,27 @@ impl AgentTaskState {
             "benchmark_autonomous requires observing leased patch target `{leased_target}` before mutating it. {preferred}"
         ))
     }
+}
+
+fn is_process_action(action: &AgentAction) -> bool {
+    matches!(
+        action,
+        AgentAction::ProcessStart { .. }
+            | AgentAction::ProcessRead { .. }
+            | AgentAction::ProcessWrite { .. }
+            | AgentAction::ProcessStop { .. }
+            | AgentAction::ProcessWaitForPort { .. }
+    )
+}
+
+fn is_browser_action(action: &AgentAction) -> bool {
+    matches!(
+        action,
+        AgentAction::BrowserOpen { .. }
+            | AgentAction::BrowserScreenshot { .. }
+            | AgentAction::BrowserConsoleLogs { .. }
+            | AgentAction::BrowserNetworkErrors { .. }
+            | AgentAction::BrowserAccessibilitySnapshot { .. }
+            | AgentAction::BrowserClose { .. }
+    )
 }

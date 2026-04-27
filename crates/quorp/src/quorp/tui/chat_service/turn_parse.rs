@@ -358,9 +358,19 @@ pub(crate) fn pseudo_tool_call_from_line(line: &str) -> Option<serde_json::Value
         &[
             "path",
             "query",
+            "symbol",
             "limit",
             "command",
             "timeout_ms",
+            "line",
+            "character",
+            "old_name",
+            "new_name",
+            "server_name",
+            "uri",
+            "cursor",
+            "name",
+            "arguments",
             "content",
             "patch",
             "search_block",
@@ -370,6 +380,19 @@ pub(crate) fn pseudo_tool_call_from_line(line: &str) -> Option<serde_json::Value
             "workspace_tests",
             "tests",
             "custom_commands",
+            "args",
+            "process_id",
+            "tail_lines",
+            "stdin",
+            "cwd",
+            "host",
+            "port",
+            "timeout_ms",
+            "url",
+            "headless",
+            "width",
+            "height",
+            "browser_id",
         ],
     );
 
@@ -377,6 +400,99 @@ pub(crate) fn pseudo_tool_call_from_line(line: &str) -> Option<serde_json::Value
         "read_file" | "list_directory" | "set_executable" => fields
             .get("path")
             .map(|path| json!({ "tool_name": tool_name, "tool_args": { "path": path } })),
+        "process_start" => {
+            let command = fields.get("command")?;
+            let mut tool_args = serde_json::Map::new();
+            tool_args.insert(
+                "command".to_string(),
+                serde_json::Value::String(command.clone()),
+            );
+            if let Some(args) = fields.get("args")
+                && let Ok(parsed) = serde_json::from_str::<serde_json::Value>(args)
+            {
+                tool_args.insert("args".to_string(), parsed);
+            }
+            if let Some(cwd) = fields.get("cwd") {
+                tool_args.insert("cwd".to_string(), serde_json::Value::String(cwd.clone()));
+            }
+            Some(json!({ "tool_name": tool_name, "tool_args": tool_args }))
+        }
+        "process_read" => {
+            let process_id = fields.get("process_id")?;
+            let mut tool_args = serde_json::Map::new();
+            tool_args.insert(
+                "process_id".to_string(),
+                serde_json::Value::String(process_id.clone()),
+            );
+            if let Some(tail_lines) = fields
+                .get("tail_lines")
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                tool_args.insert("tail_lines".to_string(), serde_json::json!(tail_lines));
+            }
+            Some(json!({ "tool_name": tool_name, "tool_args": tool_args }))
+        }
+        "process_write" => {
+            let process_id = fields.get("process_id")?;
+            let stdin = fields.get("stdin")?;
+            Some(json!({
+                "tool_name": tool_name,
+                "tool_args": {
+                    "process_id": process_id,
+                    "stdin": stdin
+                }
+            }))
+        }
+        "process_stop" => fields.get("process_id").map(|process_id| {
+            json!({
+                "tool_name": tool_name,
+                "tool_args": {
+                    "process_id": process_id
+                }
+            })
+        }),
+        "process_wait_for_port" => {
+            let process_id = fields.get("process_id")?;
+            let host = fields.get("host")?;
+            let port = fields.get("port")?.parse::<u64>().ok()?;
+            let mut tool_args = serde_json::Map::new();
+            tool_args.insert(
+                "process_id".to_string(),
+                serde_json::Value::String(process_id.clone()),
+            );
+            tool_args.insert("host".to_string(), serde_json::Value::String(host.clone()));
+            tool_args.insert("port".to_string(), serde_json::json!(port));
+            if let Some(timeout_ms) = fields
+                .get("timeout_ms")
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                tool_args.insert("timeout_ms".to_string(), serde_json::json!(timeout_ms));
+            }
+            Some(json!({ "tool_name": tool_name, "tool_args": tool_args }))
+        }
+        "browser_open" => {
+            let url = fields.get("url")?;
+            let mut tool_args = serde_json::Map::new();
+            tool_args.insert("url".to_string(), serde_json::Value::String(url.clone()));
+            if let Some(headless) = fields
+                .get("headless")
+                .and_then(|value| value.parse::<bool>().ok())
+            {
+                tool_args.insert("headless".to_string(), serde_json::json!(headless));
+            }
+            if let Some(width) = fields.get("width").and_then(|value| value.parse::<u64>().ok()) {
+                tool_args.insert("width".to_string(), serde_json::json!(width));
+            }
+            if let Some(height) = fields.get("height").and_then(|value| value.parse::<u64>().ok())
+            {
+                tool_args.insert("height".to_string(), serde_json::json!(height));
+            }
+            Some(json!({ "tool_name": tool_name, "tool_args": tool_args }))
+        }
+        "browser_screenshot" | "browser_console_logs" | "browser_network_errors"
+        | "browser_accessibility_snapshot" | "browser_close" => fields
+            .get("browser_id")
+            .map(|browser_id| json!({ "tool_name": tool_name, "tool_args": { "browser_id": browser_id } })),
         "search_text" | "search_symbols" => {
             let query = fields.get("query")?;
             let mut tool_args = serde_json::Map::new();
@@ -405,6 +521,162 @@ pub(crate) fn pseudo_tool_call_from_line(line: &str) -> Option<serde_json::Value
                 .and_then(|value| value.parse::<u64>().ok())
             {
                 tool_args.insert("limit".to_string(), serde_json::json!(limit));
+            }
+            Some(json!({ "tool_name": tool_name, "tool_args": tool_args }))
+        }
+        "lsp_diagnostics" => fields
+            .get("path")
+            .map(|path| json!({ "tool_name": tool_name, "tool_args": { "path": path } })),
+        "lsp_definition" => {
+            let path = fields.get("path")?;
+            let symbol = fields.get("symbol")?;
+            let mut tool_args = serde_json::Map::new();
+            tool_args.insert("path".to_string(), serde_json::Value::String(path.clone()));
+            tool_args.insert(
+                "symbol".to_string(),
+                serde_json::Value::String(symbol.clone()),
+            );
+            if let Some(line) = fields
+                .get("line")
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                tool_args.insert("line".to_string(), serde_json::json!(line));
+            }
+            if let Some(character) = fields
+                .get("character")
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                tool_args.insert("character".to_string(), serde_json::json!(character));
+            }
+            Some(json!({ "tool_name": tool_name, "tool_args": tool_args }))
+        }
+        "lsp_references" => {
+            let symbol = fields.get("symbol")?;
+            let mut tool_args = serde_json::Map::new();
+            tool_args.insert(
+                "symbol".to_string(),
+                serde_json::Value::String(symbol.clone()),
+            );
+            if let Some(path) = fields.get("path") {
+                tool_args.insert("path".to_string(), serde_json::Value::String(path.clone()));
+            }
+            if let Some(limit) = fields
+                .get("limit")
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                tool_args.insert("limit".to_string(), serde_json::json!(limit));
+            }
+            Some(json!({ "tool_name": tool_name, "tool_args": tool_args }))
+        }
+        "lsp_hover" | "lsp_code_actions" => {
+            let path = fields.get("path")?;
+            let line = fields.get("line")?.parse::<u64>().ok()?;
+            let character = fields.get("character")?.parse::<u64>().ok()?;
+            Some(json!({
+                "tool_name": tool_name,
+                "tool_args": {
+                    "path": path,
+                    "line": line,
+                    "character": character
+                }
+            }))
+        }
+        "lsp_workspace_symbols" => {
+            let query = fields.get("query")?;
+            let mut tool_args = serde_json::Map::new();
+            tool_args.insert(
+                "query".to_string(),
+                serde_json::Value::String(query.clone()),
+            );
+            if let Some(limit) = fields
+                .get("limit")
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                tool_args.insert("limit".to_string(), serde_json::json!(limit));
+            }
+            Some(json!({ "tool_name": tool_name, "tool_args": tool_args }))
+        }
+        "lsp_document_symbols" => fields
+            .get("path")
+            .map(|path| json!({ "tool_name": tool_name, "tool_args": { "path": path } })),
+        "lsp_rename_preview" => {
+            let path = fields.get("path")?;
+            let old_name = fields.get("old_name")?;
+            let new_name = fields.get("new_name")?;
+            let mut tool_args = serde_json::Map::new();
+            tool_args.insert("path".to_string(), serde_json::Value::String(path.clone()));
+            tool_args.insert(
+                "old_name".to_string(),
+                serde_json::Value::String(old_name.clone()),
+            );
+            tool_args.insert(
+                "new_name".to_string(),
+                serde_json::Value::String(new_name.clone()),
+            );
+            if let Some(limit) = fields
+                .get("limit")
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                tool_args.insert("limit".to_string(), serde_json::json!(limit));
+            }
+            Some(json!({ "tool_name": tool_name, "tool_args": tool_args }))
+        }
+        "mcp_list_tools" => fields.get("server_name").map(|server_name| {
+            json!({
+                "tool_name": tool_name,
+                "tool_args": {
+                    "server_name": server_name
+                }
+            })
+        }),
+        "mcp_list_resources" => {
+            let server_name = fields.get("server_name")?;
+            let mut tool_args = serde_json::Map::new();
+            tool_args.insert(
+                "server_name".to_string(),
+                serde_json::Value::String(server_name.clone()),
+            );
+            if let Some(cursor) = fields.get("cursor") {
+                tool_args.insert("cursor".to_string(), serde_json::Value::String(cursor.clone()));
+            }
+            Some(json!({ "tool_name": tool_name, "tool_args": tool_args }))
+        }
+        "mcp_read_resource" => {
+            let server_name = fields.get("server_name")?;
+            let uri = fields.get("uri")?;
+            Some(json!({
+                "tool_name": tool_name,
+                "tool_args": {
+                    "server_name": server_name,
+                    "uri": uri
+                }
+            }))
+        }
+        "mcp_list_prompts" => {
+            let server_name = fields.get("server_name")?;
+            let mut tool_args = serde_json::Map::new();
+            tool_args.insert(
+                "server_name".to_string(),
+                serde_json::Value::String(server_name.clone()),
+            );
+            if let Some(cursor) = fields.get("cursor") {
+                tool_args.insert("cursor".to_string(), serde_json::Value::String(cursor.clone()));
+            }
+            Some(json!({ "tool_name": tool_name, "tool_args": tool_args }))
+        }
+        "mcp_get_prompt" => {
+            let server_name = fields.get("server_name")?;
+            let name = fields.get("name")?;
+            let mut tool_args = serde_json::Map::new();
+            tool_args.insert(
+                "server_name".to_string(),
+                serde_json::Value::String(server_name.clone()),
+            );
+            tool_args.insert("name".to_string(), serde_json::Value::String(name.clone()));
+            if let Some(arguments) = fields.get("arguments") {
+                let parsed = serde_json::from_str::<serde_json::Value>(arguments)
+                    .unwrap_or_else(|_| serde_json::Value::String(arguments.clone()));
+                tool_args.insert("arguments".to_string(), parsed);
             }
             Some(json!({ "tool_name": tool_name, "tool_args": tool_args }))
         }
@@ -446,7 +718,31 @@ pub(crate) fn split_pseudo_tool_line(line: &str) -> Option<(&str, &str)> {
         "ApplyPatch",
         "ReplaceBlock",
         "SetExecutable",
+        "ProcessStart",
+        "ProcessRead",
+        "ProcessWrite",
+        "ProcessStop",
+        "ProcessWaitForPort",
+        "BrowserOpen",
+        "BrowserScreenshot",
+        "BrowserConsoleLogs",
+        "BrowserNetworkErrors",
+        "BrowserAccessibilitySnapshot",
+        "BrowserClose",
         "RunValidation",
+        "LspDiagnostics",
+        "LspDefinition",
+        "LspReferences",
+        "LspHover",
+        "LspWorkspaceSymbols",
+        "LspDocumentSymbols",
+        "LspCodeActions",
+        "LspRenamePreview",
+        "McpListTools",
+        "McpListResources",
+        "McpReadResource",
+        "McpListPrompts",
+        "McpGetPrompt",
     ]
     .into_iter()
     .find_map(|name| {
@@ -559,6 +855,65 @@ pub(crate) fn parse_action_from_arguments(
             command: optional_string_argument(arguments, "command"),
             include_clippy: optional_bool_argument(arguments, "include_clippy").unwrap_or(false),
         }),
+        "lsp_diagnostics" => Ok(AgentAction::LspDiagnostics {
+            path: required_string_argument(arguments, tool_name, "path")?,
+        }),
+        "lsp_definition" => Ok(AgentAction::LspDefinition {
+            path: required_string_argument(arguments, tool_name, "path")?,
+            symbol: required_string_argument(arguments, tool_name, "symbol")?,
+            line: optional_usize_argument(arguments, "line"),
+            character: optional_usize_argument(arguments, "character"),
+        }),
+        "lsp_references" => Ok(AgentAction::LspReferences {
+            path: optional_string_argument(arguments, "path"),
+            symbol: required_string_argument(arguments, tool_name, "symbol")?,
+            line: optional_usize_argument(arguments, "line"),
+            character: optional_usize_argument(arguments, "character"),
+            limit: optional_usize_argument(arguments, "limit").unwrap_or(32),
+        }),
+        "lsp_hover" => Ok(AgentAction::LspHover {
+            path: required_string_argument(arguments, tool_name, "path")?,
+            line: required_usize_argument(arguments, tool_name, "line")?,
+            character: required_usize_argument(arguments, tool_name, "character")?,
+        }),
+        "lsp_workspace_symbols" => Ok(AgentAction::LspWorkspaceSymbols {
+            query: required_string_argument(arguments, tool_name, "query")?,
+            limit: optional_usize_argument(arguments, "limit").unwrap_or(32),
+        }),
+        "lsp_document_symbols" => Ok(AgentAction::LspDocumentSymbols {
+            path: required_string_argument(arguments, tool_name, "path")?,
+        }),
+        "lsp_code_actions" => Ok(AgentAction::LspCodeActions {
+            path: required_string_argument(arguments, tool_name, "path")?,
+            line: required_usize_argument(arguments, tool_name, "line")?,
+            character: required_usize_argument(arguments, tool_name, "character")?,
+        }),
+        "lsp_rename_preview" => Ok(AgentAction::LspRenamePreview {
+            path: required_string_argument(arguments, tool_name, "path")?,
+            old_name: required_string_argument(arguments, tool_name, "old_name")?,
+            new_name: required_string_argument(arguments, tool_name, "new_name")?,
+            limit: optional_usize_argument(arguments, "limit").unwrap_or(64),
+        }),
+        "mcp_list_tools" => Ok(AgentAction::McpListTools {
+            server_name: required_string_argument(arguments, tool_name, "server_name")?,
+        }),
+        "mcp_list_resources" => Ok(AgentAction::McpListResources {
+            server_name: required_string_argument(arguments, tool_name, "server_name")?,
+            cursor: optional_string_argument(arguments, "cursor"),
+        }),
+        "mcp_read_resource" => Ok(AgentAction::McpReadResource {
+            server_name: required_string_argument(arguments, tool_name, "server_name")?,
+            uri: required_string_argument(arguments, tool_name, "uri")?,
+        }),
+        "mcp_list_prompts" => Ok(AgentAction::McpListPrompts {
+            server_name: required_string_argument(arguments, tool_name, "server_name")?,
+            cursor: optional_string_argument(arguments, "cursor"),
+        }),
+        "mcp_get_prompt" => Ok(AgentAction::McpGetPrompt {
+            server_name: required_string_argument(arguments, tool_name, "server_name")?,
+            name: required_string_argument(arguments, tool_name, "name")?,
+            arguments: optional_json_argument(arguments, "arguments"),
+        }),
         "get_repo_capsule" => Ok(AgentAction::GetRepoCapsule {
             query: optional_string_argument(arguments, "query"),
             limit: optional_usize_argument(arguments, "limit").unwrap_or(8),
@@ -643,6 +998,51 @@ pub(crate) fn parse_action_from_arguments(
         }),
         "set_executable" => Ok(AgentAction::SetExecutable {
             path: required_string_argument(arguments, tool_name, "path")?,
+        }),
+        "process_start" => Ok(AgentAction::ProcessStart {
+            command: required_string_argument(arguments, tool_name, "command")?,
+            args: optional_string_list_argument(arguments, "args"),
+            cwd: optional_string_argument(arguments, "cwd"),
+        }),
+        "process_read" => Ok(AgentAction::ProcessRead {
+            process_id: required_string_argument(arguments, tool_name, "process_id")?,
+            tail_lines: optional_usize_argument(arguments, "tail_lines").unwrap_or(200),
+        }),
+        "process_write" => Ok(AgentAction::ProcessWrite {
+            process_id: required_string_argument(arguments, tool_name, "process_id")?,
+            stdin: required_string_argument(arguments, tool_name, "stdin")?,
+        }),
+        "process_stop" => Ok(AgentAction::ProcessStop {
+            process_id: required_string_argument(arguments, tool_name, "process_id")?,
+        }),
+        "process_wait_for_port" => Ok(AgentAction::ProcessWaitForPort {
+            process_id: required_string_argument(arguments, tool_name, "process_id")?,
+            host: required_string_argument(arguments, tool_name, "host")?,
+            port: required_u16_argument(arguments, tool_name, "port")?,
+            timeout_ms: optional_u64_argument(arguments, "timeout_ms").unwrap_or(60_000),
+        }),
+        "browser_open" => Ok(AgentAction::BrowserOpen {
+            url: required_string_argument(arguments, tool_name, "url")?,
+            headless: optional_bool_argument(arguments, "headless").unwrap_or(false),
+            width: optional_u32_argument(arguments, "width"),
+            height: optional_u32_argument(arguments, "height"),
+        }),
+        "browser_screenshot" => Ok(AgentAction::BrowserScreenshot {
+            browser_id: required_string_argument(arguments, tool_name, "browser_id")?,
+        }),
+        "browser_console_logs" => Ok(AgentAction::BrowserConsoleLogs {
+            browser_id: required_string_argument(arguments, tool_name, "browser_id")?,
+            limit: optional_usize_argument(arguments, "limit").unwrap_or(100),
+        }),
+        "browser_network_errors" => Ok(AgentAction::BrowserNetworkErrors {
+            browser_id: required_string_argument(arguments, tool_name, "browser_id")?,
+            limit: optional_usize_argument(arguments, "limit").unwrap_or(100),
+        }),
+        "browser_accessibility_snapshot" => Ok(AgentAction::BrowserAccessibilitySnapshot {
+            browser_id: required_string_argument(arguments, tool_name, "browser_id")?,
+        }),
+        "browser_close" => Ok(AgentAction::BrowserClose {
+            browser_id: required_string_argument(arguments, tool_name, "browser_id")?,
         }),
         "run_validation" => Ok(AgentAction::RunValidation {
             plan: ValidationPlan {
@@ -742,6 +1142,19 @@ pub(crate) fn normalize_tool_name(raw: &str) -> &str {
         "StructuralSearch" => "structural_search",
         "StructuralEditPreview" => "structural_edit_preview",
         "CargoDiagnostics" => "cargo_diagnostics",
+        "LspDiagnostics" => "lsp_diagnostics",
+        "LspDefinition" => "lsp_definition",
+        "LspReferences" => "lsp_references",
+        "LspHover" => "lsp_hover",
+        "LspWorkspaceSymbols" => "lsp_workspace_symbols",
+        "LspDocumentSymbols" => "lsp_document_symbols",
+        "LspCodeActions" => "lsp_code_actions",
+        "LspRenamePreview" => "lsp_rename_preview",
+        "McpListTools" => "mcp_list_tools",
+        "McpListResources" => "mcp_list_resources",
+        "McpReadResource" => "mcp_read_resource",
+        "McpListPrompts" => "mcp_list_prompts",
+        "McpGetPrompt" => "mcp_get_prompt",
         "GetRepoCapsule" => "get_repo_capsule",
         "ExplainValidationFailure" => "explain_validation_failure",
         "SuggestImplementationTargets" => "suggest_implementation_targets",
@@ -754,6 +1167,17 @@ pub(crate) fn normalize_tool_name(raw: &str) -> &str {
         "ApplyPatch" => "apply_patch",
         "ReplaceBlock" => "replace_block",
         "SetExecutable" => "set_executable",
+        "ProcessStart" => "process_start",
+        "ProcessRead" => "process_read",
+        "ProcessWrite" => "process_write",
+        "ProcessStop" => "process_stop",
+        "ProcessWaitForPort" => "process_wait_for_port",
+        "BrowserOpen" => "browser_open",
+        "BrowserScreenshot" => "browser_screenshot",
+        "BrowserConsoleLogs" => "browser_console_logs",
+        "BrowserNetworkErrors" => "browser_network_errors",
+        "BrowserAccessibilitySnapshot" => "browser_accessibility_snapshot",
+        "BrowserClose" => "browser_close",
         "McpCallTool" => "mcp_call_tool",
         "RunValidation" => "run_validation",
         other => other,
@@ -1398,8 +1822,47 @@ pub(crate) fn optional_usize_argument(arguments: &serde_json::Value, field: &str
     optional_u64_argument(arguments, field).map(|value| value as usize)
 }
 
+pub(crate) fn required_usize_argument(
+    arguments: &serde_json::Value,
+    tool_name: &str,
+    field: &str,
+) -> Result<usize, String> {
+    optional_usize_argument(arguments, field)
+        .filter(|value| *value > 0)
+        .ok_or_else(|| format!("native tool `{tool_name}` was missing `{field}`"))
+}
+
+pub(crate) fn optional_u32_argument(arguments: &serde_json::Value, field: &str) -> Option<u32> {
+    optional_u64_argument(arguments, field).map(|value| value as u32)
+}
+
+pub(crate) fn required_u16_argument(
+    arguments: &serde_json::Value,
+    tool_name: &str,
+    field: &str,
+) -> Result<u16, String> {
+    optional_u64_argument(arguments, field)
+        .filter(|value| *value > 0 && *value <= u16::MAX as u64)
+        .map(|value| value as u16)
+        .ok_or_else(|| format!("native tool `{tool_name}` was missing valid `{field}`"))
+}
+
 pub(crate) fn optional_bool_argument(arguments: &serde_json::Value, field: &str) -> Option<bool> {
     arguments.get(field).and_then(serde_json::Value::as_bool)
+}
+
+pub(crate) fn optional_json_argument(
+    arguments: &serde_json::Value,
+    field: &str,
+) -> Option<serde_json::Value> {
+    let value = arguments.get(field)?;
+    match value {
+        serde_json::Value::Null => None,
+        serde_json::Value::String(text) => serde_json::from_str::<serde_json::Value>(text)
+            .ok()
+            .or_else(|| Some(serde_json::Value::String(text.clone()))),
+        other => Some(other.clone()),
+    }
 }
 
 pub(crate) fn parse_usage_payload(
@@ -1454,4 +1917,84 @@ pub(crate) fn parse_usage_payload(
         finish_reason,
         usage_source: quorp_agent_core::UsageSource::Reported,
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn parses_lsp_definition_tool_call() {
+        let action = parse_action_from_arguments(
+            "lsp_definition",
+            &serde_json::json!({
+                "path": "src/lib.rs",
+                "symbol": "Example",
+                "line": 12,
+                "character": 4
+            }),
+        )
+        .expect("action");
+        assert!(matches!(
+            action,
+            AgentAction::LspDefinition {
+                path,
+                symbol,
+                line: Some(12),
+                character: Some(4)
+            } if path == "src/lib.rs" && symbol == "Example"
+        ));
+    }
+
+    #[test]
+    fn parses_pseudo_lsp_hover_line() {
+        let call = pseudo_tool_call_from_line("LspHover path: src/lib.rs line: 10 character: 3")
+            .expect("tool call");
+        let actions = parse_actions_from_tool_call(&call).expect("actions");
+        assert!(matches!(
+            actions.as_slice(),
+            [AgentAction::LspHover {
+                path,
+                line: 10,
+                character: 3
+            }] if path == "src/lib.rs"
+        ));
+    }
+
+    #[test]
+    fn parses_pseudo_process_start_line() {
+        let call = pseudo_tool_call_from_line(
+            "ProcessStart command: cargo args: [\"test\", \"--quiet\"] cwd: /tmp/project",
+        )
+        .expect("tool call");
+        let actions = parse_actions_from_tool_call(&call).expect("actions");
+        assert!(matches!(
+            actions.as_slice(),
+            [AgentAction::ProcessStart {
+                command,
+                args,
+                cwd: Some(cwd)
+            }] if command == "cargo"
+                && matches!(args.as_slice(), [first, second] if first == "test" && second == "--quiet")
+                && cwd == "/tmp/project"
+        ));
+    }
+
+    #[test]
+    fn parses_pseudo_browser_open_line() {
+        let call = pseudo_tool_call_from_line(
+            "BrowserOpen url: https://example.com headless: true width: 1280 height: 720",
+        )
+        .expect("tool call");
+        let actions = parse_actions_from_tool_call(&call).expect("actions");
+        assert!(matches!(
+            actions.as_slice(),
+            [AgentAction::BrowserOpen {
+                url,
+                headless: true,
+                width: Some(1280),
+                height: Some(720)
+            }] if url == "https://example.com"
+        ));
+    }
 }

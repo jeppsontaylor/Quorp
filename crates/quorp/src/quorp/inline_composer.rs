@@ -302,7 +302,7 @@ pub fn render_quorp_loader(title: &str, color: ColorCapability) -> String {
     out.push_str(&ACCENT_YELLOW.fg());
     out.push_str("       >_");
     out.push_str(RESET);
-    out.push_str(&DIM.to_string());
+    out.push_str(DIM);
     out.push_str("  terminal agent online");
     out.push_str(RESET);
     out.push('\n');

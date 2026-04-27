@@ -53,6 +53,26 @@ impl AgentMode {
                     | AgentAction::StructuralSearch { .. }
                     | AgentAction::StructuralEditPreview { .. }
                     | AgentAction::CargoDiagnostics { .. }
+                    | AgentAction::LspDiagnostics { .. }
+                    | AgentAction::LspDefinition { .. }
+                    | AgentAction::LspReferences { .. }
+                    | AgentAction::LspHover { .. }
+                    | AgentAction::LspWorkspaceSymbols { .. }
+                    | AgentAction::LspDocumentSymbols { .. }
+                    | AgentAction::LspCodeActions { .. }
+                    | AgentAction::LspRenamePreview { .. }
+                    | AgentAction::McpListTools { .. }
+                    | AgentAction::McpListResources { .. }
+                    | AgentAction::McpReadResource { .. }
+                    | AgentAction::McpListPrompts { .. }
+                    | AgentAction::McpGetPrompt { .. }
+                    | AgentAction::ProcessRead { .. }
+                    | AgentAction::ProcessWaitForPort { .. }
+                    | AgentAction::BrowserOpen { .. }
+                    | AgentAction::BrowserScreenshot { .. }
+                    | AgentAction::BrowserConsoleLogs { .. }
+                    | AgentAction::BrowserNetworkErrors { .. }
+                    | AgentAction::BrowserAccessibilitySnapshot { .. }
                     | AgentAction::GetRepoCapsule { .. }
                     | AgentAction::ExplainValidationFailure { .. }
                     | AgentAction::SuggestImplementationTargets { .. }
@@ -69,6 +89,26 @@ impl AgentMode {
                     | AgentAction::StructuralSearch { .. }
                     | AgentAction::StructuralEditPreview { .. }
                     | AgentAction::CargoDiagnostics { .. }
+                    | AgentAction::LspDiagnostics { .. }
+                    | AgentAction::LspDefinition { .. }
+                    | AgentAction::LspReferences { .. }
+                    | AgentAction::LspHover { .. }
+                    | AgentAction::LspWorkspaceSymbols { .. }
+                    | AgentAction::LspDocumentSymbols { .. }
+                    | AgentAction::LspCodeActions { .. }
+                    | AgentAction::LspRenamePreview { .. }
+                    | AgentAction::McpListTools { .. }
+                    | AgentAction::McpListResources { .. }
+                    | AgentAction::McpReadResource { .. }
+                    | AgentAction::McpListPrompts { .. }
+                    | AgentAction::McpGetPrompt { .. }
+                    | AgentAction::ProcessRead { .. }
+                    | AgentAction::ProcessWaitForPort { .. }
+                    | AgentAction::BrowserOpen { .. }
+                    | AgentAction::BrowserScreenshot { .. }
+                    | AgentAction::BrowserConsoleLogs { .. }
+                    | AgentAction::BrowserNetworkErrors { .. }
+                    | AgentAction::BrowserAccessibilitySnapshot { .. }
                     | AgentAction::GetRepoCapsule { .. }
                     | AgentAction::ExplainValidationFailure { .. }
                     | AgentAction::SuggestImplementationTargets { .. }
@@ -174,6 +214,51 @@ pub enum AgentAction {
         #[serde(default)]
         include_clippy: bool,
     },
+    LspDiagnostics {
+        path: String,
+    },
+    LspDefinition {
+        path: String,
+        symbol: String,
+        #[serde(default)]
+        line: Option<usize>,
+        #[serde(default)]
+        character: Option<usize>,
+    },
+    LspReferences {
+        #[serde(default)]
+        path: Option<String>,
+        symbol: String,
+        #[serde(default)]
+        line: Option<usize>,
+        #[serde(default)]
+        character: Option<usize>,
+        limit: usize,
+    },
+    LspHover {
+        path: String,
+        line: usize,
+        character: usize,
+    },
+    LspWorkspaceSymbols {
+        query: String,
+        limit: usize,
+    },
+    LspDocumentSymbols {
+        path: String,
+    },
+    LspCodeActions {
+        path: String,
+        line: usize,
+        character: usize,
+    },
+    LspRenamePreview {
+        path: String,
+        old_name: String,
+        new_name: String,
+        #[serde(default)]
+        limit: usize,
+    },
     GetRepoCapsule {
         query: Option<String>,
         limit: usize,
@@ -238,9 +323,98 @@ pub enum AgentAction {
         tool_name: String,
         arguments: serde_json::Value,
     },
+    McpListTools {
+        server_name: String,
+    },
+    McpListResources {
+        server_name: String,
+        #[serde(default)]
+        cursor: Option<String>,
+    },
+    McpReadResource {
+        server_name: String,
+        uri: String,
+    },
+    McpListPrompts {
+        server_name: String,
+        #[serde(default)]
+        cursor: Option<String>,
+    },
+    McpGetPrompt {
+        server_name: String,
+        name: String,
+        #[serde(default)]
+        arguments: Option<serde_json::Value>,
+    },
+    ProcessStart {
+        command: String,
+        #[serde(default)]
+        args: Vec<String>,
+        #[serde(default)]
+        cwd: Option<String>,
+    },
+    ProcessRead {
+        process_id: String,
+        #[serde(default = "default_process_tail_lines")]
+        tail_lines: usize,
+    },
+    ProcessWrite {
+        process_id: String,
+        stdin: String,
+    },
+    ProcessStop {
+        process_id: String,
+    },
+    ProcessWaitForPort {
+        process_id: String,
+        host: String,
+        port: u16,
+        #[serde(default = "default_process_wait_timeout_ms")]
+        timeout_ms: u64,
+    },
+    BrowserOpen {
+        url: String,
+        #[serde(default)]
+        headless: bool,
+        #[serde(default)]
+        width: Option<u32>,
+        #[serde(default)]
+        height: Option<u32>,
+    },
+    BrowserScreenshot {
+        browser_id: String,
+    },
+    BrowserConsoleLogs {
+        browser_id: String,
+        #[serde(default = "default_browser_log_limit")]
+        limit: usize,
+    },
+    BrowserNetworkErrors {
+        browser_id: String,
+        #[serde(default = "default_browser_log_limit")]
+        limit: usize,
+    },
+    BrowserAccessibilitySnapshot {
+        browser_id: String,
+    },
+    BrowserClose {
+        browser_id: String,
+    },
     RunValidation {
         plan: ValidationPlan,
     },
+}
+
+fn default_process_tail_lines() -> usize {
+    200
+}
+
+fn default_process_wait_timeout_ms() -> u64 {
+    60_000
+}
+
+fn default_browser_log_limit() -> usize {
+    100
 }
 
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
@@ -329,6 +503,18 @@ impl ReadFileRange {
     }
 }
 
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, Deserialize)]
+pub struct TextPosition {
+    pub line: usize,
+    pub character: usize,
+}
+
+impl TextPosition {
+    pub fn label(self) -> String {
+        format!("{}:{}", self.line, self.character)
+    }
+}
+
 impl AgentAction {
     pub fn tool_name(&self) -> &'static str {
         match self {
@@ -341,6 +527,14 @@ impl AgentAction {
             Self::StructuralSearch { .. } => "structural_search",
             Self::StructuralEditPreview { .. } => "structural_edit_preview",
             Self::CargoDiagnostics { .. } => "cargo_diagnostics",
+            Self::LspDiagnostics { .. } => "lsp_diagnostics",
+            Self::LspDefinition { .. } => "lsp_definition",
+            Self::LspReferences { .. } => "lsp_references",
+            Self::LspHover { .. } => "lsp_hover",
+            Self::LspWorkspaceSymbols { .. } => "lsp_workspace_symbols",
+            Self::LspDocumentSymbols { .. } => "lsp_document_symbols",
+            Self::LspCodeActions { .. } => "lsp_code_actions",
+            Self::LspRenamePreview { .. } => "lsp_rename_preview",
             Self::GetRepoCapsule { .. } => "get_repo_capsule",
             Self::ExplainValidationFailure { .. } => "explain_validation_failure",
             Self::SuggestImplementationTargets { .. } => "suggest_implementation_targets",
@@ -354,6 +548,22 @@ impl AgentAction {
             Self::ReplaceBlock { .. } => "replace_block",
             Self::SetExecutable { .. } => "set_executable",
             Self::McpCallTool { .. } => "mcp_call_tool",
+            Self::McpListTools { .. } => "mcp_list_tools",
+            Self::McpListResources { .. } => "mcp_list_resources",
+            Self::McpReadResource { .. } => "mcp_read_resource",
+            Self::McpListPrompts { .. } => "mcp_list_prompts",
+            Self::McpGetPrompt { .. } => "mcp_get_prompt",
+            Self::ProcessStart { .. } => "process_start",
+            Self::ProcessRead { .. } => "process_read",
+            Self::ProcessWrite { .. } => "process_write",
+            Self::ProcessStop { .. } => "process_stop",
+            Self::ProcessWaitForPort { .. } => "process_wait_for_port",
+            Self::BrowserOpen { .. } => "browser_open",
+            Self::BrowserScreenshot { .. } => "browser_screenshot",
+            Self::BrowserConsoleLogs { .. } => "browser_console_logs",
+            Self::BrowserNetworkErrors { .. } => "browser_network_errors",
+            Self::BrowserAccessibilitySnapshot { .. } => "browser_accessibility_snapshot",
+            Self::BrowserClose { .. } => "browser_close",
             Self::RunValidation { .. } => "run_validation",
         }
     }
@@ -393,6 +603,57 @@ impl AgentAction {
                         .as_deref()
                         .unwrap_or("cargo check --message-format=json")
                 )
+            }
+            Self::LspDiagnostics { path } => format!("lsp_diagnostics {path}"),
+            Self::LspDefinition {
+                path,
+                symbol,
+                line,
+                character,
+            } => {
+                let location = match (line, character) {
+                    (Some(line), Some(character)) => format!(" {line}:{character}"),
+                    _ => String::new(),
+                };
+                format!("lsp_definition {path} {symbol}{location}")
+            }
+            Self::LspReferences {
+                path,
+                symbol,
+                line,
+                character,
+                ..
+            } => {
+                let location = match (line, character) {
+                    (Some(line), Some(character)) => format!(" {line}:{character}"),
+                    _ => String::new(),
+                };
+                match path {
+                    Some(path) => format!("lsp_references {path} {symbol}{location}"),
+                    None => format!("lsp_references {symbol}{location}"),
+                }
+            }
+            Self::LspHover {
+                path,
+                line,
+                character,
+            } => format!("lsp_hover {path} {line}:{character}"),
+            Self::LspWorkspaceSymbols { query, .. } => {
+                format!("lsp_workspace_symbols {query}")
+            }
+            Self::LspDocumentSymbols { path } => format!("lsp_document_symbols {path}"),
+            Self::LspCodeActions {
+                path,
+                line,
+                character,
+            } => format!("lsp_code_actions {path} {line}:{character}"),
+            Self::LspRenamePreview {
+                path,
+                old_name,
+                new_name,
+                ..
+            } => {
+                format!("lsp_rename_preview {path} {old_name} -> {new_name}")
             }
             Self::GetRepoCapsule { query, .. } => match query {
                 Some(query) if !query.trim().is_empty() => format!("get_repo_capsule {query}"),
@@ -468,6 +729,77 @@ impl AgentAction {
                 tool_name,
                 ..
             } => format!("mcp_tool {server_name}/{tool_name}"),
+            Self::McpListTools { server_name } => format!("mcp_list_tools {server_name}"),
+            Self::McpListResources {
+                server_name,
+                cursor,
+            } => match cursor {
+                Some(cursor) => format!("mcp_list_resources {server_name} {cursor}"),
+                None => format!("mcp_list_resources {server_name}"),
+            },
+            Self::McpReadResource { server_name, uri } => {
+                format!("mcp_read_resource {server_name} {uri}")
+            }
+            Self::McpListPrompts {
+                server_name,
+                cursor,
+            } => match cursor {
+                Some(cursor) => format!("mcp_list_prompts {server_name} {cursor}"),
+                None => format!("mcp_list_prompts {server_name}"),
+            },
+            Self::McpGetPrompt {
+                server_name, name, ..
+            } => format!("mcp_get_prompt {server_name} {name}"),
+            Self::ProcessStart {
+                command, args, cwd, ..
+            } => {
+                let cwd = cwd
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(|value| format!(" cwd {value}"))
+                    .unwrap_or_default();
+                let args = if args.is_empty() {
+                    String::new()
+                } else {
+                    format!(" args({})", args.join(" "))
+                };
+                format!("process_start {command}{args}{cwd}")
+            }
+            Self::ProcessRead {
+                process_id,
+                tail_lines,
+            } => format!("process_read {process_id} tail {tail_lines}"),
+            Self::ProcessWrite { process_id, .. } => format!("process_write {process_id}"),
+            Self::ProcessStop { process_id } => format!("process_stop {process_id}"),
+            Self::ProcessWaitForPort {
+                process_id,
+                host,
+                port,
+                timeout_ms,
+            } => format!("process_wait_for_port {process_id} {host}:{port} timeout {timeout_ms}"),
+            Self::BrowserOpen {
+                url,
+                headless,
+                width,
+                height,
+            } => format!(
+                "browser_open {url} headless={} viewport={:?}x{:?}",
+                headless, width, height
+            ),
+            Self::BrowserScreenshot { browser_id } => {
+                format!("browser_screenshot {browser_id}")
+            }
+            Self::BrowserConsoleLogs { browser_id, limit } => {
+                format!("browser_console_logs {browser_id} limit {limit}")
+            }
+            Self::BrowserNetworkErrors { browser_id, limit } => {
+                format!("browser_network_errors {browser_id} limit {limit}")
+            }
+            Self::BrowserAccessibilitySnapshot { browser_id } => {
+                format!("browser_accessibility_snapshot {browser_id}")
+            }
+            Self::BrowserClose { browser_id } => format!("browser_close {browser_id}"),
             Self::RunValidation { plan } => {
                 let summary = plan.summary();
                 if summary.is_empty() {
@@ -489,12 +821,38 @@ impl AgentAction {
             | Self::StructuralSearch { .. }
             | Self::StructuralEditPreview { .. }
             | Self::CargoDiagnostics { .. }
+            | Self::LspDiagnostics { .. }
+            | Self::LspDefinition { .. }
+            | Self::LspReferences { .. }
+            | Self::LspHover { .. }
+            | Self::LspWorkspaceSymbols { .. }
+            | Self::LspDocumentSymbols { .. }
+            | Self::LspCodeActions { .. }
+            | Self::LspRenamePreview { .. }
             | Self::GetRepoCapsule { .. }
             | Self::ExplainValidationFailure { .. }
             | Self::SuggestImplementationTargets { .. }
             | Self::SuggestEditAnchors { .. }
-            | Self::PreviewEdit { .. } => ActionApprovalPolicy::AutoApproveReadOnly,
+            | Self::PreviewEdit { .. }
+            | Self::McpListTools { .. }
+            | Self::McpListResources { .. }
+            | Self::McpReadResource { .. }
+            | Self::McpListPrompts { .. }
+            | Self::McpGetPrompt { .. } => ActionApprovalPolicy::AutoApproveReadOnly,
+            Self::ProcessRead { .. }
+            | Self::ProcessWaitForPort { .. }
+            | Self::BrowserOpen { .. }
+            | Self::BrowserScreenshot { .. }
+            | Self::BrowserConsoleLogs { .. }
+            | Self::BrowserNetworkErrors { .. }
+            | Self::BrowserAccessibilitySnapshot { .. } => {
+                ActionApprovalPolicy::AutoApproveReadOnly
+            }
             Self::RunCommand { .. }
+            | Self::ProcessStart { .. }
+            | Self::ProcessWrite { .. }
+            | Self::ProcessStop { .. }
+            | Self::BrowserClose { .. }
             | Self::ReplaceRange { .. }
             | Self::ModifyToml { .. }
             | Self::ApplyPreview { .. }
@@ -518,11 +876,31 @@ impl AgentAction {
                 | Self::StructuralSearch { .. }
                 | Self::StructuralEditPreview { .. }
                 | Self::CargoDiagnostics { .. }
+                | Self::LspDiagnostics { .. }
+                | Self::LspDefinition { .. }
+                | Self::LspReferences { .. }
+                | Self::LspHover { .. }
+                | Self::LspWorkspaceSymbols { .. }
+                | Self::LspDocumentSymbols { .. }
+                | Self::LspCodeActions { .. }
+                | Self::LspRenamePreview { .. }
                 | Self::GetRepoCapsule { .. }
                 | Self::ExplainValidationFailure { .. }
                 | Self::SuggestImplementationTargets { .. }
                 | Self::SuggestEditAnchors { .. }
                 | Self::PreviewEdit { .. }
+                | Self::McpListTools { .. }
+                | Self::McpListResources { .. }
+                | Self::McpReadResource { .. }
+                | Self::McpListPrompts { .. }
+                | Self::McpGetPrompt { .. }
+                | Self::ProcessRead { .. }
+                | Self::ProcessWaitForPort { .. }
+                | Self::BrowserOpen { .. }
+                | Self::BrowserScreenshot { .. }
+                | Self::BrowserConsoleLogs { .. }
+                | Self::BrowserNetworkErrors { .. }
+                | Self::BrowserAccessibilitySnapshot { .. }
         )
     }
 
@@ -549,6 +927,27 @@ impl AgentAction {
             } => {
                 format!("MCP {}/{}", server_name, tool_name)
             }
+            Self::McpListTools { server_name } => format!("MCP {server_name}/tools/list"),
+            Self::McpListResources {
+                server_name,
+                cursor,
+            } => match cursor {
+                Some(cursor) => format!("MCP {server_name}/resources/list {cursor}"),
+                None => format!("MCP {server_name}/resources/list"),
+            },
+            Self::McpReadResource { server_name, uri } => {
+                format!("MCP {server_name}/resources/read {uri}")
+            }
+            Self::McpListPrompts {
+                server_name,
+                cursor,
+            } => match cursor {
+                Some(cursor) => format!("MCP {server_name}/prompts/list {cursor}"),
+                None => format!("MCP {server_name}/prompts/list"),
+            },
+            Self::McpGetPrompt {
+                server_name, name, ..
+            } => format!("MCP {server_name}/prompts/get {name}"),
             Self::ReadFile { path, range } => match range.and_then(|value| value.normalized()) {
                 Some(range) => format!("read {}:{}", path, range.label()),
                 None => format!("read {}", path),
@@ -568,6 +967,45 @@ impl AgentAction {
                         .as_deref()
                         .unwrap_or("cargo check --message-format=json")
                 )
+            }
+            Self::LspDiagnostics { path } => format!("lsp diagnostics {}", path),
+            Self::LspDefinition {
+                path,
+                symbol,
+                line,
+                character,
+            } => {
+                let location = match (line, character) {
+                    (Some(line), Some(character)) => format!(" at {}:{}", line, character),
+                    _ => String::new(),
+                };
+                format!("definition '{}' in {}{}", symbol, path, location)
+            }
+            Self::LspReferences { path, symbol, .. } => match path {
+                Some(path) => format!("references '{}' in {}", symbol, path),
+                None => format!("references '{}'", symbol),
+            },
+            Self::LspHover {
+                path,
+                line,
+                character,
+            } => format!("hover {}:{} in {}", line, character, path),
+            Self::LspWorkspaceSymbols { query, .. } => format!("workspace symbols '{}'", query),
+            Self::LspDocumentSymbols { path } => format!("document symbols {}", path),
+            Self::LspCodeActions {
+                path,
+                line,
+                character,
+            } => {
+                format!("code actions {}:{} in {}", line, character, path)
+            }
+            Self::LspRenamePreview {
+                path,
+                old_name,
+                new_name,
+                ..
+            } => {
+                format!("rename preview {} -> {} in {}", old_name, new_name, path)
             }
             Self::GetRepoCapsule { query: Some(q), .. } => format!("capsule '{}'", q),
             Self::GetRepoCapsule { query: None, .. } => "capsule".to_string(),
@@ -610,6 +1048,30 @@ impl AgentAction {
             Self::ApplyPatch { path, .. } => format!("patch {}", path),
             Self::ReplaceBlock { path, .. } => format!("replace {}", path),
             Self::SetExecutable { path } => format!("chmod +x {}", path),
+            Self::ProcessStart { command, .. } => format!("process start {}", command),
+            Self::ProcessRead { process_id, .. } => format!("process read {}", process_id),
+            Self::ProcessWrite { process_id, .. } => format!("process write {}", process_id),
+            Self::ProcessStop { process_id } => format!("process stop {}", process_id),
+            Self::ProcessWaitForPort {
+                process_id,
+                host,
+                port,
+                ..
+            } => {
+                format!("process wait {} {}:{}", process_id, host, port)
+            }
+            Self::BrowserOpen { url, .. } => format!("browser open {}", url),
+            Self::BrowserScreenshot { browser_id } => format!("browser screenshot {}", browser_id),
+            Self::BrowserConsoleLogs { browser_id, .. } => {
+                format!("browser console logs {}", browser_id)
+            }
+            Self::BrowserNetworkErrors { browser_id, .. } => {
+                format!("browser network errors {}", browser_id)
+            }
+            Self::BrowserAccessibilitySnapshot { browser_id } => {
+                format!("browser accessibility snapshot {}", browser_id)
+            }
+            Self::BrowserClose { browser_id } => format!("browser close {}", browser_id),
             Self::RunValidation { plan } => {
                 let s = plan.summary();
                 if s.is_empty() {

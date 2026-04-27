@@ -92,7 +92,7 @@ impl Default for CompletionPolicy {
             first_turn_max_completion_tokens: None,
             later_turn_max_completion_tokens: None,
             disable_reasoning: false,
-            native_tool_calls: false,
+            native_tool_calls: true,
             watchdog: None,
             safety_mode_label: None,
             prompt_compaction_policy: None,
@@ -738,6 +738,7 @@ pub(crate) struct AgentTaskState {
     agent_repair_memory: AgentRepairMemory,
 }
 
+mod action_summary;
 mod normalize;
 mod parse_helpers;
 mod path_intel;
@@ -750,6 +751,8 @@ mod state_validate;
 mod suggestions;
 mod turn;
 
+#[allow(unused_imports)]
+pub use action_summary::ToolResultEnvelope;
 #[allow(unused_imports)]
 pub use normalize::*;
 #[allow(unused_imports)]

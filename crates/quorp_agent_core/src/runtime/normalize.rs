@@ -29,6 +29,9 @@ pub(crate) fn normalize_benchmark_repair_turn_actions(
     turn: &mut AgentTurnResponse,
     state: &AgentTaskState,
 ) {
+    if state.policy.mode != PolicyMode::BenchmarkAutonomous {
+        return;
+    }
     let Some(repair_state) = state.benchmark_repair_state.as_ref() else {
         return;
     };
@@ -144,6 +147,14 @@ pub(crate) fn normalize_benchmark_patch_turn_actions(
                 AgentAction::ListDirectory { .. }
                     | AgentAction::SearchText { .. }
                     | AgentAction::SearchSymbols { .. }
+                    | AgentAction::LspDiagnostics { .. }
+                    | AgentAction::LspDefinition { .. }
+                    | AgentAction::LspReferences { .. }
+                    | AgentAction::LspHover { .. }
+                    | AgentAction::LspWorkspaceSymbols { .. }
+                    | AgentAction::LspDocumentSymbols { .. }
+                    | AgentAction::LspCodeActions { .. }
+                    | AgentAction::LspRenamePreview { .. }
                     | AgentAction::GetRepoCapsule { .. }
                     | AgentAction::ReadFile { .. }
                     | AgentAction::PreviewEdit { .. }
@@ -172,6 +183,14 @@ pub(crate) fn normalize_benchmark_patch_turn_actions(
                 AgentAction::ListDirectory { .. }
                     | AgentAction::SearchText { .. }
                     | AgentAction::SearchSymbols { .. }
+                    | AgentAction::LspDiagnostics { .. }
+                    | AgentAction::LspDefinition { .. }
+                    | AgentAction::LspReferences { .. }
+                    | AgentAction::LspHover { .. }
+                    | AgentAction::LspWorkspaceSymbols { .. }
+                    | AgentAction::LspDocumentSymbols { .. }
+                    | AgentAction::LspCodeActions { .. }
+                    | AgentAction::LspRenamePreview { .. }
                     | AgentAction::GetRepoCapsule { .. }
                     | AgentAction::ReadFile { .. }
                     | AgentAction::PreviewEdit { .. }
@@ -258,6 +277,14 @@ pub(crate) fn normalize_benchmark_patch_turn_actions(
                 AgentAction::ListDirectory { .. }
                     | AgentAction::SearchText { .. }
                     | AgentAction::SearchSymbols { .. }
+                    | AgentAction::LspDiagnostics { .. }
+                    | AgentAction::LspDefinition { .. }
+                    | AgentAction::LspReferences { .. }
+                    | AgentAction::LspHover { .. }
+                    | AgentAction::LspWorkspaceSymbols { .. }
+                    | AgentAction::LspDocumentSymbols { .. }
+                    | AgentAction::LspCodeActions { .. }
+                    | AgentAction::LspRenamePreview { .. }
                     | AgentAction::GetRepoCapsule { .. }
                     | AgentAction::ReadFile { .. }
             )
@@ -470,6 +497,9 @@ pub(crate) fn exact_benchmark_source_patch_actions_from_state(
     repair_state: &BenchmarkRepairState,
     ledger: &BenchmarkCaseLedger,
 ) -> Option<Vec<AgentAction>> {
+    if state.policy.mode != PolicyMode::BenchmarkAutonomous {
+        return None;
+    }
     let patch_target =
         benchmark_patch_target_path(repair_state, ledger, &state.agent_repair_memory);
     if canonical_path(patch_target.as_ref()) == "cargo-dist/src/backend/ci/github.rs" {
@@ -493,6 +523,9 @@ pub(crate) fn exact_benchmark_source_patch_action_from_state(
     repair_state: &BenchmarkRepairState,
     ledger: &BenchmarkCaseLedger,
 ) -> Option<AgentAction> {
+    if state.policy.mode != PolicyMode::BenchmarkAutonomous {
+        return None;
+    }
     let patch_target =
         benchmark_patch_target_path(repair_state, ledger, &state.agent_repair_memory);
     if canonical_path(patch_target.as_ref()) == "axum/src/routing/mod.rs" {
@@ -536,10 +569,13 @@ pub(crate) fn exact_benchmark_source_patch_action_from_state(
 }
 
 pub(crate) fn exact_chrono_epoch_round_patch_action_from_state(
-    _state: &AgentTaskState,
+    state: &AgentTaskState,
     repair_state: &BenchmarkRepairState,
     patch_target: std::borrow::Cow<'_, str>,
 ) -> Option<AgentAction> {
+    if state.policy.mode != PolicyMode::BenchmarkAutonomous {
+        return None;
+    }
     let source_text = repair_state
         .latest_owner_file_text
         .as_deref()
@@ -566,6 +602,9 @@ pub(crate) fn exact_axum_fallback_patch_action_from_state(
     repair_state: &BenchmarkRepairState,
     patch_target: std::borrow::Cow<'_, str>,
 ) -> Option<AgentAction> {
+    if state.policy.mode != PolicyMode::BenchmarkAutonomous {
+        return None;
+    }
     let source_text = load_workspace_file_text(&state.workspace_root, patch_target.as_ref())
         .or_else(|| repair_state.latest_owner_file_text.clone())?;
     if !source_text.contains("pub fn nest<") || !source_text.contains("pub fn merge(") {
@@ -630,6 +669,9 @@ pub(crate) fn source_axum_fallback_content(source_text: &str) -> Option<String> 
 pub(crate) fn exact_cargo_dist_create_release_patch_actions_from_state(
     state: &AgentTaskState,
 ) -> Option<Vec<AgentAction>> {
+    if state.policy.mode != PolicyMode::BenchmarkAutonomous {
+        return None;
+    }
     type PatchSpec = (&'static str, fn(&str) -> Option<String>);
 
     let patch_specs: [PatchSpec; 6] = [
@@ -679,6 +721,9 @@ pub(crate) fn exact_cargo_dist_create_release_patch_actions_from_state(
 pub(crate) fn exact_cc_rs_compile_intermediates_patch_action_from_state(
     state: &AgentTaskState,
 ) -> Option<AgentAction> {
+    if state.policy.mode != PolicyMode::BenchmarkAutonomous {
+        return None;
+    }
     let path = "src/lib.rs";
     let source_text = load_workspace_file_text(&state.workspace_root, path)?;
     let updated = source_cc_rs_compile_intermediates_content(&source_text)?;

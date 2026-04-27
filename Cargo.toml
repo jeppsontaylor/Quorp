@@ -21,6 +21,7 @@ members = [
     "crates/quorp_permissions",
     "crates/quorp_plan_mode",
     "crates/quorp_provider",
+    "crates/quorp_lsp",
     "crates/quorp_render",
     "crates/quorp_repo_graph",
     "crates/quorp_repo_scan",
@@ -100,6 +101,7 @@ quorp_patch_vm = { path = "crates/quorp_patch_vm" }
 quorp_permissions = { path = "crates/quorp_permissions" }
 quorp_plan_mode = { path = "crates/quorp_plan_mode" }
 quorp_provider = { path = "crates/quorp_provider" }
+quorp_lsp = { path = "crates/quorp_lsp" }
 quorp_render = { path = "crates/quorp_render" }
 quorp_repo_graph = { path = "crates/quorp_repo_graph" }
 quorp_repo_scan = { path = "crates/quorp_repo_scan" }

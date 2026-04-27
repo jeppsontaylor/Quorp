@@ -293,6 +293,30 @@ pub(crate) fn canonical_action_record(
         AgentAction::StructuralSearch { .. } => "StructuralSearch",
         AgentAction::StructuralEditPreview { .. } => "StructuralEditPreview",
         AgentAction::CargoDiagnostics { .. } => "CargoDiagnostics",
+        AgentAction::LspDiagnostics { .. } => "LspDiagnostics",
+        AgentAction::LspDefinition { .. } => "LspDefinition",
+        AgentAction::LspReferences { .. } => "LspReferences",
+        AgentAction::LspHover { .. } => "LspHover",
+        AgentAction::LspWorkspaceSymbols { .. } => "LspWorkspaceSymbols",
+        AgentAction::LspDocumentSymbols { .. } => "LspDocumentSymbols",
+        AgentAction::LspCodeActions { .. } => "LspCodeActions",
+        AgentAction::LspRenamePreview { .. } => "LspRenamePreview",
+        AgentAction::McpListTools { .. } => "McpListTools",
+        AgentAction::McpListResources { .. } => "McpListResources",
+        AgentAction::McpReadResource { .. } => "McpReadResource",
+        AgentAction::McpListPrompts { .. } => "McpListPrompts",
+        AgentAction::McpGetPrompt { .. } => "McpGetPrompt",
+        AgentAction::ProcessStart { .. } => "ProcessStart",
+        AgentAction::ProcessRead { .. } => "ProcessRead",
+        AgentAction::ProcessWrite { .. } => "ProcessWrite",
+        AgentAction::ProcessStop { .. } => "ProcessStop",
+        AgentAction::ProcessWaitForPort { .. } => "ProcessWaitForPort",
+        AgentAction::BrowserOpen { .. } => "BrowserOpen",
+        AgentAction::BrowserScreenshot { .. } => "BrowserScreenshot",
+        AgentAction::BrowserConsoleLogs { .. } => "BrowserConsoleLogs",
+        AgentAction::BrowserNetworkErrors { .. } => "BrowserNetworkErrors",
+        AgentAction::BrowserAccessibilitySnapshot { .. } => "BrowserAccessibilitySnapshot",
+        AgentAction::BrowserClose { .. } => "BrowserClose",
         AgentAction::GetRepoCapsule { .. } => "GetRepoCapsule",
         AgentAction::ExplainValidationFailure { .. } => "ExplainValidationFailure",
         AgentAction::SuggestImplementationTargets { .. } => "SuggestImplementationTargets",
@@ -374,6 +398,160 @@ pub(crate) fn canonical_action_signature(
             command.as_deref().unwrap_or("default"),
             include_clippy
         ),
+        AgentAction::LspDiagnostics { path } => format!("lsp_diagnostics:{}", canonical_path(path)),
+        AgentAction::LspDefinition {
+            path,
+            symbol,
+            line,
+            character,
+        } => format!(
+            "lsp_definition:{}:{}:{}:{}",
+            canonical_path(path),
+            symbol.trim(),
+            line.unwrap_or_default(),
+            character.unwrap_or_default()
+        ),
+        AgentAction::LspReferences {
+            path,
+            symbol,
+            line,
+            character,
+            limit,
+        } => format!(
+            "lsp_references:{}:{}:{}:{}:{}",
+            path.as_deref().map(canonical_path).unwrap_or_default(),
+            symbol.trim(),
+            line.unwrap_or_default(),
+            character.unwrap_or_default(),
+            limit
+        ),
+        AgentAction::LspHover {
+            path,
+            line,
+            character,
+        } => format!("lsp_hover:{}:{}:{}", canonical_path(path), line, character),
+        AgentAction::LspWorkspaceSymbols { query, limit } => {
+            format!("lsp_workspace_symbols:{}:{}", query.trim(), limit)
+        }
+        AgentAction::LspDocumentSymbols { path } => {
+            format!("lsp_document_symbols:{}", canonical_path(path))
+        }
+        AgentAction::LspCodeActions {
+            path,
+            line,
+            character,
+        } => format!(
+            "lsp_code_actions:{}:{}:{}",
+            canonical_path(path),
+            line,
+            character
+        ),
+        AgentAction::LspRenamePreview {
+            path,
+            old_name,
+            new_name,
+            limit,
+        } => format!(
+            "lsp_rename_preview:{}:{}:{}:{}",
+            canonical_path(path),
+            old_name.trim(),
+            new_name.trim(),
+            limit
+        ),
+        AgentAction::McpListTools { server_name } => {
+            format!("mcp_list_tools:{}", server_name.trim())
+        }
+        AgentAction::McpListResources {
+            server_name,
+            cursor,
+        } => format!(
+            "mcp_list_resources:{}:{}",
+            server_name.trim(),
+            cursor.as_deref().unwrap_or_default().trim()
+        ),
+        AgentAction::McpReadResource { server_name, uri } => {
+            format!("mcp_read_resource:{}:{}", server_name.trim(), uri.trim())
+        }
+        AgentAction::McpListPrompts {
+            server_name,
+            cursor,
+        } => format!(
+            "mcp_list_prompts:{}:{}",
+            server_name.trim(),
+            cursor.as_deref().unwrap_or_default().trim()
+        ),
+        AgentAction::McpGetPrompt {
+            server_name,
+            name,
+            arguments,
+        } => format!(
+            "mcp_get_prompt:{}:{}:{}",
+            server_name.trim(),
+            name.trim(),
+            short_text_fingerprint(
+                &arguments
+                    .as_ref()
+                    .map(|value| value.to_string())
+                    .unwrap_or_default()
+            )
+        ),
+        AgentAction::ProcessStart { command, args, cwd } => format!(
+            "process_start:{}:{}:{}",
+            canonical_shell(command),
+            short_text_fingerprint(&args.join(" ")),
+            cwd.as_deref().map(canonical_path).unwrap_or_default()
+        ),
+        AgentAction::ProcessRead {
+            process_id,
+            tail_lines,
+        } => format!("process_read:{}:{}", process_id.trim(), tail_lines),
+        AgentAction::ProcessWrite { process_id, stdin } => format!(
+            "process_write:{}:{}",
+            process_id.trim(),
+            short_text_fingerprint(stdin)
+        ),
+        AgentAction::ProcessStop { process_id } => {
+            format!("process_stop:{}", process_id.trim())
+        }
+        AgentAction::ProcessWaitForPort {
+            process_id,
+            host,
+            port,
+            timeout_ms,
+        } => format!(
+            "process_wait_for_port:{}:{}:{}:{}",
+            process_id.trim(),
+            host.trim(),
+            port,
+            timeout_ms
+        ),
+        AgentAction::BrowserOpen {
+            url,
+            headless,
+            width,
+            height,
+        } => format!(
+            "browser_open:{}:{}:{:?}:{:?}",
+            url.trim(),
+            headless,
+            width,
+            height
+        ),
+        AgentAction::BrowserScreenshot { browser_id } => {
+            format!("browser_screenshot:{}", browser_id.trim())
+        }
+        AgentAction::BrowserConsoleLogs { browser_id, limit } => {
+            format!("browser_console_logs:{}:{}", browser_id.trim(), limit)
+        }
+        AgentAction::BrowserNetworkErrors { browser_id, limit } => {
+            format!("browser_network_errors:{}:{}", browser_id.trim(), limit)
+        }
+        AgentAction::BrowserAccessibilitySnapshot { browser_id } => {
+            format!("browser_accessibility_snapshot:{}", browser_id.trim())
+        }
+        AgentAction::BrowserClose { browser_id } => {
+            format!("browser_close:{}", browser_id.trim())
+        }
         AgentAction::GetRepoCapsule { query, .. } => {
             format!("capsule:{}", query.as_deref().unwrap_or_default().trim())
         }
@@ -537,7 +715,27 @@ pub(crate) fn canonical_action_target_path(action: &AgentAction) -> Option<Strin
         | AgentAction::WriteFile { path, .. }
         | AgentAction::ApplyPatch { path, .. }
         | AgentAction::ReplaceBlock { path, .. }
-        | AgentAction::SetExecutable { path } => Some(canonical_path(path)),
+        | AgentAction::SetExecutable { path }
+        | AgentAction::LspDiagnostics { path }
+        | AgentAction::LspDefinition { path, .. }
+        | AgentAction::LspHover { path, .. }
+        | AgentAction::LspDocumentSymbols { path }
+        | AgentAction::LspCodeActions { path, .. }
+        | AgentAction::LspRenamePreview { path, .. } => Some(canonical_path(path)),
+        AgentAction::LspReferences {
+            path: Some(path), ..
+        } => Some(canonical_path(path)),
+        AgentAction::ProcessStart { .. }
+        | AgentAction::ProcessRead { .. }
+        | AgentAction::ProcessWrite { .. }
+        | AgentAction::ProcessStop { .. }
+        | AgentAction::ProcessWaitForPort { .. }
+        | AgentAction::BrowserOpen { .. }
+        | AgentAction::BrowserScreenshot { .. }
+        | AgentAction::BrowserConsoleLogs { .. }
+        | AgentAction::BrowserNetworkErrors { .. }
+        | AgentAction::BrowserAccessibilitySnapshot { .. }
+        | AgentAction::BrowserClose { .. } => None,
         _ => None,
     }
 }

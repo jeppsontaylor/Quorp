@@ -17,5 +17,9 @@ anyhow.workspace = true
 quorp_ids = { workspace = true }
 quorp_memory_model = { workspace = true }
 quorp_storage = { workspace = true }
+rusqlite = "0.37.0"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

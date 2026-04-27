@@ -1,5 +1,5 @@
 [package]
-name = "quorp_agent_core"
+name = "quorp_lsp"
 version = "0.1.0"
 edition.workspace = true
 publish.workspace = true
@@ -7,17 +7,20 @@ publish.workspace = true
 [lints]
 workspace = true
 
+[lib]
+path = "src/quorp_lsp.rs"
+
 [dependencies]
 anyhow.workspace = true
-futures.workspace = true
 ignore.workspace = true
-log.workspace = true
-quorp_core.workspace = true
-serde.workspace = true
+regex.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 shlex.workspace = true
+syn = { workspace = true, features = ["full"] }
 toml.workspace = true
 url.workspace = true
+walkdir.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true

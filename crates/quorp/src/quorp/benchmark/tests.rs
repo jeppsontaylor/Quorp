@@ -2544,13 +2544,16 @@ fn benchmark_lock_can_be_skipped_for_child_runs() {
 #[test]
 fn benchmark_run_completes_with_fake_model_server() {
     let _env_guard = test_env_guard();
+    clear_benchmark_completion_policy_env_overrides();
     let temp_home = tempfile::tempdir().expect("temp home");
     let temp_results = tempfile::tempdir().expect("temp results");
     let (_fixture_dir, issue_dir) = create_toy_preview_benchmark_fixture();
 
     let original_home = std::env::var("HOME").ok();
+    let original_native_tool_calls = std::env::var("QUORP_BEN_NATIVE_TOOL_CALLS").ok();
     unsafe {
         std::env::set_var("HOME", temp_home.path());
+        std::env::set_var("QUORP_BEN_NATIVE_TOOL_CALLS", "false");
     }
 
     let (base_url, server_handle) = start_fake_completion_server(
@@ -2570,7 +2573,7 @@ fn benchmark_run_completes_with_fake_model_server() {
                 "verifier_plan": null
             })
             .to_string(),
-            Duration::from_millis(250),
+            Duration::from_secs(5),
         );
 
     let result = run_benchmark(BenchmarkRunOptions {
@@ -2599,6 +2602,10 @@ fn benchmark_run_completes_with_fake_model_server() {
         unsafe {
             std::env::remove_var("HOME");
         }
+    }
+    match original_native_tool_calls {
+        Some(value) => unsafe { std::env::set_var("QUORP_BEN_NATIVE_TOOL_CALLS", value) },
+        None => unsafe { std::env::remove_var("QUORP_BEN_NATIVE_TOOL_CALLS") },
     }
 
     result.expect("benchmark run should complete");
@@ -2691,7 +2698,7 @@ fn benchmark_run_completes_with_fake_remote_model_server_with_explicit_model() {
                 "verifier_plan": null
             })
             .to_string(),
-            Duration::from_millis(250),
+            Duration::from_secs(5),
         );
 
     let result = run_benchmark(BenchmarkRunOptions {
@@ -2770,7 +2777,7 @@ fn benchmark_run_records_effective_prompt_compaction_policy_for_verified_27b() {
                 "verifier_plan": null
             })
             .to_string(),
-            Duration::from_millis(250),
+            Duration::from_secs(5),
         );
 
     run_benchmark(BenchmarkRunOptions {
@@ -3050,7 +3057,7 @@ fn challenge_judge_native_completes_with_remote_model_server() {
 
     let (base_url, server_handle) = start_fake_completion_server(
         r#"{"passed":true,"summary":"looks good","rationale":"the evaluation passed"}"#.to_string(),
-        Duration::from_millis(250),
+        Duration::from_secs(5),
     );
 
     let manifest = BenchmarkManifest {

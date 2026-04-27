@@ -94,318 +94,17 @@ pub fn spawn_command_service_loop(
                         project_root,
                         responder,
                         enable_rollback_on_validation_failure,
-                    } => match action {
-                        AgentAction::RunCommand {
-                            command,
-                            timeout_ms,
-                        } => {
-                            spawn_run_command_task(
-                                event_tx.clone(),
-                                session_id,
-                                command,
-                                cwd,
-                                project_root,
-                                Duration::from_millis(timeout_ms),
-                                responder,
-                            );
-                        }
-                        AgentAction::ReadFile { path, range } => {
-                            spawn_read_file_task(
-                                event_tx.clone(),
-                                session_id,
-                                cwd,
-                                project_root,
-                                path,
-                                range,
-                                responder,
-                            );
-                        }
-                        AgentAction::ListDirectory { path } => {
-                            spawn_list_directory_task(
-                                event_tx.clone(),
-                                session_id,
-                                cwd,
-                                project_root,
-                                path,
-                                responder,
-                            );
-                        }
-                        AgentAction::SearchText { query, limit } => {
-                            spawn_search_text_task(
-                                event_tx.clone(),
-                                session_id,
-                                cwd,
-                                project_root,
-                                query,
-                                limit,
-                                responder,
-                            );
-                        }
-                        AgentAction::SearchSymbols { query, limit } => {
-                            spawn_search_symbols_task(
-                                event_tx.clone(),
-                                session_id,
-                                cwd,
-                                project_root,
-                                query,
-                                limit,
-                                responder,
-                            );
-                        }
-                        AgentAction::FindFiles { query, limit } => {
-                            spawn_find_files_task(
-                                event_tx.clone(),
-                                session_id,
-                                cwd,
-                                project_root,
-                                query,
-                                limit,
-                                responder,
-                            );
-                        }
-                        AgentAction::StructuralSearch {
-                            pattern,
-                            language,
-                            path,
-                            limit,
-                        } => {
-                            spawn_structural_search_task(
-                                event_tx.clone(),
-                                session_id,
-                                StructuralSearchTaskRequest {
-                                    cwd,
-                                    project_root,
-                                    pattern,
-                                    language,
-                                    path,
-                                    limit,
-                                    responder,
-                                },
-                            );
-                        }
-                        AgentAction::StructuralEditPreview {
-                            pattern,
-                            rewrite,
-                            language,
-                            path,
-                        } => {
-                            spawn_structural_edit_preview_task(
-                                event_tx.clone(),
-                                session_id,
-                                StructuralEditPreviewTaskRequest {
-                                    cwd,
-                                    project_root,
-                                    pattern,
-                                    rewrite,
-                                    language,
-                                    path,
-                                    responder,
-                                },
-                            );
-                        }
-                        AgentAction::CargoDiagnostics {
-                            command,
-                            include_clippy,
-                        } => {
-                            spawn_cargo_diagnostics_task(
-                                event_tx.clone(),
-                                session_id,
-                                cwd,
-                                project_root,
-                                command,
-                                include_clippy,
-                                responder,
-                            );
-                        }
-                        AgentAction::GetRepoCapsule { query, limit } => {
-                            spawn_repo_capsule_task(
-                                event_tx.clone(),
-                                session_id,
-                                cwd,
-                                project_root,
-                                query,
-                                limit,
-                                responder,
-                            );
-                        }
-                        AgentAction::ExplainValidationFailure { command, output } => {
-                            spawn_explain_validation_failure_task(
-                                event_tx.clone(),
-                                session_id,
-                                command,
-                                output,
-                                responder,
-                            );
-                        }
-                        AgentAction::SuggestImplementationTargets {
-                            command,
-                            output,
-                            failing_path,
-                            failing_line,
-                        } => {
-                            spawn_suggest_implementation_targets_task(
-                                event_tx.clone(),
-                                session_id,
-                                SuggestImplementationTargetsTaskRequest {
-                                    command,
-                                    output,
-                                    failing_path,
-                                    failing_line,
-                                    responder,
-                                },
-                            );
-                        }
-                        AgentAction::SuggestEditAnchors {
-                            path,
-                            range,
-                            search_hint,
-                        } => {
-                            spawn_suggest_edit_anchors_task(
-                                event_tx.clone(),
-                                session_id,
-                                SuggestEditAnchorsTaskRequest {
-                                    cwd,
-                                    project_root,
-                                    path,
-                                    range,
-                                    search_hint,
-                                    responder,
-                                },
-                            );
-                        }
-                        AgentAction::PreviewEdit { path, edit } => {
-                            spawn_preview_edit_task(
-                                event_tx.clone(),
-                                session_id,
-                                PreviewEditTaskRequest {
-                                    cwd,
-                                    project_root,
-                                    path,
-                                    edit,
-                                    responder,
-                                },
-                            );
-                        }
-                        AgentAction::ReplaceRange {
-                            path,
-                            range,
-                            expected_hash,
-                            replacement,
-                        } => {
-                            spawn_replace_range_task(
-                                event_tx.clone(),
-                                session_id,
-                                cwd,
-                                project_root,
-                                path,
-                                range,
-                                expected_hash,
-                                replacement,
-                                responder,
-                            );
-                        }
-                        AgentAction::ModifyToml {
-                            path,
-                            expected_hash,
-                            operations,
-                        } => {
-                            spawn_modify_toml_task(
-                                event_tx.clone(),
-                                session_id,
-                                cwd,
-                                project_root,
-                                path,
-                                expected_hash,
-                                operations,
-                                responder,
-                            );
-                        }
-                        AgentAction::ApplyPreview { preview_id } => {
-                            spawn_apply_preview_task(
-                                event_tx.clone(),
-                                session_id,
-                                preview_id,
-                                responder,
-                            );
-                        }
-                        AgentAction::McpCallTool {
-                            server_name,
-                            tool_name,
-                            arguments,
-                        } => {
-                            spawn_mcp_call_task(
-                                event_tx.clone(),
-                                session_id,
-                                cwd,
-                                project_root,
-                                server_name,
-                                tool_name,
-                                arguments,
-                                responder,
-                            );
-                        }
-                        AgentAction::WriteFile { path, content } => {
-                            spawn_write_file_task(
-                                event_tx.clone(),
-                                session_id,
-                                cwd,
-                                project_root,
-                                path,
-                                content,
-                                responder,
-                            );
-                        }
-                        AgentAction::ApplyPatch { path, patch } => {
-                            spawn_apply_patch_task(
-                                event_tx.clone(),
-                                session_id,
-                                cwd,
-                                project_root,
-                                path,
-                                patch,
-                                responder,
-                            );
-                        }
-                        AgentAction::RunValidation { plan } => {
-                            spawn_run_validation_task(
-                                event_tx.clone(),
-                                session_id,
-                                cwd,
-                                project_root,
-                                plan,
-                                responder,
-                                enable_rollback_on_validation_failure,
-                            );
-                        }
-                        AgentAction::ReplaceBlock {
-                            path,
-                            search_block,
-                            replace_block,
-                            range,
-                        } => {
-                            spawn_replace_block_task(
-                                event_tx.clone(),
-                                session_id,
-                                cwd,
-                                project_root,
-                                path,
-                                search_block,
-                                replace_block,
-                                range,
-                                responder,
-                            );
-                        }
-                        AgentAction::SetExecutable { path } => {
-                            spawn_set_executable_task(
-                                event_tx.clone(),
-                                session_id,
-                                cwd,
-                                project_root,
-                                path,
-                                responder,
-                            );
-                        }
-                    },
+                    } => {
+                        execute_action::handle_execute_action_request(
+                            event_tx.clone(),
+                            session_id,
+                            action,
+                            cwd,
+                            project_root,
+                            responder,
+                            enable_rollback_on_validation_failure,
+                        );
+                    }
                 }
             }
         });
@@ -1711,13 +1410,32 @@ fn unique_anchor_lines(
 }
 
 mod actions;
+mod lsp;
+mod process_browser;
 #[allow(unused_imports)]
 pub(crate) use actions::{
     emit_tool_error, emit_tool_finished, emit_tool_result, render_mcp_tool_result,
     run_command_capture, run_command_streaming, spawn_apply_patch_task, spawn_apply_preview_task,
-    spawn_mcp_call_task, spawn_modify_toml_task, spawn_replace_block_task,
-    spawn_replace_range_task, spawn_run_validation_task, spawn_set_executable_task,
-    spawn_write_file_task, truncate_diagnostic_text,
+    spawn_mcp_call_task, spawn_mcp_get_prompt_task, spawn_mcp_list_prompts_task,
+    spawn_mcp_list_resources_task, spawn_mcp_list_tools_task, spawn_mcp_read_resource_task,
+    spawn_modify_toml_task, spawn_replace_block_task, spawn_replace_range_task,
+    spawn_run_validation_task, spawn_set_executable_task, spawn_write_file_task,
+    truncate_diagnostic_text,
+};
+#[allow(unused_imports)]
+pub(crate) use lsp::{
+    spawn_lsp_code_actions_task, spawn_lsp_definition_task, spawn_lsp_diagnostics_task,
+    spawn_lsp_document_symbols_task, spawn_lsp_hover_task, spawn_lsp_references_task,
+    spawn_lsp_rename_preview_task, spawn_lsp_workspace_symbols_task,
+};
+mod execute_action;
+#[allow(unused_imports)]
+pub(crate) use process_browser::{
+    BrowserOpenSpec, ProcessStartSpec, spawn_browser_accessibility_snapshot_task,
+    spawn_browser_close_task, spawn_browser_console_logs_task, spawn_browser_network_errors_task,
+    spawn_browser_open_task, spawn_browser_screenshot_task, spawn_process_read_task,
+    spawn_process_start_task, spawn_process_stop_task, spawn_process_wait_for_port_task,
+    spawn_process_write_task,
 };
 
 #[cfg(test)]

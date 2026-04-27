@@ -13,3 +13,7 @@ workspace = true
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 schemars = { workspace = true, features = ["derive"] }
+toml.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true

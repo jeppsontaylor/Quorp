@@ -15,6 +15,7 @@ use std::time::Instant;
 use futures::future::BoxFuture;
 use serde::Serialize;
 
+use super::action_summary::action_edit_summary;
 use super::*;
 use crate::agent_context::{
     AgentConfig, AutonomyProfile, PolicyMode, PolicySettings, load_agent_config,
@@ -24,6 +25,13 @@ use crate::agent_protocol::{
     ActionOutcome, AgentAction, AgentMode, PreviewEditPayload, ValidationPlan, stable_content_hash,
 };
 use crate::agent_turn::{AgentTurnResponse, parse_agent_turn_response};
+fn emit_benchmark_injection_event(event_sink: &dyn RuntimeEventSink, detail: String) {
+    event_sink.emit(RuntimeEvent::PhaseChanged {
+        phase: "benchmark_repair_injection",
+        detail: Some(detail),
+    });
+}
+
 pub(crate) fn is_stable_content_hash(value: &str) -> bool {
     value.len() == 16 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
 }
@@ -53,6 +61,19 @@ pub(crate) fn action_can_fail_without_aborting_batch(
         || action_summary.starts_with("list_directory ")
         || action_summary.starts_with("search_text ")
         || action_summary.starts_with("search_symbols ")
+        || action_summary.starts_with("lsp_diagnostics ")
+        || action_summary.starts_with("lsp_definition ")
+        || action_summary.starts_with("lsp_references ")
+        || action_summary.starts_with("lsp_hover ")
+        || action_summary.starts_with("lsp_workspace_symbols ")
+        || action_summary.starts_with("lsp_document_symbols ")
+        || action_summary.starts_with("lsp_code_actions ")
+        || action_summary.starts_with("lsp_rename_preview ")
+        || action_summary.starts_with("mcp_list_tools ")
+        || action_summary.starts_with("mcp_list_resources ")
+        || action_summary.starts_with("mcp_read_resource ")
+        || action_summary.starts_with("mcp_list_prompts ")
+        || action_summary.starts_with("mcp_get_prompt ")
         || action_summary.starts_with("get_repo_capsule ")
         || action_summary.starts_with("explain_validation_failure ")
         || action_summary.starts_with("suggest_edit_anchors ")
@@ -158,6 +179,9 @@ pub(crate) async fn maybe_inject_exact_benchmark_source_patch(
     transcript: &mut Vec<TranscriptMessage>,
     reason: &str,
 ) -> Result<bool, String> {
+    if state.policy.mode != PolicyMode::BenchmarkAutonomous {
+        return Ok(false);
+    }
     let Some(repair_state) = state.benchmark_repair_state.as_ref() else {
         return Ok(false);
     };
@@ -188,6 +212,13 @@ pub(crate) async fn maybe_inject_exact_benchmark_source_patch(
     else {
         return Ok(false);
     };
+    emit_benchmark_injection_event(
+        event_sink,
+        format!(
+            "exact benchmark source patch: {}",
+            canonical_path(patch_target.as_ref())
+        ),
+    );
     transcript.push(TranscriptMessage {
         role: TranscriptRole::User,
         content: format!(
@@ -233,6 +264,9 @@ pub(crate) async fn maybe_inject_cargo_dist_deterministic_patch(
     transcript: &mut Vec<TranscriptMessage>,
     reason: &str,
 ) -> Result<bool, String> {
+    if state.policy.mode != PolicyMode::BenchmarkAutonomous {
+        return Ok(false);
+    }
     let should_handle_case = state.benchmark_case_ledger.as_ref().is_some_and(|ledger| {
         ledger
             .owner_files
@@ -264,6 +298,10 @@ pub(crate) async fn maybe_inject_cargo_dist_deterministic_patch(
     if actions.is_empty() {
         return Ok(false);
     }
+    emit_benchmark_injection_event(
+        event_sink,
+        "deterministic benchmark Case 04 source patch".to_string(),
+    );
     transcript.push(TranscriptMessage {
         role: TranscriptRole::User,
         content: format!(
@@ -327,6 +365,9 @@ pub(crate) async fn maybe_inject_cc_rs_compile_intermediates_deterministic_patch
     transcript: &mut Vec<TranscriptMessage>,
     reason: &str,
 ) -> Result<bool, String> {
+    if state.policy.mode != PolicyMode::BenchmarkAutonomous {
+        return Ok(false);
+    }
     let should_handle_case = state.benchmark_case_ledger.as_ref().is_some_and(|ledger| {
         ledger
             .owner_files
@@ -355,6 +396,10 @@ pub(crate) async fn maybe_inject_cc_rs_compile_intermediates_deterministic_patch
         return Ok(false);
     };
     let action_summary = action.summary();
+    emit_benchmark_injection_event(
+        event_sink,
+        "deterministic benchmark Case 05 source patch".to_string(),
+    );
     transcript.push(TranscriptMessage {
         role: TranscriptRole::User,
         content: format!(
@@ -608,6 +653,16 @@ pub(crate) fn action_phase(action: &AgentAction) -> &'static str {
         | AgentAction::SetExecutable { .. }
         | AgentAction::RunCommand { .. }
         | AgentAction::McpCallTool { .. } => "editing",
+        AgentAction::ProcessStart { .. } | AgentAction::ProcessWrite { .. } => "editing",
+        AgentAction::ProcessStop { .. } => "editing",
+        AgentAction::ProcessRead { .. }
+        | AgentAction::ProcessWaitForPort { .. }
+        | AgentAction::BrowserOpen { .. }
+        | AgentAction::BrowserScreenshot { .. }
+        | AgentAction::BrowserConsoleLogs { .. }
+        | AgentAction::BrowserNetworkErrors { .. }
+        | AgentAction::BrowserAccessibilitySnapshot { .. }
+        | AgentAction::BrowserClose { .. } => "inspecting",
         AgentAction::ReadFile { .. }
         | AgentAction::ListDirectory { .. }
         | AgentAction::SearchText { .. }
@@ -616,6 +671,19 @@ pub(crate) fn action_phase(action: &AgentAction) -> &'static str {
         | AgentAction::StructuralSearch { .. }
         | AgentAction::StructuralEditPreview { .. }
         | AgentAction::CargoDiagnostics { .. }
+        | AgentAction::LspDiagnostics { .. }
+        | AgentAction::LspDefinition { .. }
+        | AgentAction::LspReferences { .. }
+        | AgentAction::LspHover { .. }
+        | AgentAction::LspWorkspaceSymbols { .. }
+        | AgentAction::LspDocumentSymbols { .. }
+        | AgentAction::LspCodeActions { .. }
+        | AgentAction::LspRenamePreview { .. }
+        | AgentAction::McpListTools { .. }
+        | AgentAction::McpListResources { .. }
+        | AgentAction::McpReadResource { .. }
+        | AgentAction::McpListPrompts { .. }
+        | AgentAction::McpGetPrompt { .. }
         | AgentAction::GetRepoCapsule { .. }
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
@@ -634,6 +702,30 @@ pub(crate) fn action_kind(action: &AgentAction) -> &'static str {
         AgentAction::StructuralSearch { .. } => "structural_search",
         AgentAction::StructuralEditPreview { .. } => "structural_edit_preview",
         AgentAction::CargoDiagnostics { .. } => "cargo_diagnostics",
+        AgentAction::LspDiagnostics { .. } => "lsp_diagnostics",
+        AgentAction::LspDefinition { .. } => "lsp_definition",
+        AgentAction::LspReferences { .. } => "lsp_references",
+        AgentAction::LspHover { .. } => "lsp_hover",
+        AgentAction::LspWorkspaceSymbols { .. } => "lsp_workspace_symbols",
+        AgentAction::LspDocumentSymbols { .. } => "lsp_document_symbols",
+        AgentAction::LspCodeActions { .. } => "lsp_code_actions",
+        AgentAction::LspRenamePreview { .. } => "lsp_rename_preview",
+        AgentAction::McpListTools { .. } => "mcp_list_tools",
+        AgentAction::McpListResources { .. } => "mcp_list_resources",
+        AgentAction::McpReadResource { .. } => "mcp_read_resource",
+        AgentAction::McpListPrompts { .. } => "mcp_list_prompts",
+        AgentAction::McpGetPrompt { .. } => "mcp_get_prompt",
+        AgentAction::ProcessStart { .. } => "process_start",
+        AgentAction::ProcessRead { .. } => "process_read",
+        AgentAction::ProcessWrite { .. } => "process_write",
+        AgentAction::ProcessStop { .. } => "process_stop",
+        AgentAction::ProcessWaitForPort { .. } => "process_wait_for_port",
+        AgentAction::BrowserOpen { .. } => "browser_open",
+        AgentAction::BrowserScreenshot { .. } => "browser_screenshot",
+        AgentAction::BrowserConsoleLogs { .. } => "browser_console_logs",
+        AgentAction::BrowserNetworkErrors { .. } => "browser_network_errors",
+        AgentAction::BrowserAccessibilitySnapshot { .. } => "browser_accessibility_snapshot",
+        AgentAction::BrowserClose { .. } => "browser_close",
         AgentAction::GetRepoCapsule { .. } => "get_repo_capsule",
         AgentAction::ExplainValidationFailure { .. } => "explain_validation_failure",
         AgentAction::SuggestImplementationTargets { .. } => "suggest_implementation_targets",
@@ -664,6 +756,15 @@ pub(crate) fn action_target_path(action: &AgentAction) -> Option<String> {
         | AgentAction::ApplyPatch { path, .. }
         | AgentAction::ReplaceBlock { path, .. }
         | AgentAction::SetExecutable { path }
+        | AgentAction::LspDiagnostics { path }
+        | AgentAction::LspDefinition { path, .. }
+        | AgentAction::LspHover { path, .. }
+        | AgentAction::LspDocumentSymbols { path }
+        | AgentAction::LspCodeActions { path, .. }
+        | AgentAction::LspRenamePreview { path, .. }
+        | AgentAction::LspReferences {
+            path: Some(path), ..
+        }
         | AgentAction::StructuralSearch {
             path: Some(path), ..
         }
@@ -673,6 +774,8 @@ pub(crate) fn action_target_path(action: &AgentAction) -> Option<String> {
         AgentAction::SearchText { .. }
         | AgentAction::SearchSymbols { .. }
         | AgentAction::FindFiles { .. }
+        | AgentAction::LspReferences { path: None, .. }
+        | AgentAction::LspWorkspaceSymbols { .. }
         | AgentAction::StructuralSearch { path: None, .. }
         | AgentAction::StructuralEditPreview { path: None, .. }
         | AgentAction::CargoDiagnostics { .. }
@@ -682,55 +785,23 @@ pub(crate) fn action_target_path(action: &AgentAction) -> Option<String> {
         | AgentAction::ApplyPreview { .. }
         | AgentAction::RunValidation { .. }
         | AgentAction::RunCommand { .. }
+        | AgentAction::McpListTools { .. }
+        | AgentAction::McpListResources { .. }
+        | AgentAction::McpReadResource { .. }
+        | AgentAction::McpListPrompts { .. }
+        | AgentAction::McpGetPrompt { .. }
         | AgentAction::McpCallTool { .. } => None,
-    }
-}
-
-pub(crate) fn action_edit_summary(action: &AgentAction) -> Option<String> {
-    match action {
-        AgentAction::WriteFile { content, .. } => {
-            Some(format!("write {} lines", content.lines().count()))
-        }
-        AgentAction::ApplyPatch { patch, .. } => {
-            Some(format!("patch {} hunks", patch.matches("@@").count()))
-        }
-        AgentAction::ReplaceBlock {
-            search_block,
-            replace_block,
-            ..
-        } => Some(format!(
-            "replace {} lines -> {} lines",
-            search_block.lines().count(),
-            replace_block.lines().count()
-        )),
-        AgentAction::ReplaceRange {
-            range, replacement, ..
-        } => Some(format!(
-            "replace_range {} with {} lines",
-            range.label(),
-            replacement.lines().count()
-        )),
-        AgentAction::ModifyToml { operations, .. } => {
-            Some(format!("modify_toml {} operations", operations.len()))
-        }
-        AgentAction::ApplyPreview { preview_id } => Some(format!("apply_preview {preview_id}")),
-        AgentAction::SetExecutable { .. } => Some("set executable bit".to_string()),
-        AgentAction::ReadFile { .. }
-        | AgentAction::ListDirectory { .. }
-        | AgentAction::SearchText { .. }
-        | AgentAction::SearchSymbols { .. }
-        | AgentAction::FindFiles { .. }
-        | AgentAction::StructuralSearch { .. }
-        | AgentAction::StructuralEditPreview { .. }
-        | AgentAction::CargoDiagnostics { .. }
-        | AgentAction::GetRepoCapsule { .. }
-        | AgentAction::ExplainValidationFailure { .. }
-        | AgentAction::SuggestImplementationTargets { .. }
-        | AgentAction::SuggestEditAnchors { .. }
-        | AgentAction::PreviewEdit { .. }
-        | AgentAction::RunValidation { .. }
-        | AgentAction::RunCommand { .. }
-        | AgentAction::McpCallTool { .. } => None,
+        AgentAction::ProcessStart { .. }
+        | AgentAction::ProcessRead { .. }
+        | AgentAction::ProcessWrite { .. }
+        | AgentAction::ProcessStop { .. }
+        | AgentAction::ProcessWaitForPort { .. }
+        | AgentAction::BrowserOpen { .. }
+        | AgentAction::BrowserScreenshot { .. }
+        | AgentAction::BrowserConsoleLogs { .. }
+        | AgentAction::BrowserNetworkErrors { .. }
+        | AgentAction::BrowserAccessibilitySnapshot { .. }
+        | AgentAction::BrowserClose { .. } => None,
     }
 }
 
@@ -968,12 +1039,36 @@ pub(crate) fn summarize_tool_observation_for_transcript(
         | AgentAction::StructuralSearch { .. }
         | AgentAction::StructuralEditPreview { .. }
         | AgentAction::CargoDiagnostics { .. }
+        | AgentAction::LspDiagnostics { .. }
+        | AgentAction::LspDefinition { .. }
+        | AgentAction::LspReferences { .. }
+        | AgentAction::LspHover { .. }
+        | AgentAction::LspWorkspaceSymbols { .. }
+        | AgentAction::LspDocumentSymbols { .. }
+        | AgentAction::LspCodeActions { .. }
+        | AgentAction::LspRenamePreview { .. }
+        | AgentAction::McpListTools { .. }
+        | AgentAction::McpListResources { .. }
+        | AgentAction::McpReadResource { .. }
+        | AgentAction::McpListPrompts { .. }
+        | AgentAction::McpGetPrompt { .. }
         | AgentAction::GetRepoCapsule { .. }
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
         | AgentAction::SuggestEditAnchors { .. }
         | AgentAction::PreviewEdit { .. }
-        | AgentAction::McpCallTool { .. } => truncate_visible_text(output_text, 1800),
+        | AgentAction::McpCallTool { .. }
+        | AgentAction::ProcessStart { .. }
+        | AgentAction::ProcessRead { .. }
+        | AgentAction::ProcessWrite { .. }
+        | AgentAction::ProcessStop { .. }
+        | AgentAction::ProcessWaitForPort { .. }
+        | AgentAction::BrowserOpen { .. }
+        | AgentAction::BrowserScreenshot { .. }
+        | AgentAction::BrowserConsoleLogs { .. }
+        | AgentAction::BrowserNetworkErrors { .. }
+        | AgentAction::BrowserAccessibilitySnapshot { .. }
+        | AgentAction::BrowserClose { .. } => truncate_visible_text(output_text, 1800),
         AgentAction::WriteFile { .. }
         | AgentAction::ReplaceRange { .. }
         | AgentAction::ModifyToml { .. }

@@ -1540,28 +1540,28 @@ fn run_inline_task(
 
     let _ = execute!(stdout, Show);
     let outcome = final_outcome.context("inline worker exited without outcome")?;
-    if let Some(exit_code) = command_output_exit {
-        if exit_code == 0 {
-            println!(
-                "{}",
-                quorp_term::render_card(&quorp_term::TranscriptCard::Validation {
-                    label: "agent run".to_string(),
-                    status: quorp_term::ValidationStatus::Passed,
-                    frame: 0,
-                })
-            );
-            println!(
-                "{}",
-                quorp_term::render_card(&quorp_term::TranscriptCard::ProofReceipt {
-                    path: format!("{result_dir_display}/metadata.json"),
-                    summary: format!(
-                        "stop_reason={:?} · billed_tokens={} · runtime_ms={}",
-                        outcome.stop_reason, outcome.total_billed_tokens, outcome.duration_ms
-                    ),
-                })
-            );
-            return Ok(());
-        }
+    if let Some(exit_code) = command_output_exit
+        && exit_code == 0
+    {
+        println!(
+            "{}",
+            quorp_term::render_card(&quorp_term::TranscriptCard::Validation {
+                label: "agent run".to_string(),
+                status: quorp_term::ValidationStatus::Passed,
+                frame: 0,
+            })
+        );
+        println!(
+            "{}",
+            quorp_term::render_card(&quorp_term::TranscriptCard::ProofReceipt {
+                path: format!("{result_dir_display}/metadata.json"),
+                summary: format!(
+                    "stop_reason={:?} · billed_tokens={} · runtime_ms={}",
+                    outcome.stop_reason, outcome.total_billed_tokens, outcome.duration_ms
+                ),
+            })
+        );
+        return Ok(());
     }
 
     println!(

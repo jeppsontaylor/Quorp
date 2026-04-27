@@ -25,6 +25,9 @@ use crate::agent_protocol::{
     ActionOutcome, AgentAction, AgentMode, PreviewEditPayload, ValidationPlan, stable_content_hash,
 };
 use crate::agent_turn::{AgentTurnResponse, parse_agent_turn_response};
+use quorp_core::validation_planner::{
+    ProjectKind, ValidationPlannerResult, ValidationStage, plan_validation,
+};
 
 impl AgentTaskState {
     pub(crate) fn benchmark_narrow_repair_restricts_action(
@@ -50,6 +53,19 @@ impl AgentTaskState {
                 | AgentAction::ListDirectory { .. }
                 | AgentAction::SearchText { .. }
                 | AgentAction::SearchSymbols { .. }
+                | AgentAction::LspDiagnostics { .. }
+                | AgentAction::LspDefinition { .. }
+                | AgentAction::LspReferences { .. }
+                | AgentAction::LspHover { .. }
+                | AgentAction::LspWorkspaceSymbols { .. }
+                | AgentAction::LspDocumentSymbols { .. }
+                | AgentAction::LspCodeActions { .. }
+                | AgentAction::LspRenamePreview { .. }
+                | AgentAction::McpListTools { .. }
+                | AgentAction::McpListResources { .. }
+                | AgentAction::McpReadResource { .. }
+                | AgentAction::McpListPrompts { .. }
+                | AgentAction::McpGetPrompt { .. }
                 | AgentAction::GetRepoCapsule { .. }
                 | AgentAction::ExplainValidationFailure { .. }
                 | AgentAction::SuggestImplementationTargets { .. }
@@ -161,6 +177,21 @@ impl AgentTaskState {
             AgentAction::SearchText { query, .. } | AgentAction::SearchSymbols { query, .. } => {
                 !query.trim().is_empty()
             }
+            AgentAction::LspWorkspaceSymbols { query, .. } => !query.trim().is_empty(),
+            AgentAction::LspReferences { symbol, .. } => !symbol.trim().is_empty(),
+            AgentAction::LspDiagnostics { path }
+            | AgentAction::LspDefinition { path, .. }
+            | AgentAction::LspHover { path, .. }
+            | AgentAction::LspDocumentSymbols { path }
+            | AgentAction::LspCodeActions { path, .. }
+            | AgentAction::LspRenamePreview { path, .. } => {
+                self.benchmark_related_evidence_path(path)
+            }
+            AgentAction::McpListTools { .. }
+            | AgentAction::McpListResources { .. }
+            | AgentAction::McpReadResource { .. }
+            | AgentAction::McpListPrompts { .. }
+            | AgentAction::McpGetPrompt { .. } => true,
             AgentAction::GetRepoCapsule { .. }
             | AgentAction::ExplainValidationFailure { .. }
             | AgentAction::SuggestImplementationTargets { .. } => true,
@@ -286,6 +317,39 @@ impl AgentTaskState {
                     .canonical_action_history
                     .iter()
                     .any(|record| record.signature == format!("search_symbols:{}", query.trim())),
+                AgentAction::LspWorkspaceSymbols { query, .. } => self
+                    .agent_repair_memory
+                    .canonical_action_history
+                    .iter()
+                    .any(|record| {
+                        record.signature == format!("lsp_workspace_symbols:{}", query.trim())
+                    }),
+                AgentAction::LspReferences { symbol, .. } => self
+                    .agent_repair_memory
+                    .canonical_action_history
+                    .iter()
+                    .any(|record| record.signature == format!("lsp_references:{}", symbol.trim())),
+                AgentAction::LspDiagnostics { path }
+                | AgentAction::LspDefinition { path, .. }
+                | AgentAction::LspHover { path, .. }
+                | AgentAction::LspDocumentSymbols { path }
+                | AgentAction::LspCodeActions { path, .. }
+                | AgentAction::LspRenamePreview { path, .. } => self
+                    .agent_repair_memory
+                    .canonical_action_history
+                    .iter()
+                    .any(|record| record.signature == format!("lsp_path:{}", canonical_path(path))),
+                AgentAction::ProcessStart { .. }
+                | AgentAction::ProcessRead { .. }
+                | AgentAction::ProcessWrite { .. }
+                | AgentAction::ProcessStop { .. }
+                | AgentAction::ProcessWaitForPort { .. }
+                | AgentAction::BrowserOpen { .. }
+                | AgentAction::BrowserScreenshot { .. }
+                | AgentAction::BrowserConsoleLogs { .. }
+                | AgentAction::BrowserNetworkErrors { .. }
+                | AgentAction::BrowserAccessibilitySnapshot { .. }
+                | AgentAction::BrowserClose { .. } => false,
                 AgentAction::GetRepoCapsule { query, .. } => {
                     let query = query.as_deref().unwrap_or("").trim();
                     self.agent_repair_memory
@@ -529,6 +593,70 @@ impl AgentTaskState {
             AgentAction::SearchSymbols { query, .. } => {
                 self.last_tool_summary = Some(format!("searched repo symbols for `{query}`"));
             }
+            AgentAction::LspDiagnostics { path } => {
+                self.last_tool_summary = Some(format!("ran semantic diagnostics for `{path}`"));
+            }
+            AgentAction::LspDefinition { path, symbol, .. } => {
+                self.last_tool_summary =
+                    Some(format!("resolved `{symbol}` definition in `{path}`"));
+            }
+            AgentAction::LspReferences { symbol, .. } => {
+                self.last_tool_summary =
+                    Some(format!("searched semantic references for `{symbol}`"));
+            }
+            AgentAction::McpListTools { server_name } => {
+                self.last_tool_summary = Some(format!("listed MCP tools for `{server_name}`"));
+            }
+            AgentAction::McpListResources { server_name, .. } => {
+                self.last_tool_summary = Some(format!("listed MCP resources for `{server_name}`"));
+            }
+            AgentAction::McpReadResource { server_name, uri } => {
+                self.last_tool_summary =
+                    Some(format!("read MCP resource `{uri}` from `{server_name}`"));
+            }
+            AgentAction::McpListPrompts { server_name, .. } => {
+                self.last_tool_summary = Some(format!("listed MCP prompts for `{server_name}`"));
+            }
+            AgentAction::McpGetPrompt {
+                server_name, name, ..
+            } => {
+                self.last_tool_summary =
+                    Some(format!("got MCP prompt `{name}` from `{server_name}`"));
+            }
+            AgentAction::LspHover {
+                path,
+                line,
+                character,
+            } => {
+                self.last_tool_summary = Some(format!(
+                    "hovered semantic symbol at `{path}:{line}:{character}`"
+                ));
+            }
+            AgentAction::LspWorkspaceSymbols { query, .. } => {
+                self.last_tool_summary = Some(format!("searched workspace symbols for `{query}`"));
+            }
+            AgentAction::LspDocumentSymbols { path } => {
+                self.last_tool_summary = Some(format!("listed document symbols for `{path}`"));
+            }
+            AgentAction::LspCodeActions {
+                path,
+                line,
+                character,
+            } => {
+                self.last_tool_summary = Some(format!(
+                    "listed code actions at `{path}:{line}:{character}`"
+                ));
+            }
+            AgentAction::LspRenamePreview {
+                path,
+                old_name,
+                new_name,
+                ..
+            } => {
+                self.last_tool_summary = Some(format!(
+                    "previewed rename `{old_name}` -> `{new_name}` in `{path}`"
+                ));
+            }
             AgentAction::FindFiles { query, .. } => {
                 self.last_tool_summary = Some(format!("found files for `{query}`"));
             }
@@ -582,6 +710,79 @@ impl AgentTaskState {
                 ..
             } => {
                 self.last_tool_summary = Some(format!("requested MCP {server_name}/{tool_name}"));
+            }
+            AgentAction::ProcessStart { command, args, cwd } => {
+                self.last_tool_summary = Some(format!(
+                    "started managed process `{command}`{}{}",
+                    if args.is_empty() {
+                        String::new()
+                    } else {
+                        format!(" args({})", args.join(" "))
+                    },
+                    cwd.as_deref()
+                        .map(|cwd| format!(" cwd({cwd})"))
+                        .unwrap_or_default()
+                ));
+            }
+            AgentAction::ProcessRead {
+                process_id,
+                tail_lines,
+            } => {
+                self.last_tool_summary = Some(format!(
+                    "read managed process `{process_id}` tail {tail_lines}"
+                ));
+            }
+            AgentAction::ProcessWrite { process_id, stdin } => {
+                self.last_tool_summary = Some(format!(
+                    "wrote {} bytes to managed process `{process_id}`",
+                    stdin.len()
+                ));
+            }
+            AgentAction::ProcessStop { process_id } => {
+                self.last_tool_summary = Some(format!("stopped managed process `{process_id}`"));
+            }
+            AgentAction::ProcessWaitForPort {
+                process_id,
+                host,
+                port,
+                timeout_ms,
+            } => {
+                self.last_tool_summary = Some(format!(
+                    "waited for `{host}:{port}` on managed process `{process_id}` for {timeout_ms}ms"
+                ));
+            }
+            AgentAction::BrowserOpen {
+                url,
+                headless,
+                width,
+                height,
+            } => {
+                self.last_tool_summary = Some(format!(
+                    "opened browser for `{url}` headless={headless} viewport={:?}x{:?}",
+                    width, height
+                ));
+            }
+            AgentAction::BrowserScreenshot { browser_id } => {
+                self.last_tool_summary =
+                    Some(format!("captured browser screenshot for `{browser_id}`"));
+            }
+            AgentAction::BrowserConsoleLogs { browser_id, limit } => {
+                self.last_tool_summary = Some(format!(
+                    "read browser console logs for `{browser_id}` limit {limit}"
+                ));
+            }
+            AgentAction::BrowserNetworkErrors { browser_id, limit } => {
+                self.last_tool_summary = Some(format!(
+                    "read browser network errors for `{browser_id}` limit {limit}"
+                ));
+            }
+            AgentAction::BrowserAccessibilitySnapshot { browser_id } => {
+                self.last_tool_summary = Some(format!(
+                    "captured accessibility snapshot for `{browser_id}`"
+                ));
+            }
+            AgentAction::BrowserClose { browser_id } => {
+                self.last_tool_summary = Some(format!("closed browser `{browser_id}`"));
             }
         }
     }
@@ -711,13 +912,8 @@ impl AgentTaskState {
                 self.enqueue_validation_plan(plan);
             }
         }
-        self.enqueue_validation_plan(ValidationPlan {
-            fmt: true,
-            clippy: true,
-            workspace_tests: true,
-            tests: Vec::new(),
-            custom_commands: Vec::new(),
-        });
+        let planned_validation = validation_plan_from_workspace(&self.workspace_root);
+        self.enqueue_validation_plan(planned_validation);
     }
 
     pub(crate) fn enqueue_validation_plan(&mut self, plan: ValidationPlan) {
@@ -736,4 +932,55 @@ impl AgentTaskState {
             .map(ValidationPlan::summary)
             .collect()
     }
+}
+
+fn validation_plan_from_workspace(workspace_root: &str) -> ValidationPlan {
+    let planner = plan_validation(Path::new(workspace_root));
+    validation_plan_from_planner(&planner)
+}
+
+fn validation_plan_from_planner(planner: &ValidationPlannerResult) -> ValidationPlan {
+    let mut plan = ValidationPlan::default();
+    let mut custom_commands = Vec::new();
+
+    if planner.commands.is_empty() {
+        return ValidationPlan {
+            fmt: true,
+            clippy: true,
+            workspace_tests: true,
+            tests: Vec::new(),
+            custom_commands: Vec::new(),
+        };
+    }
+
+    let primary_kind = planner
+        .project
+        .as_ref()
+        .and_then(|project| project.primary_kind());
+    let rust_fallback = planner.project.is_none();
+    for command in &planner.commands {
+        match (
+            primary_kind,
+            rust_fallback,
+            command.stage,
+            command.ecosystem.as_str(),
+        ) {
+            (Some(ProjectKind::Rust), _, ValidationStage::Format, "rust")
+            | (None, true, ValidationStage::Format, "rust") => plan.fmt = true,
+            (Some(ProjectKind::Rust), _, ValidationStage::Lint, "rust")
+            | (None, true, ValidationStage::Lint, "rust") => plan.clippy = true,
+            (Some(ProjectKind::Rust), _, ValidationStage::Test, "rust")
+            | (None, true, ValidationStage::Test, "rust") => plan.workspace_tests = true,
+            _ => custom_commands.push(command.command.clone()),
+        }
+    }
+
+    if !plan.fmt && !plan.clippy && !plan.workspace_tests && custom_commands.is_empty() {
+        plan.fmt = true;
+        plan.clippy = true;
+        plan.workspace_tests = true;
+    }
+
+    plan.custom_commands = custom_commands;
+    plan
 }
