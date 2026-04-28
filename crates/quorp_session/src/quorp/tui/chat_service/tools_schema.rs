@@ -313,6 +313,45 @@ pub(crate) fn native_tool_definitions() -> Vec<serde_json::Value> {
             }),
         ),
         function_tool(
+            "expand_context",
+            "Expand a previously surfaced context handle into more detailed context.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "handle": { "type": "string" }
+                },
+                "required": ["handle"],
+                "additionalProperties": false
+            }),
+        ),
+        function_tool(
+            "recall_memory",
+            "Recall memory items relevant to a query string.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "query": { "type": "string" },
+                    "limit": { "type": "integer", "minimum": 1, "maximum": 16 }
+                },
+                "required": ["query"],
+                "additionalProperties": false
+            }),
+        ),
+        function_tool(
+            "propose_rule",
+            "Draft a rule proposal from a statement and optional failure context.",
+            json!({
+                "type": "object",
+                "properties": {
+                    "statement": { "type": "string" },
+                    "error_code": { "type": "string" },
+                    "evidence": { "type": "string" }
+                },
+                "required": ["statement"],
+                "additionalProperties": false
+            }),
+        ),
+        function_tool(
             "explain_validation_failure",
             "Summarize observed validation output into failing tests, excerpts, and file/line anchors. This is read-only and never proposes a gold patch.",
             json!({

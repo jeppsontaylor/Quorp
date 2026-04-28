@@ -350,6 +350,9 @@ pub(crate) fn repair_requirement_from_action(
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
         | AgentAction::SuggestEditAnchors { .. }
+        | AgentAction::ExpandContext { .. }
+        | AgentAction::RecallMemory { .. }
+        | AgentAction::ProposeRule { .. }
         | AgentAction::PreviewEdit { .. }
         | AgentAction::ApplyPreview { .. }
         | AgentAction::McpCallTool { .. }
@@ -471,6 +474,9 @@ pub(crate) fn failed_edit_record_from_action(
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
         | AgentAction::SuggestEditAnchors { .. }
+        | AgentAction::ExpandContext { .. }
+        | AgentAction::RecallMemory { .. }
+        | AgentAction::ProposeRule { .. }
         | AgentAction::PreviewEdit { .. }
         | AgentAction::McpCallTool { .. }
         | AgentAction::ProcessStart { .. }

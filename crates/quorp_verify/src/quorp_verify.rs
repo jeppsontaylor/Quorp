@@ -387,6 +387,7 @@ fn truncate(value: &str, max_chars: usize) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::{Rng, SeedableRng, rngs::StdRng};
 
     #[test]
     fn cache_key_is_deterministic() {
@@ -527,5 +528,43 @@ thread 'billing::tests::grace_period_upgrade' panicked at src/lib.rs:9: expected
                 .map(|artifact| artifact.path.clone()),
             Some(PathBuf::from("logs/check.log"))
         );
+    }
+
+    #[test]
+    fn cache_key_canonical_string_changes_when_any_field_changes() {
+        let mut rng = StdRng::seed_from_u64(0x5e5f_2026);
+
+        for _ in 0..32 {
+            let base = CacheKey {
+                git_sha: format!("{:016x}", rng.random::<u64>()),
+                changed_files_hash: format!("{:016x}", rng.random::<u64>()),
+                features: vec![
+                    "default".to_string(),
+                    format!("feature-{}", rng.random::<u16>()),
+                ],
+                target_triple: "aarch64-apple-darwin".to_string(),
+                rustc_version: format!(
+                    "1.{}.{}",
+                    rng.random_range(80..100),
+                    rng.random_range(0..10)
+                ),
+                stage_id: format!("stage-{}", rng.random::<u32>()),
+            };
+
+            let canonical = cache_key_canonical_string(&base);
+            assert_eq!(canonical, cache_key_canonical_string(&base));
+
+            let mut changed_git_sha = base.clone();
+            changed_git_sha.git_sha.push('x');
+            assert_ne!(canonical, cache_key_canonical_string(&changed_git_sha));
+
+            let mut changed_hash = base.clone();
+            changed_hash.changed_files_hash.push('y');
+            assert_ne!(canonical, cache_key_canonical_string(&changed_hash));
+
+            let mut changed_stage = base.clone();
+            changed_stage.stage_id.push('z');
+            assert_ne!(canonical, cache_key_canonical_string(&changed_stage));
+        }
     }
 }

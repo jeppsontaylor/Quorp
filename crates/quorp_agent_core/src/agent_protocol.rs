@@ -282,6 +282,21 @@ pub enum AgentAction {
         #[serde(default)]
         search_hint: Option<String>,
     },
+    ExpandContext {
+        handle: String,
+    },
+    RecallMemory {
+        query: String,
+        #[serde(default = "default_recall_memory_limit")]
+        limit: usize,
+    },
+    ProposeRule {
+        statement: String,
+        #[serde(default)]
+        error_code: Option<String>,
+        #[serde(default)]
+        evidence: Option<String>,
+    },
     PreviewEdit {
         path: String,
         edit: PreviewEditPayload,
@@ -417,6 +432,10 @@ fn default_browser_log_limit() -> usize {
     100
 }
 
+fn default_recall_memory_limit() -> usize {
+    4
+}
+
 #[derive(Debug, Clone, Eq, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum PreviewEditPayload {
@@ -539,6 +558,9 @@ impl AgentAction {
             Self::ExplainValidationFailure { .. } => "explain_validation_failure",
             Self::SuggestImplementationTargets { .. } => "suggest_implementation_targets",
             Self::SuggestEditAnchors { .. } => "suggest_edit_anchors",
+            Self::ExpandContext { .. } => "expand_context",
+            Self::RecallMemory { .. } => "recall_memory",
+            Self::ProposeRule { .. } => "propose_rule",
             Self::PreviewEdit { .. } => "preview_edit",
             Self::ReplaceRange { .. } => "replace_range",
             Self::ModifyToml { .. } => "modify_toml",
@@ -701,6 +723,24 @@ impl AgentAction {
                     .unwrap_or_default();
                 format!("suggest_edit_anchors {path}{range_label}{hint_label}")
             }
+            Self::ExpandContext { handle } => format!("expand_context {handle}"),
+            Self::RecallMemory { query, limit } => {
+                format!("recall_memory {query} limit {limit}")
+            }
+            Self::ProposeRule {
+                statement,
+                error_code,
+                evidence,
+            } => {
+                let mut parts = vec![format!("propose_rule {statement}")];
+                if let Some(error_code) = error_code {
+                    parts.push(format!("error_code={error_code}"));
+                }
+                if let Some(evidence) = evidence {
+                    parts.push(format!("evidence={evidence}"));
+                }
+                parts.join(" ")
+            }
             Self::PreviewEdit { path, edit } => {
                 format!("preview_edit {} {path}", edit.kind_label())
             }
@@ -833,6 +873,9 @@ impl AgentAction {
             | Self::ExplainValidationFailure { .. }
             | Self::SuggestImplementationTargets { .. }
             | Self::SuggestEditAnchors { .. }
+            | Self::ExpandContext { .. }
+            | Self::RecallMemory { .. }
+            | Self::ProposeRule { .. }
             | Self::PreviewEdit { .. }
             | Self::McpListTools { .. }
             | Self::McpListResources { .. }
@@ -888,6 +931,9 @@ impl AgentAction {
                 | Self::ExplainValidationFailure { .. }
                 | Self::SuggestImplementationTargets { .. }
                 | Self::SuggestEditAnchors { .. }
+                | Self::ExpandContext { .. }
+                | Self::RecallMemory { .. }
+                | Self::ProposeRule { .. }
                 | Self::PreviewEdit { .. }
                 | Self::McpListTools { .. }
                 | Self::McpListResources { .. }
@@ -1036,6 +1082,9 @@ impl AgentAction {
                     None => format!("anchors {}", path),
                 }
             }
+            Self::ExpandContext { handle } => format!("expand context {}", handle),
+            Self::RecallMemory { query, .. } => format!("recall memory {}", query),
+            Self::ProposeRule { statement, .. } => format!("propose rule {}", statement),
             Self::PreviewEdit { path, edit } => {
                 format!("preview {} {}", edit.kind_label(), path)
             }
@@ -1107,7 +1156,7 @@ impl ActionOutcome {
 
 #[cfg(test)]
 mod tests {
-    use super::stable_content_hash;
+    use super::{AgentAction, stable_content_hash};
 
     #[test]
     fn stable_content_hash_normalizes_line_endings() {
@@ -1119,5 +1168,29 @@ mod tests {
             stable_content_hash("one\ntwo\n"),
             stable_content_hash("one\rtwo\r")
         );
+    }
+
+    #[test]
+    fn new_actions_round_trip() {
+        let actions = vec![
+            AgentAction::ExpandContext {
+                handle: "handle-1".to_string(),
+            },
+            AgentAction::RecallMemory {
+                query: "token budget".to_string(),
+                limit: 3,
+            },
+            AgentAction::ProposeRule {
+                statement: "Prefer narrow repairs".to_string(),
+                error_code: Some("E0001".to_string()),
+                evidence: Some("validation output".to_string()),
+            },
+        ];
+
+        for action in actions {
+            let json = serde_json::to_string(&action).expect("serialize");
+            let decoded: AgentAction = serde_json::from_str(&json).expect("deserialize");
+            assert_eq!(decoded.tool_name(), action.tool_name());
+        }
     }
 }

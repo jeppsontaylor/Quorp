@@ -1,4 +1,7 @@
 use super::*;
+use super::actions::{
+    spawn_expand_context_task, spawn_propose_rule_task, spawn_recall_memory_task,
+};
 
 pub(crate) fn handle_execute_action_request(
     event_tx: std::sync::mpsc::SyncSender<TuiEvent>,
@@ -408,6 +411,39 @@ pub(crate) fn handle_execute_action_request(
                     search_hint,
                     responder,
                 },
+            );
+        }
+        AgentAction::ExpandContext { handle } => {
+            spawn_expand_context_task(
+                event_tx.clone(),
+                session_id,
+                project_root,
+                handle,
+                responder,
+            );
+        }
+        AgentAction::RecallMemory { query, limit } => {
+            spawn_recall_memory_task(
+                event_tx.clone(),
+                session_id,
+                project_root,
+                query,
+                limit,
+                responder,
+            );
+        }
+        AgentAction::ProposeRule {
+            statement,
+            error_code,
+            evidence,
+        } => {
+            spawn_propose_rule_task(
+                event_tx.clone(),
+                session_id,
+                statement,
+                error_code,
+                evidence,
+                responder,
             );
         }
         AgentAction::PreviewEdit { path, edit } => {

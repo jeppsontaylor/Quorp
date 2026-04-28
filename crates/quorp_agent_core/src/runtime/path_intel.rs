@@ -625,6 +625,9 @@ pub(crate) fn action_phase(action: &AgentAction) -> &'static str {
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
         | AgentAction::SuggestEditAnchors { .. }
+        | AgentAction::ExpandContext { .. }
+        | AgentAction::RecallMemory { .. }
+        | AgentAction::ProposeRule { .. }
         | AgentAction::PreviewEdit { .. } => "inspecting",
     }
 }
@@ -667,6 +670,9 @@ pub(crate) fn action_kind(action: &AgentAction) -> &'static str {
         AgentAction::ExplainValidationFailure { .. } => "explain_validation_failure",
         AgentAction::SuggestImplementationTargets { .. } => "suggest_implementation_targets",
         AgentAction::SuggestEditAnchors { .. } => "suggest_edit_anchors",
+        AgentAction::ExpandContext { .. } => "expand_context",
+        AgentAction::RecallMemory { .. } => "recall_memory",
+        AgentAction::ProposeRule { .. } => "propose_rule",
         AgentAction::PreviewEdit { .. } => "preview_edit",
         AgentAction::ReplaceRange { .. } => "replace_range",
         AgentAction::ModifyToml { .. } => "modify_toml",
@@ -719,6 +725,9 @@ pub(crate) fn action_target_path(action: &AgentAction) -> Option<String> {
         | AgentAction::GetRepoCapsule { .. }
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
+        | AgentAction::ExpandContext { .. }
+        | AgentAction::RecallMemory { .. }
+        | AgentAction::ProposeRule { .. }
         | AgentAction::ApplyPreview { .. }
         | AgentAction::RunValidation { .. }
         | AgentAction::RunCommand { .. }
@@ -993,6 +1002,9 @@ pub(crate) fn summarize_tool_observation_for_transcript(
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
         | AgentAction::SuggestEditAnchors { .. }
+        | AgentAction::ExpandContext { .. }
+        | AgentAction::RecallMemory { .. }
+        | AgentAction::ProposeRule { .. }
         | AgentAction::PreviewEdit { .. }
         | AgentAction::McpCallTool { .. }
         | AgentAction::ProcessStart { .. }

@@ -584,6 +584,15 @@ impl AgentTaskState {
                 self.working_set.insert(path.clone());
             }
             AgentAction::RunValidation { .. } => {}
+            AgentAction::ExpandContext { handle } => {
+                self.last_tool_summary = Some(format!("expanded context handle `{handle}`"));
+            }
+            AgentAction::RecallMemory { query, .. } => {
+                self.last_tool_summary = Some(format!("recalled memory for `{query}`"));
+            }
+            AgentAction::ProposeRule { statement, .. } => {
+                self.last_tool_summary = Some(format!("proposed rule from `{statement}`"));
+            }
             AgentAction::RunCommand { command, .. } => {
                 self.last_tool_summary = Some(format!("scheduled shell command `{command}`"));
             }

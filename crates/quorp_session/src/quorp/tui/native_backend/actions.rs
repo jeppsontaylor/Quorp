@@ -11,7 +11,7 @@
 use std::future::Future;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use portable_pty::{CommandBuilder, PtySize, native_pty_system};
 use serde::Serialize;
@@ -23,8 +23,14 @@ use crate::quorp::tui::agent_context::{
 };
 use crate::quorp::tui::agent_protocol::{ActionOutcome, AgentAction, TomlEditOperation};
 use crate::quorp::tui::{ChatUiEvent, TuiEvent};
+use quorp_context::{Anchor, CompileContext, CompileRequest, ContextCompiler, TokenBudget};
 use quorp_agent_core::ToolResultEnvelope;
 use quorp_agent_core::{ReadFileRange, stable_content_hash};
+use quorp_ids::RuleId;
+use quorp_memory::Memory;
+use quorp_memory_model::{MemoryQuery, Tier};
+use quorp_rule_forge::{ClusterKey, RuleForge};
+use quorp_verify::{CommandOutputEvidence, proof_packet_from_command};
 use quorp_sandbox::{build_command_plan, default_policy, sandbox_runtime_for_path};
 use quorp_tools::apply::apply_patch_edit;
 use quorp_tools::edit::{
@@ -597,11 +603,13 @@ pub(crate) fn spawn_run_validation_task(
         let action = AgentAction::RunValidation { plan: plan.clone() };
         let config = load_agent_config(project_root.as_path());
         let commands = validation_commands_for_plan(&config, &plan);
+        let commands_for_proof = commands.clone();
         let command_output_limit = config
             .policy
             .limits
             .max_command_output_bytes
             .unwrap_or(COMMAND_OUTPUT_LIMIT);
+        let started_at = Instant::now();
         let result =
             run_validation_commands(&event_tx, session_id, &cwd, commands, command_output_limit);
 
@@ -635,11 +643,30 @@ pub(crate) fn spawn_run_validation_task(
             super::clear_session_worktree(session_id);
         }
 
+        let rendered_output = result.map(|output| {
+            let duration_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+            let command = commands_for_proof.join(" && ");
+            let proof_packet = proof_packet_from_command(CommandOutputEvidence {
+                command: command.as_str(),
+                cwd: &cwd,
+                exit_code: 0,
+                duration_ms,
+                output: output.as_str(),
+                raw_log_path: project_root.join(".quorp").join("verification.log"),
+                tool_version: None,
+                truncated: output.len() >= command_output_limit,
+            });
+            format!(
+                "{output}\n\nVerification proof:\nkind: {:?}\nsummary: {}\n",
+                proof_packet.kind, proof_packet.summary
+            )
+        });
+
         emit_tool_result(
             &event_tx,
             session_id,
             action,
-            result,
+            rendered_output,
             "run_validation",
             responder,
         );
@@ -694,6 +721,240 @@ pub(crate) fn spawn_set_executable_task(
             responder,
         );
     });
+}
+
+pub(crate) fn spawn_expand_context_task(
+    event_tx: std::sync::mpsc::SyncSender<TuiEvent>,
+    session_id: usize,
+    project_root: PathBuf,
+    handle: String,
+    responder: Option<futures::channel::oneshot::Sender<ActionOutcome>>,
+) {
+    std::thread::spawn(move || {
+        let action = AgentAction::ExpandContext {
+            handle: handle.clone(),
+        };
+        let result = (|| -> anyhow::Result<String> {
+            let compiler = ContextCompiler::new();
+            let query = if handle.trim().is_empty() {
+                Anchor::Query("expand context".to_string())
+            } else {
+                Anchor::Query(handle.clone())
+            };
+            let request = CompileRequest {
+                anchors: vec![query],
+                budget: TokenBudget {
+                    total: 4_000,
+                    per_item_cap: 1_000,
+                    reserve_for_output: 600,
+                },
+            };
+            let context = CompileContext {
+                git_sha: option_env!("QUORP_COMMIT_SHA").map(str::to_string),
+                generated_at_unix: current_unix_time(),
+            };
+            let pack = compiler.compile_workspace(
+                project_root.as_path(),
+                &request,
+                &context,
+            )?;
+            Ok(render_context_pack_for_action(&pack))
+        })();
+        emit_tool_result(
+            &event_tx,
+            session_id,
+            action,
+            result,
+            "expand_context",
+            responder,
+        );
+    });
+}
+
+pub(crate) fn spawn_recall_memory_task(
+    event_tx: std::sync::mpsc::SyncSender<TuiEvent>,
+    session_id: usize,
+    project_root: PathBuf,
+    query: String,
+    limit: usize,
+    responder: Option<futures::channel::oneshot::Sender<ActionOutcome>>,
+) {
+    std::thread::spawn(move || {
+        let action = AgentAction::RecallMemory {
+            query: query.clone(),
+            limit,
+        };
+        let result = (|| -> anyhow::Result<String> {
+            let memory = Memory::with_workspace(&project_root)?;
+            let hits = memory.recall(&MemoryQuery {
+                query_text: Some(query.clone()),
+                tier: Some(Tier::Semantic),
+                limit: u32::try_from(limit).unwrap_or(u32::MAX),
+            })?;
+            Ok(render_memory_hits(&query, &hits))
+        })();
+        emit_tool_result(
+            &event_tx,
+            session_id,
+            action,
+            result,
+            "recall_memory",
+            responder,
+        );
+    });
+}
+
+pub(crate) fn spawn_propose_rule_task(
+    event_tx: std::sync::mpsc::SyncSender<TuiEvent>,
+    session_id: usize,
+    statement: String,
+    error_code: Option<String>,
+    evidence: Option<String>,
+    responder: Option<futures::channel::oneshot::Sender<ActionOutcome>>,
+) {
+    std::thread::spawn(move || {
+        let action = AgentAction::ProposeRule {
+            statement: statement.clone(),
+            error_code: error_code.clone(),
+            evidence: evidence.clone(),
+        };
+        let result = (|| -> anyhow::Result<String> {
+            let forge = RuleForge::new();
+            let failure = quorp_verify::Failure {
+                code: error_code.clone(),
+                message: statement.clone(),
+                level: "tool".to_string(),
+                file: None,
+                line: None,
+            };
+            let signature = forge.observe_failure(&failure)?;
+            let key = ClusterKey::from_failure(&failure);
+            let candidate = forge.maybe_emit_candidate(&key, statement.clone())?;
+            Ok(render_rule_proposal(&statement, &signature.signature, candidate))
+        })();
+        emit_tool_result(
+            &event_tx,
+            session_id,
+            action,
+            result,
+            "propose_rule",
+            responder,
+        );
+    });
+}
+
+fn current_unix_time() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map(|duration| i64::try_from(duration.as_secs()).unwrap_or(i64::MAX))
+        .unwrap_or_default()
+}
+
+fn render_context_pack_for_action(pack: &quorp_context::ContextPack) -> String {
+    let mut lines = vec![
+        "Expanded context pack:".to_string(),
+        format!(
+            "pack_id={} items={} handles={} budget_used={}",
+            pack.pack_id.as_str(),
+            pack.items.len(),
+            pack.handles.len(),
+            pack.budget_used
+        ),
+    ];
+    for item in pack.items.iter().take(6) {
+        lines.push(render_context_item_for_action(item));
+    }
+    for handle in pack.handles.iter().take(4) {
+        lines.push(format!(
+            "handle {} source={:?} ~{} tokens",
+            handle.label, handle.source, handle.estimated_cost_tokens
+        ));
+    }
+    lines.join("\n")
+}
+
+fn render_context_item_for_action(item: &quorp_context::ContextItem) -> String {
+    match item {
+        quorp_context::ContextItem::Excerpt {
+            path, range, text, ..
+        } => format!(
+            "- excerpt {}:{}-{} {}",
+            path.display(),
+            range.start,
+            range.end,
+            truncate_action_text(text, 160)
+        ),
+        quorp_context::ContextItem::SymbolDef {
+            path,
+            signature,
+            body_excerpt,
+            ..
+        } => format!(
+            "- symbol {} :: {} {}",
+            path.as_str(),
+            truncate_action_text(signature, 96),
+            truncate_action_text(body_excerpt, 96)
+        ),
+        quorp_context::ContextItem::Memory { snippet, .. } => {
+            format!("- memory {}", truncate_action_text(snippet, 160))
+        }
+        quorp_context::ContextItem::Rule {
+            rule_id, statement, ..
+        } => format!(
+            "- rule {} :: {}",
+            rule_id.as_str(),
+            truncate_action_text(statement, 160)
+        ),
+        quorp_context::ContextItem::AgentContract { title, body, .. } => format!(
+            "- contract {} :: {}",
+            title,
+            truncate_action_text(body, 160)
+        ),
+    }
+}
+
+fn render_memory_hits(query: &str, hits: &[quorp_memory_model::MemoryHit]) -> String {
+    let mut lines = vec![format!("Memory recall for `{query}`:")];
+    if hits.is_empty() {
+        lines.push("no hits".to_string());
+    } else {
+        for hit in hits.iter().take(8) {
+            lines.push(format!(
+                "- {:?} score={:.2} {}",
+                hit.tier,
+                hit.score,
+                truncate_action_text(&hit.snippet, 180)
+            ));
+        }
+    }
+    lines.join("\n")
+}
+
+fn render_rule_proposal(
+    statement: &str,
+    signature: &str,
+    candidate: Option<RuleId>,
+) -> String {
+    let mut lines = vec![
+        "Rule proposal:".to_string(),
+        format!("statement: {statement}"),
+        format!("negative_signature: {signature}"),
+    ];
+    match candidate {
+        Some(rule_id) => lines.push(format!("candidate_rule_id: {}", rule_id.as_str())),
+        None => lines.push("candidate_rule_id: pending another matching failure".to_string()),
+    }
+    lines.join("\n")
+}
+
+fn truncate_action_text(text: &str, max_chars: usize) -> String {
+    if text.len() <= max_chars {
+        return text.to_string();
+    }
+    let mut truncated = text.to_string();
+    truncated.truncate(max_chars);
+    truncated.push_str("...");
+    truncated
 }
 
 pub(crate) fn emit_tool_result(

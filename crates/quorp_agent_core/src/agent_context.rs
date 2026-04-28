@@ -1190,6 +1190,9 @@ fn rule_matches_action(rule: &ApprovalRule, action: &AgentAction, config: &Agent
         | AgentAction::GetRepoCapsule { .. }
         | AgentAction::ExplainValidationFailure { .. }
         | AgentAction::SuggestImplementationTargets { .. }
+        | AgentAction::ExpandContext { .. }
+        | AgentAction::RecallMemory { .. }
+        | AgentAction::ProposeRule { .. }
         | AgentAction::ApplyPreview { .. }
         | AgentAction::ProcessStart { .. }
         | AgentAction::ProcessRead { .. }

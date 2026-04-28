@@ -554,6 +554,55 @@ mod tests {
     }
 
     #[test]
+    fn failed_apply_rolls_back_previous_changes_and_preserves_original_bytes() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let first = root.path().join("a.txt");
+        let second = root.path().join("b.txt");
+        std::fs::write(&first, "a\n").expect("write a");
+        std::fs::write(&second, "b\n").expect("write b");
+
+        let original_first = std::fs::read(&first).expect("read a");
+        let original_second = std::fs::read(&second).expect("read b");
+
+        let vm = PatchVm::new();
+        let patch_id = quorp_ids::PatchId::new("patch-rollback");
+        let changes = vec![
+            FileChange {
+                path: first.clone(),
+                display_path: "a.txt".to_string(),
+                expected_hash: Some(hash_bytes(b"a\n")),
+                kind: FileChangeKind::Update {
+                    content: b"aa\n".to_vec(),
+                },
+            },
+            FileChange {
+                path: second.clone(),
+                display_path: "b.txt".to_string(),
+                expected_hash: None,
+                kind: FileChangeKind::Add {
+                    content: b"bb\n".to_vec(),
+                },
+            },
+        ];
+
+        let preview = vm
+            .preview_file_changes(&patch_id, &changes, PatchVmPolicy::default())
+            .expect("preview");
+        let error = vm
+            .apply_file_changes(
+                &patch_id,
+                &changes,
+                PatchApplyProof::PreviewId(&preview.preview_id),
+                PatchVmPolicy::default(),
+            )
+            .expect_err("apply should fail on existing add target");
+
+        assert!(error.to_string().contains("refusing to add existing file"));
+        assert_eq!(std::fs::read(&first).expect("read a"), original_first);
+        assert_eq!(std::fs::read(&second).expect("read b"), original_second);
+    }
+
+    #[test]
     fn stale_expected_hash_rejects_without_mutating() {
         let root = tempfile::tempdir().expect("tempdir");
         let file = root.path().join("target.txt");

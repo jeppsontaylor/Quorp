@@ -524,6 +524,44 @@ pub(crate) fn pseudo_tool_call_from_line(line: &str) -> Option<serde_json::Value
             }
             Some(json!({ "tool_name": tool_name, "tool_args": tool_args }))
         }
+        "expand_context" => fields
+            .get("handle")
+            .map(|handle| json!({ "tool_name": tool_name, "tool_args": { "handle": handle } })),
+        "recall_memory" => {
+            let query = fields.get("query")?;
+            let mut tool_args = serde_json::Map::new();
+            tool_args.insert(
+                "query".to_string(),
+                serde_json::Value::String(query.clone()),
+            );
+            if let Some(limit) = fields
+                .get("limit")
+                .and_then(|value| value.parse::<u64>().ok())
+            {
+                tool_args.insert("limit".to_string(), serde_json::json!(limit));
+            }
+            Some(json!({ "tool_name": tool_name, "tool_args": tool_args }))
+        }
+        "propose_rule" => fields.get("statement").map(|statement| {
+            let mut tool_args = serde_json::Map::new();
+            tool_args.insert(
+                "statement".to_string(),
+                serde_json::Value::String(statement.clone()),
+            );
+            if let Some(error_code) = fields.get("error_code") {
+                tool_args.insert(
+                    "error_code".to_string(),
+                    serde_json::Value::String(error_code.clone()),
+                );
+            }
+            if let Some(evidence) = fields.get("evidence") {
+                tool_args.insert(
+                    "evidence".to_string(),
+                    serde_json::Value::String(evidence.clone()),
+                );
+            }
+            json!({ "tool_name": tool_name, "tool_args": tool_args })
+        }),
         "lsp_diagnostics" => fields
             .get("path")
             .map(|path| json!({ "tool_name": tool_name, "tool_args": { "path": path } })),
@@ -933,6 +971,18 @@ pub(crate) fn parse_action_from_arguments(
             range: optional_read_file_range_argument(arguments, "range"),
             search_hint: optional_string_argument(arguments, "search_hint"),
         }),
+        "expand_context" => Ok(AgentAction::ExpandContext {
+            handle: required_string_argument(arguments, tool_name, "handle")?,
+        }),
+        "recall_memory" => Ok(AgentAction::RecallMemory {
+            query: required_string_argument(arguments, tool_name, "query")?,
+            limit: optional_usize_argument(arguments, "limit").unwrap_or(4),
+        }),
+        "propose_rule" => Ok(AgentAction::ProposeRule {
+            statement: required_string_argument(arguments, tool_name, "statement")?,
+            error_code: optional_string_argument(arguments, "error_code"),
+            evidence: optional_string_argument(arguments, "evidence"),
+        }),
         "preview_edit" => {
             let path = required_string_argument(arguments, tool_name, "path")?;
             match preview_edit_payload_argument(arguments) {
@@ -1159,6 +1209,9 @@ pub(crate) fn normalize_tool_name(raw: &str) -> &str {
         "ExplainValidationFailure" => "explain_validation_failure",
         "SuggestImplementationTargets" => "suggest_implementation_targets",
         "SuggestEditAnchors" => "suggest_edit_anchors",
+        "ExpandContext" => "expand_context",
+        "RecallMemory" => "recall_memory",
+        "ProposeRule" => "propose_rule",
         "PreviewEdit" => "preview_edit",
         "ReplaceRange" => "replace_range",
         "ModifyToml" => "modify_toml",
@@ -1920,81 +1973,5 @@ pub(crate) fn parse_usage_payload(
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn parses_lsp_definition_tool_call() {
-        let action = parse_action_from_arguments(
-            "lsp_definition",
-            &serde_json::json!({
-                "path": "src/lib.rs",
-                "symbol": "Example",
-                "line": 12,
-                "character": 4
-            }),
-        )
-        .expect("action");
-        assert!(matches!(
-            action,
-            AgentAction::LspDefinition {
-                path,
-                symbol,
-                line: Some(12),
-                character: Some(4)
-            } if path == "src/lib.rs" && symbol == "Example"
-        ));
-    }
-
-    #[test]
-    fn parses_pseudo_lsp_hover_line() {
-        let call = pseudo_tool_call_from_line("LspHover path: src/lib.rs line: 10 character: 3")
-            .expect("tool call");
-        let actions = parse_actions_from_tool_call(&call).expect("actions");
-        assert!(matches!(
-            actions.as_slice(),
-            [AgentAction::LspHover {
-                path,
-                line: 10,
-                character: 3
-            }] if path == "src/lib.rs"
-        ));
-    }
-
-    #[test]
-    fn parses_pseudo_process_start_line() {
-        let call = pseudo_tool_call_from_line(
-            "ProcessStart command: cargo args: [\"test\", \"--quiet\"] cwd: /tmp/project",
-        )
-        .expect("tool call");
-        let actions = parse_actions_from_tool_call(&call).expect("actions");
-        assert!(matches!(
-            actions.as_slice(),
-            [AgentAction::ProcessStart {
-                command,
-                args,
-                cwd: Some(cwd)
-            }] if command == "cargo"
-                && matches!(args.as_slice(), [first, second] if first == "test" && second == "--quiet")
-                && cwd == "/tmp/project"
-        ));
-    }
-
-    #[test]
-    fn parses_pseudo_browser_open_line() {
-        let call = pseudo_tool_call_from_line(
-            "BrowserOpen url: https://example.com headless: true width: 1280 height: 720",
-        )
-        .expect("tool call");
-        let actions = parse_actions_from_tool_call(&call).expect("actions");
-        assert!(matches!(
-            actions.as_slice(),
-            [AgentAction::BrowserOpen {
-                url,
-                headless: true,
-                width: Some(1280),
-                height: Some(720)
-            }] if url == "https://example.com"
-        ));
-    }
-}
+#[path = "turn_parse_tests.rs"]
+mod tests;

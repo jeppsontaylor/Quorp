@@ -321,6 +321,9 @@ pub(crate) fn canonical_action_record(
         AgentAction::ExplainValidationFailure { .. } => "ExplainValidationFailure",
         AgentAction::SuggestImplementationTargets { .. } => "SuggestImplementationTargets",
         AgentAction::SuggestEditAnchors { .. } => "SuggestEditAnchors",
+        AgentAction::ExpandContext { .. } => "ExpandContext",
+        AgentAction::RecallMemory { .. } => "RecallMemory",
+        AgentAction::ProposeRule { .. } => "ProposeRule",
         AgentAction::PreviewEdit { .. } => "PreviewEdit",
         AgentAction::ReplaceRange { .. } => "ReplaceRange",
         AgentAction::ModifyToml { .. } => "ModifyToml",
@@ -670,6 +673,20 @@ pub(crate) fn canonical_action_signature(
         } => format!(
             "mcp:{server_name}:{tool_name}:{}",
             short_text_fingerprint(&arguments.to_string())
+        ),
+        AgentAction::ExpandContext { handle } => format!("expand_context:{handle}"),
+        AgentAction::RecallMemory { query, limit } => {
+            format!("recall_memory:{query}:{limit}")
+        }
+        AgentAction::ProposeRule {
+            statement,
+            error_code,
+            evidence,
+        } => format!(
+            "propose_rule:{}:{}:{}",
+            short_text_fingerprint(statement),
+            error_code.as_deref().unwrap_or("none"),
+            evidence.as_deref().unwrap_or("none")
         ),
         AgentAction::RunValidation { plan } => format!("validate:{}", plan.summary()),
     }

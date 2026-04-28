@@ -767,6 +767,7 @@ fn item_label(item: &ContextItem) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use rand::{Rng, SeedableRng, rngs::StdRng};
     use quorp_repo_graph::SymbolPath;
 
     #[test]
@@ -1056,5 +1057,65 @@ reason = "build output"
             item,
             ContextItem::Excerpt { path, .. } if path.starts_with("target")
         )));
+    }
+
+    #[test]
+    fn compile_budget_used_never_exceeds_total_for_random_anchor_sets() {
+        let mut rng = StdRng::seed_from_u64(0x5e5f_2026);
+        let compiler = ContextCompiler::new();
+
+        for _ in 0..32 {
+            let budget_total = rng.random_range(64..4096);
+            let per_item_cap = rng.random_range(8..=budget_total);
+            let reserve_for_output = rng.random_range(0..=budget_total / 2);
+            let anchor_count = rng.random_range(0..8);
+            let mut anchors = Vec::with_capacity(anchor_count);
+
+            for index in 0..anchor_count {
+                match rng.random_range(0..4) {
+                    0 => anchors.push(Anchor::Query(format!(
+                        "query-{index}-{}",
+                        rng.random::<u16>()
+                    ))),
+                    1 => anchors.push(Anchor::File(PathBuf::from(format!(
+                        "src/file_{index}.rs"
+                    )))),
+                    2 => anchors.push(Anchor::Symbol(SymbolPath::new(format!(
+                        "crate::module::symbol_{index}"
+                    )))),
+                    _ => anchors.push(Anchor::Range(
+                        PathBuf::from(format!("src/file_{index}.rs")),
+                        LineRange {
+                            start: 1 + rng.random_range(0..16),
+                            end: 2 + rng.random_range(0..16),
+                        },
+                    )),
+                }
+            }
+
+            let pack = compiler
+                .compile(
+                    &CompileRequest {
+                        anchors,
+                        budget: TokenBudget {
+                            total: budget_total,
+                            per_item_cap,
+                            reserve_for_output,
+                        },
+                    },
+                    &CompileContext {
+                        git_sha: Some("seed".to_string()),
+                        generated_at_unix: 26,
+                    },
+                )
+                .expect("compile");
+
+            assert!(
+                pack.budget_used <= budget_total,
+                "budget_used={} budget_total={} pack={pack:?}",
+                pack.budget_used,
+                budget_total
+            );
+        }
     }
 }
