@@ -1590,7 +1590,6 @@ impl UrlExt for url::Url {
     }
 }
 
-
 #[cfg(test)]
 #[path = "tests.rs"]
 mod tests;

@@ -476,6 +476,13 @@ impl RuntimeEventSink for RuntimeEventProgressSink {
                 action,
                 reason,
             } => Some(format!("step {step}: policy denied {action}: {reason}")),
+            RuntimeEvent::SubscriberBackpressure {
+                subscriber,
+                dropped_events,
+                capacity,
+            } => Some(format!(
+                "runtime event backpressure: {subscriber} dropped {dropped_events} event(s) at capacity {capacity}"
+            )),
             RuntimeEvent::FailedEditRecorded { step, .. } => {
                 Some(format!("step {step}: failed edit recorded"))
             }
@@ -829,6 +836,14 @@ impl HeadlessEventRecorder {
             } => eprintln!(
                 "{}[policy]{} step={} {} :: {}",
                 ANSI_RED, ANSI_RESET, step, action, reason
+            ),
+            RuntimeEvent::SubscriberBackpressure {
+                subscriber,
+                dropped_events,
+                capacity,
+            } => eprintln!(
+                "{}[events]{} subscriber={} dropped={} capacity={}",
+                ANSI_YELLOW, ANSI_RESET, subscriber, dropped_events, capacity
             ),
             RuntimeEvent::FailedEditRecorded { step, record } => eprintln!(
                 "{}[repair]{} step={} failed_edit={} path={} attempts={}",

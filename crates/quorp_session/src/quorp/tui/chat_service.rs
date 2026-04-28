@@ -5,7 +5,9 @@ use serde_json::json;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use quorp_context::{Anchor, CompileContext, CompileRequest, ContextCompiler, ContextItem, TokenBudget};
+use quorp_context::{
+    Anchor, CompileContext, CompileRequest, ContextCompiler, ContextItem, TokenBudget,
+};
 
 use crate::quorp::executor::InteractiveProviderKind;
 use crate::quorp::prompt_compaction::{PromptMessage, PromptMessageRole, apply_prompt_compaction};

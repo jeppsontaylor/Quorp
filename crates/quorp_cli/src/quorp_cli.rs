@@ -1,9 +1,9 @@
 #![allow(dead_code)]
 
-#[path = "quorp.rs"]
-mod quorp;
 #[path = "quorp/cli.rs"]
 mod cli;
+#[path = "quorp.rs"]
+mod quorp;
 
 pub fn dispatch() {
     cli::main();

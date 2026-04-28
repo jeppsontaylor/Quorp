@@ -12,7 +12,7 @@ pub use quorp_agent_core::{
     AgentRuntimeStatus, AgentTurnResponse, CompletionPolicy, CompletionRequest, CompletionResponse,
     CompletionWatchdogConfig, FailedEditRecord, MemoryUpdate, ModelRequestWatchdogReport,
     PreviewEditPayload, PromptCompactionPolicy, ReadFileRange, RuntimeEvent, RuntimeEventSink,
-    StopReason, TaskItem, TaskStatus, TomlEditOperation, TokenUsage, ToolExecutionRequest,
+    StopReason, TaskItem, TaskStatus, TokenUsage, TomlEditOperation, ToolExecutionRequest,
     ToolExecutionResult, TranscriptMessage, TranscriptRole, ValidationPlan, stable_content_hash,
 };
 
@@ -70,7 +70,8 @@ mod tests {
         let value = serde_json::to_value(&envelope).expect("serialize");
         assert_eq!(value["version"], WIRE_VERSION);
         assert_eq!(value["payload"]["kind"], "assistant_turn");
-        let decoded: WireEnvelope<WireMessage> = serde_json::from_value(value).expect("deserialize");
+        let decoded: WireEnvelope<WireMessage> =
+            serde_json::from_value(value).expect("deserialize");
         assert_eq!(decoded.version, WIRE_VERSION);
         assert!(matches!(decoded.payload, WireMessage::AssistantTurn { .. }));
     }
@@ -83,7 +84,8 @@ mod tests {
         };
         let envelope = WireEnvelope::new(WireMessage::RuntimeEvent { event });
         let value = serde_json::to_value(&envelope).expect("serialize");
-        let decoded: WireEnvelope<WireMessage> = serde_json::from_value(value).expect("deserialize");
+        let decoded: WireEnvelope<WireMessage> =
+            serde_json::from_value(value).expect("deserialize");
         match decoded.payload {
             WireMessage::RuntimeEvent {
                 event: RuntimeEvent::PhaseChanged { phase, detail },
@@ -101,8 +103,9 @@ mod tests {
             phase: "booting".to_string(),
             detail: None,
         };
-        let mut value = serde_json::to_value(WireEnvelope::new(WireMessage::RuntimeEvent { event }))
-            .expect("serialize");
+        let mut value =
+            serde_json::to_value(WireEnvelope::new(WireMessage::RuntimeEvent { event }))
+                .expect("serialize");
         value["extra"] = serde_json::json!({
             "unexpected": true
         });

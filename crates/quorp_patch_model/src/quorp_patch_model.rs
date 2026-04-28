@@ -88,6 +88,27 @@ pub struct PatchPlan {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case")]
+pub enum EditProvenance {
+    WriteFile { path: PathBuf },
+    ApplyPatch { path: PathBuf },
+    ReplaceBlock { path: PathBuf },
+    ReplaceRange { path: PathBuf },
+    ModifyToml { path: PathBuf },
+    ApplyPreview { preview_id: String },
+    SetExecutable { path: PathBuf },
+    SemanticPatch,
+    Unknown { action: String },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PatchTransaction {
+    pub patch_id: PatchId,
+    pub provenance: EditProvenance,
+    pub touched_paths: Vec<PathBuf>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct RollbackToken {
     pub patch_id: PatchId,
     pub file: PathBuf,
@@ -100,6 +121,16 @@ pub enum ApplyOutcome {
     Applied,
     Rejected,
     PartiallyApplied,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PatchReceipt {
+    pub patch_id: PatchId,
+    pub provenance: EditProvenance,
+    pub outcome: ApplyOutcome,
+    pub preview_id: String,
+    pub touched_paths: Vec<PathBuf>,
+    pub rollback_tokens: Vec<RollbackToken>,
 }
 
 #[cfg(test)]
@@ -116,5 +147,28 @@ mod tests {
         };
         let json = serde_json::to_string(&op).unwrap();
         let _back: PatchOp = serde_json::from_str(&json).unwrap();
+    }
+
+    #[test]
+    fn round_trip_patch_receipt() {
+        let receipt = PatchReceipt {
+            patch_id: PatchId::new("patch-1"),
+            provenance: EditProvenance::ReplaceRange {
+                path: PathBuf::from("src/lib.rs"),
+            },
+            outcome: ApplyOutcome::Applied,
+            preview_id: "preview-1".to_string(),
+            touched_paths: vec![PathBuf::from("src/lib.rs")],
+            rollback_tokens: vec![RollbackToken {
+                patch_id: PatchId::new("patch-1"),
+                file: PathBuf::from("src/lib.rs"),
+                pre_image_hash: FileHash("abc".to_string()),
+                previous_bytes: b"old".to_vec(),
+            }],
+        };
+
+        let json = serde_json::to_string(&receipt).unwrap();
+        let decoded: PatchReceipt = serde_json::from_str(&json).unwrap();
+        assert_eq!(decoded, receipt);
     }
 }

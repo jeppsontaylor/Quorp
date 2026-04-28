@@ -1,12 +1,26 @@
 # Quorp — Big-Bang Refactor Handoff
 
 **Branch**: `codex/agent-first-cleanup`
-**Last commit**: `a6a3974 — Phase 4-A + 12: extract quorp_mcp crate, add CI loc-cap enforcement`
-**Date written**: 2026-04-26
-**Author of this handoff**: outgoing agent (Claude Opus 4.7, 1M ctx)
+**Historical base**: `a6a3974 — Phase 4-A + 12: extract quorp_mcp crate, add CI loc-cap enforcement`
+**Reconciled on**: 2026-04-28
 **Audience**: incoming agent picking up the same plan
 
-> Read this end-to-end before touching anything. There is uncommitted in-progress work, but the working tree currently compiles, the workspace tests pass, and the LOC cap is green. Sections marked **⚠ CRITICAL** describe foot-guns waiting for you.
+> This document is now partly historical. The workspace has moved beyond the commit references below: `quorp_cli` and `quorp_session` are extracted, context/compiler actions are wired, the native backend emits Patch VM write receipts for write actions, verification runs produce staged verify reports, and the oversized runtime/benchmark test files have been split into include chunks under the LOC cap. Read older sections as roadmap context, not current truth.
+
+## Current Truth
+
+- Latest verified commits before this reconciliation were `ae12aeb` and `2c66dfa`.
+- `tips/upgrade/v2/` does not exist as a reachable tree in this checkout. A search of stash, reachable history, unreachable trees, and dangling blobs found no path metadata for `tips/upgrade/v2/*.txt`, but did recover v2-like dangling text blobs covering localization, precise edits, task runtime, verification, memory, scoped permissions, MCP, and worktree isolation. Strong candidates: `7d8d1358a3a739cd322e99bc05dda805c123bc16`, `5692dcf1d203cb162d8801fd75fd0bae754ac22b`, `b946fd3711cd2f67acd4b6b6f5189c61023db853`, `f4e3641e8c0fc57cea753a4b32fbe371a951f2d0`, `c065146fe3059a4d14b5703834e38dc58a063f91`, `e4f07f0860f946038377b6bd43378ec3417da485`, and `74f2480ff06e6166514934ceaa6232a111f5f96b`.
+- Phase 10 is partially complete, not pending from zero:
+  - `ContextCompiler` is on the session prompt path.
+  - `ExpandContext`, `RecallMemory`, and `ProposeRule` are surfaced through schema, parsing, and backend dispatch.
+  - The runtime now has a named, bounded `RuntimeEventFanout` adapter with backpressure events in addition to sink-based emission.
+  - Native-backend `WriteFile`, `ApplyPatch`, `ReplaceBlock`, `ReplaceRange`, `ModifyToml`, `ApplyPreview`, and `SetExecutable` write paths now return Patch VM receipts instead of only direct write summaries.
+  - `RunValidation` now maps validation commands into `quorp_verify` staged reports with proof packets and cache hits.
+- Phase 11 is also partially complete:
+  - `crates/quorp_agent_core/src/runtime/tests.rs` and `crates/quorp_cli/src/quorp/benchmark/tests.rs` are now split into include chunks under 2,000 LOC each.
+  - Targeted regression coverage exists for verify-cache execution, validation-plan mapping, Patch VM-backed write receipts, and runtime event fanout.
+- Remaining work is narrower than the older sections suggest: durable memory/rule subscriber workers, deeper verify executors than shell-command replay, broader replay/proof CLI surfaces, and continued benchmark/runtime polish.
 
 ---
 

@@ -1,7 +1,7 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
-use std::sync::Arc;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 
 use futures::future::BoxFuture;
 use serde::Serialize;
@@ -612,6 +612,12 @@ pub enum RuntimeEvent {
         action: String,
         reason: String,
     },
+    #[serde(rename = "runtime.subscriber_backpressure")]
+    SubscriberBackpressure {
+        subscriber: String,
+        dropped_events: usize,
+        capacity: usize,
+    },
     #[serde(rename = "agent.failed_edit_recorded")]
     FailedEditRecorded {
         step: usize,
@@ -700,6 +706,175 @@ pub trait ToolExecutor: Send + Sync {
 
 pub trait RuntimeEventSink: Send + Sync {
     fn emit(&self, event: RuntimeEvent);
+}
+
+const DEFAULT_RUNTIME_EVENT_QUEUE_CAPACITY: usize = 1024;
+const MIN_RUNTIME_EVENT_QUEUE_CAPACITY: usize = 2;
+
+#[derive(Debug, Clone)]
+pub struct RuntimeEventSubscription {
+    subscriber_name: Arc<str>,
+    queue: Arc<Mutex<VecDeque<RuntimeEvent>>>,
+    capacity: usize,
+}
+
+impl RuntimeEventSubscription {
+    pub fn subscriber_name(&self) -> &str {
+        &self.subscriber_name
+    }
+
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn drain(&self) -> Vec<RuntimeEvent> {
+        let mut queue = self.queue.lock().expect("runtime event subscription lock");
+        queue.drain(..).collect()
+    }
+}
+
+struct RuntimeEventSubscriber {
+    name: Arc<str>,
+    queue: Arc<Mutex<VecDeque<RuntimeEvent>>>,
+    capacity: usize,
+}
+
+#[derive(Default)]
+pub struct RuntimeEventFanout {
+    subscribers: Mutex<Vec<RuntimeEventSubscriber>>,
+    next_subscriber_id: AtomicUsize,
+    downstream: Option<Arc<dyn RuntimeEventSink>>,
+}
+
+impl RuntimeEventFanout {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    pub fn with_downstream(downstream: Arc<dyn RuntimeEventSink>) -> Self {
+        Self {
+            subscribers: Mutex::new(Vec::new()),
+            next_subscriber_id: AtomicUsize::new(0),
+            downstream: Some(downstream),
+        }
+    }
+
+    pub fn subscribe(&self) -> RuntimeEventSubscription {
+        let id = self.next_subscriber_id.fetch_add(1, Ordering::Relaxed) + 1;
+        self.subscribe_named(format!("subscriber_{id}"))
+    }
+
+    pub fn subscribe_memory_writer(&self) -> RuntimeEventSubscription {
+        self.subscribe_named("memory_writer")
+    }
+
+    pub fn subscribe_rule_forge_observer(&self) -> RuntimeEventSubscription {
+        self.subscribe_named("rule_forge_observer")
+    }
+
+    pub fn subscribe_renderer(&self) -> RuntimeEventSubscription {
+        self.subscribe_named("renderer")
+    }
+
+    pub fn subscribe_proof_recorder(&self) -> RuntimeEventSubscription {
+        self.subscribe_named("proof_recorder")
+    }
+
+    pub fn subscribe_benchmark_recorder(&self) -> RuntimeEventSubscription {
+        self.subscribe_named("benchmark_recorder")
+    }
+
+    pub fn subscribe_named(&self, subscriber_name: impl Into<String>) -> RuntimeEventSubscription {
+        self.subscribe_named_with_capacity(subscriber_name, DEFAULT_RUNTIME_EVENT_QUEUE_CAPACITY)
+    }
+
+    pub fn subscribe_named_with_capacity(
+        &self,
+        subscriber_name: impl Into<String>,
+        capacity: usize,
+    ) -> RuntimeEventSubscription {
+        let capacity = capacity.max(MIN_RUNTIME_EVENT_QUEUE_CAPACITY);
+        let subscriber_name: Arc<str> = Arc::from(subscriber_name.into());
+        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        self.subscribers
+            .lock()
+            .expect("runtime event fanout lock")
+            .push(RuntimeEventSubscriber {
+                name: subscriber_name.clone(),
+                queue: queue.clone(),
+                capacity,
+            });
+        RuntimeEventSubscription {
+            subscriber_name,
+            queue,
+            capacity,
+        }
+    }
+}
+
+impl RuntimeEventSink for RuntimeEventFanout {
+    fn emit(&self, event: RuntimeEvent) {
+        if let Some(downstream) = &self.downstream {
+            downstream.emit(event.clone());
+        }
+
+        let Ok(subscribers) = self.subscribers.lock() else {
+            log::error!("runtime event fanout lock poisoned; event was not delivered");
+            return;
+        };
+
+        for subscriber in subscribers.iter() {
+            match subscriber.queue.lock() {
+                Ok(mut queue) => push_bounded_event(
+                    &mut queue,
+                    &subscriber.name,
+                    subscriber.capacity,
+                    event.clone(),
+                ),
+                Err(error) => {
+                    log::error!(
+                        "runtime event subscriber `{}` lock poisoned; event was not delivered: {error}",
+                        subscriber.name
+                    );
+                }
+            }
+        }
+    }
+}
+
+fn push_bounded_event(
+    queue: &mut VecDeque<RuntimeEvent>,
+    subscriber_name: &str,
+    capacity: usize,
+    event: RuntimeEvent,
+) {
+    let capacity = capacity.max(MIN_RUNTIME_EVENT_QUEUE_CAPACITY);
+    if queue.len() < capacity {
+        queue.push_back(event);
+        return;
+    }
+
+    let required_slots = if matches!(event, RuntimeEvent::SubscriberBackpressure { .. }) {
+        1
+    } else {
+        2
+    };
+    let dropped_events = queue
+        .len()
+        .saturating_add(required_slots)
+        .saturating_sub(capacity);
+    for _ in 0..dropped_events {
+        queue.pop_front();
+    }
+
+    if !matches!(event, RuntimeEvent::SubscriberBackpressure { .. }) {
+        queue.push_back(RuntimeEvent::SubscriberBackpressure {
+            subscriber: subscriber_name.to_string(),
+            dropped_events,
+            capacity,
+        });
+    }
+    queue.push_back(event);
 }
 
 #[derive(Debug)]

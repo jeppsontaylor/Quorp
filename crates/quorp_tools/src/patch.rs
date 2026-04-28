@@ -3,7 +3,8 @@ use std::path::{Component, Path, PathBuf};
 use quorp_agent_core::ReadFileRange;
 use quorp_ids::PatchId;
 use quorp_patch_vm::{
-    FileChange, FileChangeKind, PatchApplyProof, PatchRisk, PatchVm, PatchVmPolicy, hash_bytes,
+    FileChange, FileChangeKind, PatchApplyProof, PatchApplyReport, PatchRisk, PatchVm,
+    PatchVmPolicy, hash_bytes,
 };
 use regex::Regex;
 
@@ -772,10 +773,12 @@ pub fn resolve_file_patches(
     Ok(resolved)
 }
 
-pub fn apply_resolved_file_patches(resolved: &[ResolvedFilePatch]) -> anyhow::Result<()> {
+pub fn apply_resolved_file_patches(
+    resolved: &[ResolvedFilePatch],
+) -> anyhow::Result<Option<PatchApplyReport>> {
     let changes = resolved_file_patches_to_vm_changes(resolved)?;
     if changes.is_empty() {
-        return Ok(());
+        return Ok(None);
     }
     let vm = PatchVm::new();
     let patch_id = patch_id_for_changes(&changes);
@@ -786,8 +789,8 @@ pub fn apply_resolved_file_patches(resolved: &[ResolvedFilePatch]) -> anyhow::Re
     } else {
         PatchApplyProof::HashesOnly
     };
-    vm.apply_file_changes(&patch_id, &changes, proof, policy)?;
-    Ok(())
+    let report = vm.apply_file_changes(&patch_id, &changes, proof, policy)?;
+    Ok(Some(report))
 }
 
 fn resolved_file_patches_to_vm_changes(

@@ -114,7 +114,9 @@ pub fn parse_memory_updates(
     for (index, item) in items.iter().enumerate() {
         match parse_memory_update(item, warnings) {
             Some(update) => parsed.push(update),
-            None => warnings.push(format!("Ignored malformed `memory_updates[{index}]` entry.")),
+            None => warnings.push(format!(
+                "Ignored malformed `memory_updates[{index}]` entry."
+            )),
         }
     }
     parsed

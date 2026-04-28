@@ -2,6 +2,8 @@
 
 This file is the current support audit for Quorp's terminal-first Rust agent runtime. It intentionally describes only code that exists in this worktree.
 
+Tracked upgrade audits currently live under `tips/upgrade/v1/`. There is no reachable `tips/upgrade/v2/` tree in this checkout, but dropped git blobs recovered on April 28, 2026 contain v2-like audit material about repo localization, precise edit semantics, task runtime, verification, memory, permissions, MCP, and worktree isolation. Treat those themes as roadmap evidence if the blobs are still recoverable locally.
+
 ## Current Product Shape
 
 Quorp is a Rust workspace centered on a single terminal binary, with the CLI split into `quorp_cli` and the session/runtime helpers split into `quorp_session`. The runtime still presents a stream-first CLI, a headless autonomous run path, typed agent tools, git-worktree or tmp-copy sandboxing, permission policy primitives, Patch VM writes, proof packets, memory/rule scaffolding, benchmark scoreboards, and proof receipts.
@@ -131,7 +133,7 @@ These crates are release-candidate support systems with deterministic APIs and t
 - `crates/quorp_repo_graph`
 - `crates/quorp_rust_intel`
 
-Current support includes workspace context compilation from `agent/` contracts, ProofLens-style proof packet parsing, negative retry memory, and rule-forge shadow lifecycle accounting. Some pieces remain product support crates rather than fully autonomous runtime policy.
+Current support includes workspace context compilation from `agent/` contracts, explicit `expand_context` / `recall_memory` / `propose_rule` tool actions, native-backend Patch VM write receipts for write actions, verification reports with staged proof packets, negative retry memory, and rule-forge shadow lifecycle accounting. Some pieces remain product support crates rather than fully autonomous runtime policy.
 
 ### Benchmark And Evaluation Gates
 
@@ -161,6 +163,6 @@ Agents should consult these before widening edits or validation.
 
 - Live provider benchmark scoring requires operator-provided API credentials and remains opt-in for CI.
 - `gitleaks` is available locally and the security lane runs it, but the current recipe treats findings as non-fatal. A worktree-only scan currently reports local `.env` findings, so provider credentials should stay out of source-scanned worktrees before making this a hard gate.
-- Context, memory, rule-forge, and verification crates are deterministic support systems; deeper runtime mediation and durable long-term memory remain future work.
+- Context, memory, rule-forge, and verification are wired into the runtime surface, but durable subscriber workers, richer verify executors, and long-term policy mediation remain future work.
 - Release packaging/signing is not represented here; this workspace has `publish = false` and the current closure is a binary/worktree release candidate.
 - `AGENT_SUPPORT.md` does not claim support for deleted historical TUI files, Docker re-exec, or SSD-MOE-local model management.

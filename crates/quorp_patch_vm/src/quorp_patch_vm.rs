@@ -89,10 +89,24 @@ pub struct PatchPreview {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct PatchApplyReport {
+    pub patch_id: quorp_ids::PatchId,
     pub outcome: ApplyOutcome,
     pub preview_id: String,
     pub touched_paths: Vec<PathBuf>,
     pub rollback_tokens: Vec<RollbackToken>,
+}
+
+impl PatchApplyReport {
+    pub fn receipt(&self, provenance: EditProvenance) -> PatchReceipt {
+        PatchReceipt {
+            patch_id: self.patch_id.clone(),
+            provenance,
+            outcome: self.outcome,
+            preview_id: self.preview_id.clone(),
+            touched_paths: self.touched_paths.clone(),
+            rollback_tokens: self.rollback_tokens.clone(),
+        }
+    }
 }
 
 impl PatchVm {
@@ -218,6 +232,7 @@ impl PatchVm {
         }
 
         Ok(PatchApplyReport {
+            patch_id: patch_id.clone(),
             outcome: ApplyOutcome::Applied,
             preview_id: preview.preview_id,
             touched_paths: preview.touched_paths,

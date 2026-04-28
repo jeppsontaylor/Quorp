@@ -1,7 +1,7 @@
-use super::*;
 use super::actions::{
     spawn_expand_context_task, spawn_propose_rule_task, spawn_recall_memory_task,
 };
+use super::*;
 
 pub(crate) fn handle_execute_action_request(
     event_tx: std::sync::mpsc::SyncSender<TuiEvent>,

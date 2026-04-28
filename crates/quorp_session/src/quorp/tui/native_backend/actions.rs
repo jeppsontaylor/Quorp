@@ -23,21 +23,197 @@ use crate::quorp::tui::agent_context::{
 };
 use crate::quorp::tui::agent_protocol::{ActionOutcome, AgentAction, TomlEditOperation};
 use crate::quorp::tui::{ChatUiEvent, TuiEvent};
-use quorp_context::{Anchor, CompileContext, CompileRequest, ContextCompiler, TokenBudget};
 use quorp_agent_core::ToolResultEnvelope;
 use quorp_agent_core::{ReadFileRange, stable_content_hash};
+use quorp_context::{Anchor, CompileContext, CompileRequest, ContextCompiler, TokenBudget};
 use quorp_ids::RuleId;
 use quorp_memory::Memory;
 use quorp_memory_model::{MemoryQuery, Tier};
+use quorp_patch_vm::{
+    EditProvenance, FileChange, FileChangeKind, PatchApplyProof, PatchApplyReport, PatchReceipt,
+    PatchVm, PatchVmPolicy, hash_bytes,
+};
 use quorp_rule_forge::{ClusterKey, RuleForge};
-use quorp_verify::{CommandOutputEvidence, proof_packet_from_command};
 use quorp_sandbox::{build_command_plan, default_policy, sandbox_runtime_for_path};
 use quorp_tools::apply::apply_patch_edit;
-use quorp_tools::edit::{
-    apply_toml_operations, perform_range_replacement, set_executable_bit, write_full_file,
-};
+use quorp_tools::edit::{apply_toml_operations, perform_range_replacement, set_executable_bit};
 use quorp_tools::patch::{perform_block_replacement, sanitize_project_path};
 use quorp_tools::preview::{load_preview_record, syntax_preflight_for_preview};
+use quorp_verify::{
+    VerifyCommand, VerifyCommandResult, VerifyLevel, VerifyRequest, VerifyTarget,
+    default_verify_plan, execute_verify_request,
+};
+
+fn default_patch_vm_policy() -> PatchVmPolicy {
+    PatchVmPolicy {
+        allow_full_file_rewrite: true,
+        max_files: 32,
+    }
+}
+
+fn record_patch_vm_rollback(session_id: usize, report: &PatchApplyReport) {
+    for token in &report.rollback_tokens {
+        stash_file_for_rollback(session_id, &token.file);
+    }
+    for path in &report.touched_paths {
+        stash_file_for_rollback(session_id, path);
+    }
+}
+
+fn render_patch_vm_receipt(receipt: &PatchReceipt) -> String {
+    format!(
+        "patch_vm_receipt:\npatch_id: {}\nprovenance: {:?}\npreview_id: {}\noutcome: {:?}\ntouched_paths: {}\nrollback_tokens: {}",
+        receipt.patch_id,
+        receipt.provenance,
+        receipt.preview_id,
+        receipt.outcome,
+        receipt
+            .touched_paths
+            .iter()
+            .map(|path| path.display().to_string())
+            .collect::<Vec<_>>()
+            .join(", "),
+        receipt.rollback_tokens.len()
+    )
+}
+
+fn apply_single_file_change(
+    session_id: usize,
+    path: String,
+    target: PathBuf,
+    next_content: String,
+    provenance: EditProvenance,
+) -> anyhow::Result<String> {
+    let existing_bytes = std::fs::read(&target).ok();
+    let change = FileChange {
+        path: target.clone(),
+        display_path: path.clone(),
+        expected_hash: existing_bytes.as_deref().map(hash_bytes),
+        kind: match existing_bytes {
+            Some(_) => FileChangeKind::Update {
+                content: next_content.into_bytes(),
+            },
+            None => FileChangeKind::Add {
+                content: next_content.into_bytes(),
+            },
+        },
+    };
+    let vm = PatchVm::new();
+    let patch_id = quorp_ids::PatchId::new(format!(
+        "write-{}-{}",
+        session_id,
+        stable_content_hash(&path)
+    ));
+    let report = vm.apply_file_changes(
+        &patch_id,
+        &[change],
+        PatchApplyProof::HashesOnly,
+        default_patch_vm_policy(),
+    )?;
+    record_patch_vm_rollback(session_id, &report);
+    Ok(render_patch_vm_receipt(&report.receipt(provenance)))
+}
+
+fn apply_set_executable_change(
+    session_id: usize,
+    path: String,
+    target: PathBuf,
+) -> anyhow::Result<String> {
+    let current_bytes = std::fs::read(&target)
+        .map_err(|error| anyhow::anyhow!("Failed to read file for set_executable: {error}"))?;
+    let change = FileChange {
+        path: target.clone(),
+        display_path: path.clone(),
+        expected_hash: Some(hash_bytes(&current_bytes)),
+        kind: FileChangeKind::Update {
+            content: current_bytes,
+        },
+    };
+    let vm = PatchVm::new();
+    let patch_id = quorp_ids::PatchId::new(format!(
+        "chmod-{}-{}",
+        session_id,
+        stable_content_hash(&path)
+    ));
+    let report = vm.apply_file_changes(
+        &patch_id,
+        &[change],
+        PatchApplyProof::HashesOnly,
+        default_patch_vm_policy(),
+    )?;
+    record_patch_vm_rollback(session_id, &report);
+    set_executable_bit(&target)?;
+    Ok(render_patch_vm_receipt(&report.receipt(
+        EditProvenance::SetExecutable {
+            path: PathBuf::from(path),
+        },
+    )))
+}
+
+fn validation_stage_id(
+    plan: &crate::quorp::tui::agent_protocol::ValidationPlan,
+    command: &str,
+    index: usize,
+) -> String {
+    if plan.fmt && index == 0 {
+        "fmt".to_string()
+    } else if plan.clippy && ((plan.fmt && index == 1) || (!plan.fmt && index == 0)) {
+        "clippy".to_string()
+    } else if plan.workspace_tests && command.contains("test") {
+        "workspace_tests".to_string()
+    } else if command.contains("cargo test") {
+        format!("targeted_test_{index}")
+    } else {
+        format!("command_{index}")
+    }
+}
+
+fn validation_plan_to_verify_request(
+    cwd: &Path,
+    plan: &crate::quorp::tui::agent_protocol::ValidationPlan,
+    commands: &[String],
+) -> VerifyRequest {
+    let mut targets = Vec::new();
+    if plan.workspace_tests || plan.fmt || plan.clippy || commands.len() > 1 {
+        targets.push(VerifyTarget::Workspace);
+    }
+    for test in &plan.tests {
+        if !test.trim().is_empty() {
+            targets.push(VerifyTarget::Test(test.trim().to_string()));
+        }
+    }
+    if targets.is_empty() {
+        targets.push(VerifyTarget::Workspace);
+    }
+    let level = if plan.workspace_tests || plan.clippy {
+        VerifyLevel::L3Broad
+    } else if plan.fmt || !plan.tests.is_empty() || !plan.custom_commands.is_empty() {
+        VerifyLevel::L2Targeted
+    } else {
+        VerifyLevel::L1Check
+    };
+    let verify_plan = default_verify_plan(level, targets);
+    let joined_commands = commands.join("\n");
+    VerifyRequest {
+        plan: verify_plan,
+        commands: commands
+            .iter()
+            .enumerate()
+            .map(|(index, command)| VerifyCommand {
+                stage_id: validation_stage_id(plan, command, index),
+                command: command.clone(),
+                cwd: cwd.to_path_buf(),
+            })
+            .collect(),
+        git_sha: option_env!("QUORP_COMMIT_SHA")
+            .map(str::to_string)
+            .unwrap_or_else(|| "workspace".to_string()),
+        changed_files_hash: stable_content_hash(&joined_commands),
+        features: Vec::new(),
+        target_triple: std::env::consts::ARCH.to_string(),
+        rustc_version: env!("CARGO_PKG_VERSION").to_string(),
+    }
+}
 fn resolve_mcp_server_config(
     project_root: &Path,
     server_name: &str,
@@ -373,9 +549,19 @@ pub(crate) fn spawn_write_file_task(
             content: content.clone(),
         };
         let result = sanitize_project_path(&project_root, &cwd, &path).and_then(|candidate| {
-            stash_file_for_rollback(session_id, &candidate);
-            write_full_file(&candidate, &content)?;
-            Ok(format!("Wrote {} bytes to {path}", content.len()))
+            let receipt = apply_single_file_change(
+                session_id,
+                path.clone(),
+                candidate,
+                content.clone(),
+                EditProvenance::WriteFile {
+                    path: PathBuf::from(path.clone()),
+                },
+            )?;
+            Ok(format!(
+                "Wrote {} bytes to {path}\n{receipt}",
+                content.len()
+            ))
         });
         emit_tool_result(
             &event_tx,
@@ -440,9 +626,16 @@ pub(crate) fn spawn_replace_block_task(
                 .map_err(|e| anyhow::anyhow!("Failed to read file: {}", e))?;
             let new_content =
                 perform_block_replacement(&current_content, &search_block, &replace_block, range)?;
-            stash_file_for_rollback(session_id, &target);
-            write_full_file(&target, &new_content)?;
-            Ok(format!("Replaced block in {path}"))
+            let receipt = apply_single_file_change(
+                session_id,
+                path.clone(),
+                target,
+                new_content,
+                EditProvenance::ReplaceBlock {
+                    path: PathBuf::from(path.clone()),
+                },
+            )?;
+            Ok(format!("Replaced block in {path}\n{receipt}"))
         });
         emit_tool_result(
             &event_tx,
@@ -485,12 +678,20 @@ pub(crate) fn spawn_replace_range_task(
                     "replace_range syntax preflight failed:\n{syntax_preflight}"
                 ));
             }
-            stash_file_for_rollback(session_id, &target);
-            write_full_file(&target, &updated_content)?;
+            let receipt = apply_single_file_change(
+                session_id,
+                path.clone(),
+                target,
+                updated_content,
+                EditProvenance::ReplaceRange {
+                    path: PathBuf::from(path.clone()),
+                },
+            )?;
             Ok(format!(
-                "Replaced lines {} in {path}\n{}",
+                "Replaced lines {} in {path}\n{}\n{}",
                 range.label(),
-                syntax_preflight
+                syntax_preflight,
+                receipt
             ))
         });
         emit_tool_result(
@@ -532,12 +733,20 @@ pub(crate) fn spawn_modify_toml_task(
                     "modify_toml syntax preflight failed:\n{syntax_preflight}"
                 ));
             }
-            stash_file_for_rollback(session_id, &target);
-            write_full_file(&target, &updated_content)?;
+            let receipt = apply_single_file_change(
+                session_id,
+                path.clone(),
+                target,
+                updated_content,
+                EditProvenance::ModifyToml {
+                    path: PathBuf::from(path.clone()),
+                },
+            )?;
             Ok(format!(
-                "Applied {} TOML operation(s) to {path}\n{}",
+                "Applied {} TOML operation(s) to {path}\n{}\n{}",
                 operations.len(),
-                syntax_preflight
+                syntax_preflight,
+                receipt
             ))
         });
         emit_tool_result(
@@ -572,11 +781,18 @@ pub(crate) fn spawn_apply_preview_task(
                     record.base_hash
                 ));
             }
-            stash_file_for_rollback(session_id, &record.target_path);
-            write_full_file(&record.target_path, &record.updated_content)?;
+            let receipt = apply_single_file_change(
+                session_id,
+                record.path.clone(),
+                record.target_path.clone(),
+                record.updated_content.clone(),
+                EditProvenance::ApplyPreview {
+                    preview_id: preview_id.clone(),
+                },
+            )?;
             Ok(format!(
-                "Applied preview {preview_id} to {}\nedit_kind: {}\nsyntax_preflight: {}",
-                record.path, record.edit_kind, record.syntax_status
+                "Applied preview {preview_id} to {}\nedit_kind: {}\nsyntax_preflight: {}\n{}",
+                record.path, record.edit_kind, record.syntax_status, receipt
             ))
         })();
         emit_tool_result(
@@ -603,22 +819,22 @@ pub(crate) fn spawn_run_validation_task(
         let action = AgentAction::RunValidation { plan: plan.clone() };
         let config = load_agent_config(project_root.as_path());
         let commands = validation_commands_for_plan(&config, &plan);
-        let commands_for_proof = commands.clone();
         let command_output_limit = config
             .policy
             .limits
             .max_command_output_bytes
             .unwrap_or(COMMAND_OUTPUT_LIMIT);
-        let started_at = Instant::now();
+        let verify_request = validation_plan_to_verify_request(&cwd, &plan, &commands);
         let result =
             run_validation_commands(&event_tx, session_id, &cwd, commands, command_output_limit);
 
-        if let Err(ref e) = result {
+        if let Err(e) = &result {
+            let error_text = e.to_string();
             if enable_rollback_on_validation_failure {
                 super::rollback_session_worktree(session_id);
                 let rolled_back_error = anyhow::anyhow!(
                     "{}\n\n[System] Changes were safely rolled back. Please analyze the error and try applying a corrected fix.",
-                    e
+                    error_text
                 );
                 emit_tool_result(
                     &event_tx,
@@ -634,7 +850,7 @@ pub(crate) fn spawn_run_validation_task(
                 &event_tx,
                 session_id,
                 action,
-                result,
+                Err(anyhow::anyhow!(error_text)),
                 "run_validation",
                 responder,
             );
@@ -643,23 +859,50 @@ pub(crate) fn spawn_run_validation_task(
             super::clear_session_worktree(session_id);
         }
 
-        let rendered_output = result.map(|output| {
-            let duration_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
-            let command = commands_for_proof.join(" && ");
-            let proof_packet = proof_packet_from_command(CommandOutputEvidence {
-                command: command.as_str(),
-                cwd: &cwd,
-                exit_code: 0,
-                duration_ms,
-                output: output.as_str(),
-                raw_log_path: project_root.join(".quorp").join("verification.log"),
-                tool_version: None,
-                truncated: output.len() >= command_output_limit,
-            });
-            format!(
-                "{output}\n\nVerification proof:\nkind: {:?}\nsummary: {}\n",
-                proof_packet.kind, proof_packet.summary
-            )
+        let rendered_output = result.and_then(|validation_runs| {
+            let report = execute_verify_request(&verify_request, |command| {
+                validation_runs
+                    .iter()
+                    .find(|run| run.command == command.command)
+                    .map(|run| VerifyCommandResult {
+                        exit_code: run.exit_code,
+                        duration_ms: run.duration_ms,
+                        output: run.output.clone(),
+                        raw_log_path: run.raw_log_path.clone(),
+                        tool_version: None,
+                        truncated: run.truncated,
+                    })
+                    .ok_or_else(|| format!("missing validation run for `{}`", command.command))
+            })
+            .map_err(anyhow::Error::msg)?;
+            let mut output = validation_runs
+                .iter()
+                .map(|run| run.rendered_output.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !output.ends_with('\n') {
+                output.push('\n');
+            }
+            output.push_str(&format!(
+                "\nVerification report:\noverall: {:?}\ncache_hits: {}\nwall_ms: {}\nstages:\n{}\nproof_packets: {}",
+                report.overall,
+                report.cache_hits,
+                report.wall_ms,
+                report
+                    .stages
+                    .iter()
+                    .map(|stage| format!(
+                        "- {}: {:?}{} ({})",
+                        stage.stage_id,
+                        stage.status,
+                        if stage.from_cache { ", cached" } else { "" },
+                        stage.summary
+                    ))
+                    .collect::<Vec<_>>()
+                    .join("\n"),
+                report.proof_packets.len()
+            ));
+            Ok(output)
         });
 
         emit_tool_result(
@@ -708,9 +951,8 @@ pub(crate) fn spawn_set_executable_task(
     std::thread::spawn(move || {
         let action = AgentAction::SetExecutable { path: path.clone() };
         let result = sanitize_project_path(&project_root, &cwd, &path).and_then(|target| {
-            stash_file_for_rollback(session_id, &target);
-            set_executable_bit(&target)?;
-            Ok(format!("Enabled executable bit for {path}"))
+            let receipt = apply_set_executable_change(session_id, path.clone(), target)?;
+            Ok(format!("Enabled executable bit for {path}\n{receipt}"))
         });
         emit_tool_result(
             &event_tx,
@@ -753,11 +995,7 @@ pub(crate) fn spawn_expand_context_task(
                 git_sha: option_env!("QUORP_COMMIT_SHA").map(str::to_string),
                 generated_at_unix: current_unix_time(),
             };
-            let pack = compiler.compile_workspace(
-                project_root.as_path(),
-                &request,
-                &context,
-            )?;
+            let pack = compiler.compile_workspace(project_root.as_path(), &request, &context)?;
             Ok(render_context_pack_for_action(&pack))
         })();
         emit_tool_result(
@@ -830,7 +1068,11 @@ pub(crate) fn spawn_propose_rule_task(
             let signature = forge.observe_failure(&failure)?;
             let key = ClusterKey::from_failure(&failure);
             let candidate = forge.maybe_emit_candidate(&key, statement.clone())?;
-            Ok(render_rule_proposal(&statement, &signature.signature, candidate))
+            Ok(render_rule_proposal(
+                &statement,
+                &signature.signature,
+                candidate,
+            ))
         })();
         emit_tool_result(
             &event_tx,
@@ -930,11 +1172,7 @@ fn render_memory_hits(query: &str, hits: &[quorp_memory_model::MemoryHit]) -> St
     lines.join("\n")
 }
 
-fn render_rule_proposal(
-    statement: &str,
-    signature: &str,
-    candidate: Option<RuleId>,
-) -> String {
+fn render_rule_proposal(statement: &str, signature: &str, candidate: Option<RuleId>) -> String {
     let mut lines = vec![
         "Rule proposal:".to_string(),
         format!("statement: {statement}"),
@@ -996,20 +1234,30 @@ pub(crate) fn emit_tool_result(
     emit_tool_finished(event_tx, session_id, outcome, responder);
 }
 
+pub(crate) struct ValidationCommandRun {
+    pub(crate) command: String,
+    pub(crate) output: String,
+    pub(crate) exit_code: i32,
+    pub(crate) duration_ms: u64,
+    pub(crate) rendered_output: String,
+    pub(crate) raw_log_path: PathBuf,
+    pub(crate) truncated: bool,
+}
+
 pub(crate) fn run_validation_commands(
     event_tx: &std::sync::mpsc::SyncSender<TuiEvent>,
     session_id: usize,
     cwd: &Path,
     commands: Vec<String>,
     command_output_limit: usize,
-) -> anyhow::Result<String> {
+) -> anyhow::Result<Vec<ValidationCommandRun>> {
     if commands.is_empty() {
         return Err(anyhow::anyhow!(
             "run_validation had no resolved commands; check .quorp/agent.toml"
         ));
     }
 
-    let mut combined_output = String::new();
+    let mut combined_runs = Vec::new();
     for command in commands {
         let started_at = Instant::now();
         crate::quorp::tui::diagnostics::log_event(
@@ -1032,8 +1280,11 @@ pub(crate) fn run_validation_commands(
                 ChatUiEvent::CommandOutput(session_id, line.to_string()),
             );
         }
-        combined_output.push_str(&format!("$ {command}\n"));
-        combined_output.push_str(command_output.output.as_str());
+        let duration_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+        let mut rendered_output = format!("$ {command}\n{}", command_output.output);
+        if !rendered_output.ends_with('\n') {
+            rendered_output.push('\n');
+        }
         crate::quorp::tui::diagnostics::log_event(
             "agent.validation_finished",
             serde_json::json!({
@@ -1041,23 +1292,45 @@ pub(crate) fn run_validation_commands(
                 "cwd": cwd.display().to_string(),
                 "command": command,
                 "exit_code": command_output.exit_code,
-                "duration_ms": started_at.elapsed().as_millis() as u64,
+                "duration_ms": duration_ms,
                 "output_preview": truncate_diagnostic_text(&command_output.output, 240),
             }),
         );
+        let raw_log_path = cwd
+            .join(".quorp")
+            .join(format!("verify-{}.log", stable_content_hash(&command)));
+        if let Some(parent) = raw_log_path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| {
+                anyhow::anyhow!("Failed to create verification log directory: {error}")
+            })?;
+        }
+        std::fs::write(&raw_log_path, command_output.output.as_bytes())
+            .map_err(|error| anyhow::anyhow!("Failed to write verification log: {error}"))?;
+        let run = ValidationCommandRun {
+            command: command.clone(),
+            output: command_output.output.clone(),
+            exit_code: command_output.exit_code,
+            duration_ms,
+            rendered_output,
+            raw_log_path,
+            truncated: command_output.output.len() >= command_output_limit,
+        };
         if command_output.exit_code != 0 {
-            if !combined_output.ends_with('\n') {
+            let mut combined_output = combined_runs
+                .iter()
+                .map(|existing: &ValidationCommandRun| existing.rendered_output.as_str())
+                .collect::<Vec<_>>()
+                .join("\n");
+            if !combined_output.is_empty() && !combined_output.ends_with('\n') {
                 combined_output.push('\n');
             }
+            combined_output.push_str(run.rendered_output.as_str());
             combined_output.push_str(&format!("[Exit code: {}]", command_output.exit_code));
             return Err(anyhow::anyhow!(combined_output));
         }
-        if !combined_output.ends_with('\n') {
-            combined_output.push('\n');
-        }
+        combined_runs.push(run);
     }
-    combined_output.push_str("[Validation finished]");
-    Ok(combined_output)
+    Ok(combined_runs)
 }
 
 pub(crate) struct CapturedCommandOutput {
@@ -1297,5 +1570,53 @@ mod tests {
         assert!(output.contains("[Command cleanup failed: "));
         assert!(output.contains("failed to kill command process group 123"));
         assert!(output.contains("failed to wait on timed-out command"));
+    }
+
+    #[test]
+    fn validation_plan_maps_to_verify_request() {
+        let plan = crate::quorp::tui::agent_protocol::ValidationPlan {
+            fmt: true,
+            clippy: true,
+            workspace_tests: false,
+            tests: vec!["crate::tests::smoke".to_string()],
+            custom_commands: vec!["cargo check -p quorp_session".to_string()],
+        };
+        let commands = vec![
+            "cargo fmt --all --check".to_string(),
+            "cargo clippy --workspace".to_string(),
+            "cargo test crate::tests::smoke".to_string(),
+            "cargo check -p quorp_session".to_string(),
+        ];
+
+        let request = validation_plan_to_verify_request(Path::new("."), &plan, &commands);
+
+        assert_eq!(request.plan.level, VerifyLevel::L3Broad);
+        assert_eq!(request.commands.len(), 4);
+        assert_eq!(request.commands[0].stage_id, "fmt");
+        assert_eq!(request.commands[1].stage_id, "clippy");
+        assert!(request.plan.targets.iter().any(
+            |target| matches!(target, VerifyTarget::Test(name) if name == "crate::tests::smoke")
+        ));
+    }
+
+    #[test]
+    fn apply_single_file_change_returns_patch_vm_receipt_and_updates_bytes() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let target = root.path().join("target.txt");
+
+        let receipt = apply_single_file_change(
+            41,
+            "target.txt".to_string(),
+            target.clone(),
+            "hello\n".to_string(),
+            EditProvenance::WriteFile {
+                path: PathBuf::from("target.txt"),
+            },
+        )
+        .expect("apply");
+
+        assert!(receipt.contains("patch_vm_receipt"));
+        assert!(receipt.contains("rollback_tokens: 0"));
+        assert_eq!(std::fs::read_to_string(target).expect("read"), "hello\n");
     }
 }

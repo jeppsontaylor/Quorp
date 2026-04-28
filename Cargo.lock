@@ -2880,6 +2880,7 @@ dependencies = [
  "quorp_mcp",
  "quorp_memory",
  "quorp_memory_model",
+ "quorp_patch_vm",
  "quorp_permissions",
  "quorp_provider",
  "quorp_render",

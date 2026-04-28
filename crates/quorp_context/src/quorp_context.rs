@@ -767,8 +767,8 @@ fn item_label(item: &ContextItem) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use rand::{Rng, SeedableRng, rngs::StdRng};
     use quorp_repo_graph::SymbolPath;
+    use rand::{Rng, SeedableRng, rngs::StdRng};
 
     #[test]
     fn compile_with_no_memory_returns_handle_per_anchor() {
@@ -1077,9 +1077,7 @@ reason = "build output"
                         "query-{index}-{}",
                         rng.random::<u16>()
                     ))),
-                    1 => anchors.push(Anchor::File(PathBuf::from(format!(
-                        "src/file_{index}.rs"
-                    )))),
+                    1 => anchors.push(Anchor::File(PathBuf::from(format!("src/file_{index}.rs")))),
                     2 => anchors.push(Anchor::Symbol(SymbolPath::new(format!(
                         "crate::module::symbol_{index}"
                     )))),

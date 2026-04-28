@@ -7,7 +7,10 @@
 use quorp_ids::VerifyRunId;
 pub use quorp_verify_model::*;
 use sha2::{Digest, Sha256};
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
+use std::sync::{Mutex, OnceLock};
+use std::time::{Duration, Instant};
 
 /// Compose the canonical cache-key string for hashing.
 pub fn cache_key_canonical_string(key: &CacheKey) -> String {
@@ -57,6 +60,46 @@ pub struct CommandOutputEvidence<'a> {
     pub raw_log_path: PathBuf,
     pub tool_version: Option<String>,
     pub truncated: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct VerifyCommand {
+    pub stage_id: String,
+    pub command: String,
+    pub cwd: PathBuf,
+}
+
+#[derive(Debug, Clone)]
+pub struct VerifyCommandResult {
+    pub exit_code: i32,
+    pub duration_ms: u64,
+    pub output: String,
+    pub raw_log_path: PathBuf,
+    pub tool_version: Option<String>,
+    pub truncated: bool,
+}
+
+#[derive(Debug, Clone)]
+pub struct VerifyRequest {
+    pub plan: VerifyPlan,
+    pub commands: Vec<VerifyCommand>,
+    pub git_sha: String,
+    pub changed_files_hash: String,
+    pub features: Vec<String>,
+    pub target_triple: String,
+    pub rustc_version: String,
+}
+
+#[derive(Debug, Clone)]
+struct CachedStageReport {
+    report: StageReport,
+    packet: ProofPacket,
+}
+
+static VERIFY_CACHE: OnceLock<Mutex<HashMap<String, CachedStageReport>>> = OnceLock::new();
+
+fn verify_cache() -> &'static Mutex<HashMap<String, CachedStageReport>> {
+    VERIFY_CACHE.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 pub fn sha256_hex(bytes: &[u8]) -> String {
@@ -117,6 +160,114 @@ pub fn stage_report_from_packet(packet: &ProofPacket, cache_key: CacheKey) -> St
         raw_log_ref: Some(packet.raw_log_ref.clone()),
         cache_key,
         from_cache: false,
+    }
+}
+
+pub fn execute_verify_request<F>(
+    request: &VerifyRequest,
+    mut run_command: F,
+) -> Result<VerifyReport, String>
+where
+    F: FnMut(&VerifyCommand) -> Result<VerifyCommandResult, String>,
+{
+    let started_at = Instant::now();
+    let mut stages = Vec::with_capacity(request.commands.len());
+    let mut proof_packets = Vec::with_capacity(request.commands.len());
+    let mut cache_hits = 0_u32;
+
+    for command in &request.commands {
+        let cache_key = CacheKey {
+            git_sha: request.git_sha.clone(),
+            changed_files_hash: request.changed_files_hash.clone(),
+            features: request.features.clone(),
+            target_triple: request.target_triple.clone(),
+            rustc_version: request.rustc_version.clone(),
+            stage_id: command.stage_id.clone(),
+        };
+        let cache_key_string = cache_key_canonical_string(&cache_key);
+
+        if let Some(cached) = verify_cache()
+            .lock()
+            .map_err(|_| "verify cache lock poisoned".to_string())?
+            .get(&cache_key_string)
+            .cloned()
+        {
+            let mut report = cached.report;
+            report.from_cache = true;
+            report.duration_ms = 0;
+            cache_hits += 1;
+            stages.push(report);
+            proof_packets.push(cached.packet);
+            if request.plan.fail_fast
+                && matches!(
+                    stages.last().map(|stage| &stage.status),
+                    Some(StageStatus::Fail)
+                )
+            {
+                break;
+            }
+            continue;
+        }
+
+        let result = run_command(command)?;
+        let packet = proof_packet_from_command(CommandOutputEvidence {
+            command: &command.command,
+            cwd: &command.cwd,
+            exit_code: result.exit_code,
+            duration_ms: result.duration_ms,
+            output: &result.output,
+            raw_log_path: result.raw_log_path.clone(),
+            tool_version: result.tool_version.clone(),
+            truncated: result.truncated,
+        });
+        let mut report = stage_report_from_packet(&packet, cache_key);
+        report.stage_id = command.stage_id.clone();
+        verify_cache()
+            .lock()
+            .map_err(|_| "verify cache lock poisoned".to_string())?
+            .insert(
+                cache_key_string,
+                CachedStageReport {
+                    report: report.clone(),
+                    packet: packet.clone(),
+                },
+            );
+        let stage_failed = report.status == StageStatus::Fail;
+        stages.push(report);
+        proof_packets.push(packet);
+        if request.plan.fail_fast && stage_failed {
+            break;
+        }
+    }
+
+    let overall = if stages.is_empty() {
+        Verdict::Cancelled
+    } else if stages.iter().all(|stage| stage.status == StageStatus::Pass) {
+        Verdict::Pass
+    } else if stages.iter().any(|stage| stage.status == StageStatus::Fail) {
+        Verdict::Fail
+    } else {
+        Verdict::Partial
+    };
+    let wall_ms = started_at.elapsed().as_millis().min(u128::from(u64::MAX)) as u64;
+
+    Ok(VerifyReport {
+        plan: request.plan.clone(),
+        stages,
+        proof_packets,
+        overall,
+        cache_hits,
+        wall_ms,
+    })
+}
+
+pub fn default_verify_plan(level: VerifyLevel, targets: Vec<VerifyTarget>) -> VerifyPlan {
+    VerifyPlan {
+        run_id: fresh_run_id(),
+        level,
+        targets,
+        time_budget: Duration::from_secs(180),
+        fail_fast: false,
     }
 }
 
@@ -566,5 +717,60 @@ thread 'billing::tests::grace_period_upgrade' panicked at src/lib.rs:9: expected
             changed_stage.stage_id.push('z');
             assert_ne!(canonical, cache_key_canonical_string(&changed_stage));
         }
+    }
+
+    #[test]
+    fn execute_verify_request_uses_cache_after_first_run() {
+        let request = VerifyRequest {
+            plan: VerifyPlan {
+                run_id: VerifyRunId::new("verify-test"),
+                level: VerifyLevel::L2Targeted,
+                targets: vec![VerifyTarget::Workspace],
+                time_budget: Duration::from_secs(30),
+                fail_fast: false,
+            },
+            commands: vec![VerifyCommand {
+                stage_id: "fmt".to_string(),
+                command: "cargo fmt --all --check".to_string(),
+                cwd: PathBuf::from("."),
+            }],
+            git_sha: "abc".to_string(),
+            changed_files_hash: "def".to_string(),
+            features: Vec::new(),
+            target_triple: "aarch64-apple-darwin".to_string(),
+            rustc_version: "1.93.0".to_string(),
+        };
+
+        let mut executions = 0;
+        let first = execute_verify_request(&request, |_| {
+            executions += 1;
+            Ok(VerifyCommandResult {
+                exit_code: 0,
+                duration_ms: 12,
+                output: "ok".to_string(),
+                raw_log_path: PathBuf::from("logs/fmt.log"),
+                tool_version: None,
+                truncated: false,
+            })
+        })
+        .expect("first verify run");
+        let second = execute_verify_request(&request, |_| {
+            executions += 1;
+            Ok(VerifyCommandResult {
+                exit_code: 0,
+                duration_ms: 99,
+                output: "should not run".to_string(),
+                raw_log_path: PathBuf::from("logs/fmt.log"),
+                tool_version: None,
+                truncated: false,
+            })
+        })
+        .expect("second verify run");
+
+        assert_eq!(executions, 1);
+        assert_eq!(first.cache_hits, 0);
+        assert_eq!(second.cache_hits, 1);
+        assert!(second.stages[0].from_cache);
+        assert_eq!(second.stages[0].duration_ms, 0);
     }
 }

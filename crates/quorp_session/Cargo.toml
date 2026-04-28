@@ -35,6 +35,7 @@ quorp_lsp.workspace = true
 quorp_ids.workspace = true
 quorp_memory.workspace = true
 quorp_memory_model.workspace = true
+quorp_patch_vm.workspace = true
 quorp_permissions.workspace = true
 quorp_provider.workspace = true
 quorp_render.workspace = true
