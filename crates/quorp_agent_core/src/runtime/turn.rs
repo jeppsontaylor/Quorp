@@ -63,7 +63,7 @@ pub(crate) async fn handle_model_turn(
                     content: recovery_message.clone(),
                 });
                 event_sink.emit(RuntimeEvent::PhaseChanged {
-                    phase: "retrying",
+                    phase: "retrying".to_string(),
                     detail: Some(format!("parser recovery: {error_class}")),
                 });
                 event_sink.emit(RuntimeEvent::ParseRecoveryQueued {
@@ -162,7 +162,7 @@ pub(crate) async fn handle_model_turn(
                 content: recovery_message.clone(),
             });
             event_sink.emit(RuntimeEvent::PhaseChanged {
-                phase: "retrying",
+                phase: "retrying".to_string(),
                 detail: Some("parser recovery: output_truncated".to_string()),
             });
             event_sink.emit(RuntimeEvent::ParseRecoveryQueued {
@@ -260,7 +260,7 @@ pub(crate) async fn handle_model_turn(
                 content: recovery_message.clone(),
             });
             event_sink.emit(RuntimeEvent::PhaseChanged {
-                phase: "retrying",
+                phase: "retrying".to_string(),
                 detail: Some("parser recovery: missing_json_object".to_string()),
             });
             event_sink.emit(RuntimeEvent::ParseRecoveryQueued {
@@ -352,7 +352,7 @@ pub(crate) async fn handle_model_turn(
                 content: recovery_message.clone(),
             });
             event_sink.emit(RuntimeEvent::PhaseChanged {
-                phase: "retrying",
+                phase: "retrying".to_string(),
                 detail: Some("parser recovery: missing_json_object".to_string()),
             });
             event_sink.emit(RuntimeEvent::ParseRecoveryQueued {
@@ -494,7 +494,7 @@ pub(crate) async fn handle_model_turn(
             content: recovery_message.clone(),
         });
         event_sink.emit(RuntimeEvent::PhaseChanged {
-            phase: "retrying",
+            phase: "retrying".to_string(),
             detail: Some("parser recovery: missing_tool_call".to_string()),
         });
         event_sink.emit(RuntimeEvent::ParseRecoveryQueued {
@@ -675,7 +675,7 @@ pub(crate) async fn handle_model_turn(
             content: recovery_message.clone(),
         });
         event_sink.emit(RuntimeEvent::PhaseChanged {
-            phase: "retrying",
+            phase: "retrying".to_string(),
             detail: Some("parser recovery: missing_tool_call".to_string()),
         });
         event_sink.emit(RuntimeEvent::ParseRecoveryQueued {

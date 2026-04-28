@@ -4,11 +4,13 @@ This file is the current support audit for Quorp's terminal-first Rust agent run
 
 ## Current Product Shape
 
-Quorp is a single Rust binary with a stream-first CLI, a headless autonomous run path, typed agent tools, git-worktree or tmp-copy sandboxing, permission policy primitives, Patch VM writes, proof packets, memory/rule scaffolding, benchmark scoreboards, and proof receipts.
+Quorp is a Rust workspace centered on a single terminal binary, with the CLI split into `quorp_cli` and the session/runtime helpers split into `quorp_session`. The runtime still presents a stream-first CLI, a headless autonomous run path, typed agent tools, git-worktree or tmp-copy sandboxing, permission policy primitives, Patch VM writes, proof packets, memory/rule scaffolding, benchmark scoreboards, and proof receipts.
 
 Primary entrypoints:
 
 - `crates/quorp/src/main.rs`
+- `crates/quorp_cli/src/quorp_cli.rs`
+- `crates/quorp_session/src/quorp_session.rs`
 - `crates/quorp/src/quorp/run_support.rs`
 - `crates/quorp/src/quorp/agent_runner.rs`
 - `crates/quorp_agent_core/src/runtime.rs`

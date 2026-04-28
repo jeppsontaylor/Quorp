@@ -24,4 +24,4 @@ Quorp is in its early structural transition from the Zed backend into a standalo
 
 ## License
 
-Quorp is open-source software licensed under the MIT License.
+Quorp is open-source software licensed under the GNU General Public License v3.0 or later.

@@ -1473,7 +1473,7 @@ pub async fn run_agent_task(
                 verifier_drain_used += 1;
             }
             event_sink.emit(RuntimeEvent::PhaseChanged {
-                phase: "verifying",
+                phase: "verifying".to_string(),
                 detail: Some(action.summary()),
             });
             match dispatch_action(
@@ -1512,7 +1512,7 @@ pub async fn run_agent_task(
                             status: AgentRuntimeStatus::Success,
                         });
                         event_sink.emit(RuntimeEvent::PhaseChanged {
-                            phase: "success",
+                            phase: "success".to_string(),
                             detail: None,
                         });
                         return finish_run(
@@ -1557,7 +1557,7 @@ pub async fn run_agent_task(
             status: AgentRuntimeStatus::Thinking,
         });
         event_sink.emit(RuntimeEvent::PhaseChanged {
-            phase: "thinking",
+            phase: "thinking".to_string(),
             detail: None,
         });
         let mut request_messages = transcript.clone();

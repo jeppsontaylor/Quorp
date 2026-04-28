@@ -5,6 +5,8 @@ members = [
     "crates/paths",
     "crates/perf",
     "crates/quorp",
+    "crates/quorp_cli",
+    "crates/quorp_session",
     "crates/quorp_agent_core",
     "crates/quorp_agent_protocol",
     "crates/quorp_benchmark",
@@ -86,6 +88,8 @@ perf = { path = "crates/perf" }
 portable-pty = "=0.9.0"
 pretty_assertions = "=1.4.1"
 quorp_agent_core = { path = "crates/quorp_agent_core" }
+quorp_cli = { path = "crates/quorp_cli" }
+quorp_session = { path = "crates/quorp_session" }
 quorp_agent_protocol = { path = "crates/quorp_agent_protocol" }
 quorp_benchmark = { path = "crates/quorp_benchmark" }
 quorp_config = { path = "crates/quorp_config" }

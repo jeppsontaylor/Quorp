@@ -32,7 +32,7 @@ pub struct TranscriptMessage {
     pub content: String,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AgentRuntimeStatus {
     Idle,
@@ -43,14 +43,14 @@ pub enum AgentRuntimeStatus {
     Success,
 }
 
-#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum UsageSource {
     Reported,
     Estimated,
 }
 
-#[derive(Debug, Clone, Eq, PartialEq, Serialize)]
+#[derive(Debug, Clone, Eq, PartialEq, Serialize, serde::Deserialize)]
 pub struct TokenUsage {
     pub input_tokens: u64,
     pub output_tokens: u64,
@@ -148,7 +148,7 @@ pub struct ModelRequestWatchdogReport {
     pub triggered_reason: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct CompletionRequest {
     pub request_id: u64,
     pub session_id: usize,
@@ -169,7 +169,7 @@ pub struct CompletionRequest {
     pub capture_call_class: Option<String>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct CompletionResponse {
     pub content: String,
     pub reasoning_content: String,
@@ -180,7 +180,7 @@ pub struct CompletionResponse {
     pub watchdog: Option<ModelRequestWatchdogReport>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct ToolExecutionRequest {
     pub step: usize,
     pub session_id: usize,
@@ -190,7 +190,7 @@ pub struct ToolExecutionRequest {
     pub enable_rollback_on_validation_failure: bool,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, serde::Deserialize)]
 pub struct ToolExecutionResult {
     pub outcome: ActionOutcome,
 }
@@ -238,7 +238,7 @@ pub enum StopReason {
     Stalled,
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 pub struct AgentRunOutcome {
     pub stop_reason: StopReason,
     pub total_steps: usize,
@@ -483,7 +483,7 @@ impl AgentRepairMemory {
     }
 }
 
-#[derive(Debug, Clone, Serialize)]
+#[derive(Debug, Clone, Serialize, serde::Deserialize)]
 #[serde(tag = "event", rename_all = "snake_case")]
 pub enum RuntimeEvent {
     StatusUpdate {
@@ -491,7 +491,7 @@ pub enum RuntimeEvent {
     },
     #[serde(rename = "phase_changed")]
     PhaseChanged {
-        phase: &'static str,
+        phase: String,
         detail: Option<String>,
     },
     TurnCompleted {
@@ -534,8 +534,8 @@ pub enum RuntimeEvent {
     ToolCallFinished {
         step: usize,
         action: String,
-        status: &'static str,
-        action_kind: &'static str,
+        status: String,
+        action_kind: String,
         target_path: Option<String>,
         edit_summary: Option<String>,
     },
@@ -546,7 +546,7 @@ pub enum RuntimeEvent {
     ValidationFinished {
         step: usize,
         summary: String,
-        status: &'static str,
+        status: String,
     },
     #[serde(rename = "agent.path_resolution_failed")]
     PathResolutionFailed {

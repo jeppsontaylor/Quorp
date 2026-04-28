@@ -27,7 +27,7 @@ use crate::agent_protocol::{
 use crate::agent_turn::{AgentTurnResponse, parse_agent_turn_response};
 fn emit_benchmark_injection_event(event_sink: &dyn RuntimeEventSink, detail: String) {
     event_sink.emit(RuntimeEvent::PhaseChanged {
-        phase: "benchmark_repair_injection",
+        phase: "benchmark_repair_injection".to_string(),
         detail: Some(detail),
     });
 }
@@ -445,7 +445,7 @@ pub(crate) async fn dispatch_action(
         _ => AgentRuntimeStatus::ExecutingTool(action.summary()),
     };
     event_sink.emit(RuntimeEvent::PhaseChanged {
-        phase: action_phase(&action),
+        phase: action_phase(&action).to_string(),
         detail: Some(action.summary()),
     });
     event_sink.emit(RuntimeEvent::StatusUpdate { status });
@@ -491,12 +491,13 @@ pub(crate) async fn dispatch_action(
     let status_label = match result.outcome {
         ActionOutcome::Success { .. } => "success",
         ActionOutcome::Failure { .. } => "failure",
-    };
+    }
+    .to_string();
     event_sink.emit(RuntimeEvent::ToolCallFinished {
         step,
         action: action.summary(),
-        status: status_label,
-        action_kind: action_kind(&action),
+        status: status_label.clone(),
+        action_kind: action_kind(&action).to_string(),
         target_path: action_target_path(&action),
         edit_summary: action_edit_summary(&action),
     });

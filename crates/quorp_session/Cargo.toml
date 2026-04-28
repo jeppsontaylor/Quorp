@@ -1,45 +1,37 @@
 [package]
-description = "The rich terminal Quorp experience."
+description = "The Quorp session engine and chat-service runtime."
 edition.workspace = true
-name = "quorp"
+name = "quorp_session"
 version = "0.231.0"
 publish.workspace = true
 license = "GPL-3.0-or-later"
 authors = ["Quorp Team <hi@quorp.dev>"]
-default-run = "quorp"
+
+[lib]
+path = "src/quorp_session.rs"
 
 [lints]
 workspace = true
 
-[features]
-tracy = ["quorp_tracing/tracy"]
-test-support = []
-tui-e2e-smoke = []
-
-[[bin]]
-name = "quorp"
-path = "src/main.rs"
-
 [dependencies]
-font8x8 = "0.3"
 anyhow.workspace = true
 async_zip.workspace = true
 clap = { workspace = true, features = ["derive"] }
 crossterm = "0.28"
 futures.workspace = true
 ignore.workspace = true
-image.workspace = true
 libc.workspace = true
 log.workspace = true
 notify = "=8.2.0"
 paths.workspace = true
 portable-pty.workspace = true
-rand.workspace = true
-quorp_cli = { path = "../quorp_cli" }
+quorp_agent_core = { path = "../quorp_agent_core" }
+quorp_agent_protocol = { path = "../quorp_agent_protocol" }
 quorp_config.workspace = true
 quorp_core.workspace = true
+quorp_context.workspace = true
 quorp_mcp.workspace = true
-quorp_agent_protocol = { path = "../quorp_agent_protocol" }
+quorp_lsp.workspace = true
 quorp_permissions.workspace = true
 quorp_provider.workspace = true
 quorp_render.workspace = true
@@ -50,35 +42,26 @@ quorp_term.workspace = true
 quorp_tools.workspace = true
 reqwest = { workspace = true, features = ["json", "stream"] }
 regex.workspace = true
-rusqlite = "0.37.0"
 serde.workspace = true
 serde_json.workspace = true
 sha2.workspace = true
 smol.workspace = true
 tempfile.workspace = true
-syntect = "5"
+vt100 = { package = "fnug-vt100", version = "0.15.2" }
 tokio = { workspace = true, features = ["io-util", "macros", "process", "rt", "rt-multi-thread", "sync", "time"] }
 toml.workspace = true
 toml_edit.workspace = true
 unicode-width.workspace = true
 url.workspace = true
 util.workspace = true
-vt100 = { package = "fnug-vt100", version = "0.15.2" }
 walkdir.workspace = true
 quorp_log.workspace = true
-quorp_agent_core = { path = "../quorp_agent_core" }
-quorp_lsp.workspace = true
-quorp_benchmark.workspace = true
 quorp_tracing.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 ashpd.workspace = true
 
-[target.'cfg(target_os = "linux")'.build-dependencies]
-pkg-config = "0.3.22"
-
 [dev-dependencies]
-image.workspace = true
 pretty_assertions.workspace = true
 tempfile.workspace = true
 

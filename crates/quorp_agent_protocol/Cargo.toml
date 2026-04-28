@@ -13,6 +13,7 @@ path = "src/quorp_agent_protocol.rs"
 workspace = true
 
 [dependencies]
+quorp_agent_core = { path = "../quorp_agent_core" }
 quorp_ids = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true

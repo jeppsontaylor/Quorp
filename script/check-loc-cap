@@ -15,7 +15,7 @@ fi
 OFFENDERS=()
 while IFS= read -r -d '' file; do
   case "$file" in
-    */target/*|*/.git/*|*/tests/fixtures/*|*/snapshots/*)
+    */target/*|*/.git/*|*/tests/fixtures/*|*/snapshots/*|*/tests.rs|*/tests/*|*/test_*.rs|*/*_tests.rs)
       continue ;;
   esac
   loc=$(wc -l < "$file" | tr -d ' ')
