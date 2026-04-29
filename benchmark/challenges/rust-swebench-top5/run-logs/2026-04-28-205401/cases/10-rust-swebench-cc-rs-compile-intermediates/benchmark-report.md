@@ -1,0 +1,125 @@
+# Benchmark Report: Expose compile_intermediates so callers can reuse object files safely
+- Issue: `10-rust-swebench-cc-rs-compile-intermediates`
+- Executor: `native`
+- Model: `qwen/qwen3-coder-480b-a35b-instruct`
+- Safety mode: `nvidia_qwen_benchmark`
+- Scenario label: `QuorpRemoteApi`
+- Routing mode: `remote_api`
+- Requested provider: `nvidia`
+- Requested model: `qwen/qwen3-coder-480b-a35b-instruct`
+- Effective provider: `nvidia`
+- Effective model: `qwen/qwen3-coder-480b-a35b-instruct`
+- Used fallback: `false`
+- Comparable run: `true`
+- Provider request id: `chatcmpl-ef49bdb0-5469-4638-bd92-c0456b3accbf`
+- Routing status: `completed`
+- Repo capsule injected: `true`
+- Reasoning enabled: `false`
+- Path resolution failures: `0`
+- Recovery turns: `1`
+- Action contract: `strict_json_v1`
+- Action contract selected: `strict_json_v1`
+- Action contract fallback reason: `n/a`
+- Attempt lineage: `strict_json_v1`
+- Preview edits: `0` / `0` successful
+- Intent edits: replace_range=`0` (hash_mismatch=`0`), modify_toml=`0`, previews_created=`0`, apply_preview=`0` (hash_mismatch=`0`)
+- Effective prompt compaction: `benchmark-state-packet`
+- Fast-loop validation status: `green: fast-loop`
+- Success: `true`
+- Attempts run: `1` / `1`
+- Total requests: `3`
+- Wall clock ms: `57605`
+- Total billed tokens: `19875`
+- Input tokens (provider billed): `19737`
+- Completion tokens: `138`
+- Reasoning tokens: `0`
+- Cache read input tokens: `2944`
+- Cache write input tokens: `0`
+- Max prompt estimate seen: `2873`
+- Max completion cap seen: `4096`
+- First request prompt estimate: `2136`
+- First request raw prompt estimate: `2136`
+- First request compacted prompt estimate: `n/a`
+- First request first-token ms: `895`
+- First model turn started: `true`
+- Bootstrap phase: `first_task_model_request`
+- Bootstrap phase detail: `first benchmark task model request started`
+- First task model request seen: `true`
+- Bootstrap elapsed ms before first task request: `1003`
+- Pre-model bootstrap stalled: `false`
+- Bootstrap stall class: `n/a`
+- First action emitted: `true`
+- Task model call count: `3`
+- Tool call count: `5`
+- Edit count: `1`
+- Read count: `2`
+- Write count: `1`
+- Rolled-back write count: `0`
+- Command execution count: `2`
+- Non-support edit count: `1`
+- Rolled-back non-support edit count: `0`
+- Fast loop command seen: `false`
+- Agent final evaluate command seen: `false`
+- Final evaluate command seen: `false`
+- Evaluation command seen: `true`
+- Host evaluation commands run: `1`
+- Text-only action failure: `false`
+- Watchdog near limit: `false`
+- Watchdog triggered: `false`
+- Widening happened: `false`
+- Lines added: `76`
+- Lines removed: `42`
+- Mistakes corrected: `0`
+- Validation commands run: `1`
+- Evaluation commands run: `1`
+- Deterministic evaluation passed: `true`
+- Run dir: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates`
+- Sandbox root: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox`
+- Exit code: `0`
+- Primary failure: `none`
+- Setup failure class: `none`
+- Last failure class: `success`
+- Judge: passed=true model=qwen/qwen3-coder-480b-a35b-instruct summary=The agent successfully exposed compile_intermediates API without regressing existing functionality
+- Judge rationale: The evaluation passed with all tests successful, indicating the agent correctly implemented the compile_intermediates API while preserving existing object-path naming behavior. The solution involved minimal changes to src/lib.rs as expected, and the final verification command ./evaluate.sh proof-full completed successfully.
+- Reset outcome: passed=true exit_code=0 duration_ms=29133
+- Candidate models: `qwen/qwen3-coder-480b-a35b-instruct`
+- Challenge: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/cases/10-rust-swebench-cc-rs-compile-intermediates` condition=`proof-full` workspace=`/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox/workspace/proof-full`
+- Prompt token series by turn: step1=2136 raw=2136 compacted=n/a cap=4096 | step2=2375 raw=2375 compacted=n/a cap=4096 | step3=2873 raw=2873 compacted=n/a cap=4096
+- Read range observations: src/lib.rs requested=none honored=none
+- Repair required: `false`
+- Repair phase terminal: `idle`
+- Implementation target lease: `src/lib.rs`
+- Failure-anchor reread: attempted=`false` honored=`false`
+- Implementation reread: allowed=`false` attempted=`false` honored=`false`
+- Patch packet injected: `false`
+- Fast-loop rerun match kind: `exact_fast_loop`
+- Agent scorecard: parser_recovery=`1` line_tools=`0` controller_reads=`0` redundant_reads=`0` first_write=`3` repeated_edits=`0` bare_replace_block_retries=`0` validation_rejects=`0` test_edit_rejects=`0` target_redirects=`0` evidence_fixations=`0` anchors=`0` syntax_previews=`0`/`0` prose_recoveries=`0` classification=`success`
+- Repair submode: entered=`false` turns=`0` invalid_streak_max=`0` write_locked=`false` write_refusals=`0` scaffold_offered=`false` scaffold_honored=`false` write_emitted=`false` soft_budget_inefficient=`false`
+- Repair-phase invalid action count: `0`
+- Post-fast-loop patch attempted: `true`
+- Post-fast-loop validation rerun attempted: `true`
+- Full validation requested before fast loop: `false`
+
+## Attempts
+- Attempt 1: executor=native, stop=Success, tokens=19875, requests=3, prompt_est=2873, max_tokens=4096, visible=n/a, collector=n/a, evaluation=true, judge=true
+  - Tokens: input=19737 output=138 reasoning=0 cache_read=2944 cache_write=0
+  - Files changed: src/lib.rs
+  - Ignored support-file changes: .quorp/challenge-capsule.json, REFERENCE.md, START_HERE.md, SUCCESS.md, benchmark.json
+  - Validations: custom(1)
+  - Fast-loop validation status: green: fast-loop
+  - Repair required: false
+  - Repair phase terminal: idle
+  - Failure-anchor reread: attempted=false honored=false
+  - Implementation reread: allowed=false attempted=false honored=false
+  - Patch packet injected: false
+  - Fast-loop rerun match kind: exact_fast_loop
+  - Implementation target lease: src/lib.rs
+  - Agent scorecard: parser_recovery=1 line_tools=0 controller_reads=0 redundant_reads=0 first_write=3 repeated_edits=0 bare_replace_block_retries=0 validation_rejects=0 test_edit_rejects=0 target_redirects=0 evidence_fixations=0 anchors=0 syntax_previews=0/0 prose_recoveries=0
+  - Repair submode: entered=false turns=0 invalid_streak_max=0 write_locked=false write_refusals=0 scaffold_offered=false scaffold_honored=false write_emitted=false rolled_back_writes=0 rolled_back_non_support=0 soft_budget_inefficient=false
+  - Repair-phase invalid action count: 0
+  - Post-fast-loop patch attempted: true
+  - Post-fast-loop validation rerun attempted: true
+  - Full validation requested before fast loop: false
+  - Prompt token series: step1=2136 | step2=2375 | step3=2873
+  - Read ranges: src/lib.rs [none -> none]
+  - Safety: nvidia_qwen_benchmark watchdog_near_limit=false watchdog_triggered=false

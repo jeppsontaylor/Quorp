@@ -1,0 +1,19 @@
+# Batch Report
+- Cases root: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/cases`
+- Result dir: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run`
+- Cases run: `5`
+- Successful cases: `5`
+- Failed cases: `0`
+- Total requests: `28`
+- Total billed tokens: `180546`
+- Lines added: `225`
+- Lines removed: `115`
+- Mistakes corrected: `0`
+- Wall clock ms: `696025`
+
+## Cases
+- `06-rust-swebench-bincode-serde-decoder-memory` executor=native success=true judge=true deterministic=true wall_clock_ms=166942 first_prompt_est=2127 compacted_prompt_est=n/a first_turn_started=true first_action_emitted=true first_token_ms=30778 requests=9 tokens=52083 added=83 removed=64 mistakes=0 stop=Some(Success) failure=none agent=success adaptive_retry=false log=/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/logs/06-rust-swebench-bincode-serde-decoder-memory.log report=/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/benchmark-report.json
+- `07-rust-swebench-chrono-epoch-truncation` executor=native success=true judge=true deterministic=true wall_clock_ms=57832 first_prompt_est=2002 compacted_prompt_est=n/a first_turn_started=true first_action_emitted=true first_token_ms=34802 requests=4 tokens=21853 added=0 removed=6 mistakes=0 stop=Some(Success) failure=none agent=success adaptive_retry=false log=/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/logs/07-rust-swebench-chrono-epoch-truncation.log report=/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/07-rust-swebench-chrono-epoch-truncation/benchmark-report.json
+- `08-rust-swebench-axum-fallback-merge` executor=native success=true judge=true deterministic=true wall_clock_ms=180065 first_prompt_est=2554 compacted_prompt_est=n/a first_turn_started=true first_action_emitted=true first_token_ms=2823 requests=9 tokens=62702 added=8 removed=3 mistakes=0 stop=Some(Success) failure=none agent=success adaptive_retry=false log=/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/logs/08-rust-swebench-axum-fallback-merge.log report=/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/benchmark-report.json
+- `09-rust-swebench-cargo-dist-create-release` executor=native success=true judge=true deterministic=true wall_clock_ms=155654 first_prompt_est=2577 compacted_prompt_est=n/a first_turn_started=true first_action_emitted=true first_token_ms=30776 requests=3 tokens=24033 added=58 removed=0 mistakes=0 stop=Some(Success) failure=none agent=success adaptive_retry=false log=/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/logs/09-rust-swebench-cargo-dist-create-release.log report=/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/benchmark-report.json
+- `10-rust-swebench-cc-rs-compile-intermediates` executor=native success=true judge=true deterministic=true wall_clock_ms=57605 first_prompt_est=2136 compacted_prompt_est=n/a first_turn_started=true first_action_emitted=true first_token_ms=895 requests=3 tokens=19875 added=76 removed=42 mistakes=0 stop=Some(Success) failure=none agent=success adaptive_retry=false log=/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/logs/10-rust-swebench-cc-rs-compile-intermediates.log report=/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/benchmark-report.json

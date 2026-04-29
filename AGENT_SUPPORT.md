@@ -2,7 +2,7 @@
 
 This file is the current support audit for Quorp's terminal-first Rust agent runtime. It intentionally describes only code that exists in this worktree.
 
-Tracked upgrade audits currently live under `tips/upgrade/v1/`. There is no reachable `tips/upgrade/v2/` tree in this checkout, but dropped git blobs recovered on April 28, 2026 contain v2-like audit material about repo localization, precise edit semantics, task runtime, verification, memory, permissions, MCP, and worktree isolation. Treat those themes as roadmap evidence if the blobs are still recoverable locally.
+Tracked upgrade audits currently live under `tips/upgrade/v1/` and the recovered `tips/upgrade/v2/` tree in this checkout. The v2 notes cover repo localization, precise edit semantics, task runtime, verification, memory, permissions, MCP, and worktree isolation, and should be treated as roadmap evidence alongside the current code.
 
 ## Current Product Shape
 

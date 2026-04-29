@@ -1,0 +1,63 @@
+{
+  "receipt_version": 1,
+  "run_id": "Fix serde-owned decode allocation behavior for borrowed cache payloads:06-rust-swebench-bincode-serde-decoder-memory",
+  "source_commit": null,
+  "source_hash": null,
+  "sandbox_path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox",
+  "changed_files": [
+    "Cargo.toml",
+    "src/features/serde/de_owned.rs"
+  ],
+  "validation": [
+    {
+      "command": "custom(1)",
+      "cwd": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full",
+      "exit_code": 0,
+      "raw_log_path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/attempt-001/agent/events.jsonl",
+      "raw_log_sha256": "e4d3bf690cfd1970a2153c4f12de0f2301bf54145d08aef57515830c5106e065"
+    },
+    {
+      "command": "fmt",
+      "cwd": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full",
+      "exit_code": 0,
+      "raw_log_path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/attempt-001/agent/events.jsonl",
+      "raw_log_sha256": "e4d3bf690cfd1970a2153c4f12de0f2301bf54145d08aef57515830c5106e065"
+    },
+    {
+      "command": "workspace_tests",
+      "cwd": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full",
+      "exit_code": 0,
+      "raw_log_path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/attempt-001/agent/events.jsonl",
+      "raw_log_sha256": "e4d3bf690cfd1970a2153c4f12de0f2301bf54145d08aef57515830c5106e065"
+    },
+    {
+      "command": "./evaluate.sh proof-full",
+      "cwd": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full",
+      "exit_code": 0,
+      "raw_log_path": null,
+      "raw_log_sha256": null
+    }
+  ],
+  "evaluator_result": "success",
+  "raw_artifacts": {
+    "benchmark_report_json": {
+      "path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/benchmark-report.json",
+      "sha256": "db3800b46d7fdc4d7cf47afbf3dc70f10936081fda5ddf7ed618d9bef6d0aaf0"
+    },
+    "benchmark_report_markdown": {
+      "path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/benchmark-report.md",
+      "sha256": "cc5707c643022a8318c9a51e7f7b39674889eff6416a954fb2ae91b4b1f87f45"
+    }
+  },
+  "provider": "nvidia",
+  "model": "qwen/qwen3-coder-480b-a35b-instruct",
+  "usage": {
+    "cache_read_input_tokens": 28428,
+    "cache_write_input_tokens": 0,
+    "completion_tokens": 779,
+    "prompt_tokens": 51304,
+    "reasoning_tokens": 0,
+    "total_billed_tokens": 52083
+  },
+  "residual_risks": []
+}

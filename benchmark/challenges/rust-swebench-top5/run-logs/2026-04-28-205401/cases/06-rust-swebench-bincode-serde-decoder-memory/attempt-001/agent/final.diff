@@ -1,0 +1,177 @@
+diff --git a/Cargo.toml b/Cargo.toml
+index d1a6bd9..b35ed61 100644
+--- a/Cargo.toml
++++ b/Cargo.toml
+@@ -1,63 +1,65 @@
+-[workspace]
+-members = [
+-    "derive"
+-]
+-
+-[package]
+-name = "bincode"
+-version = "2.0.0-beta.0" # remember to update html_root_url and bincode_derive
+-authors = ["Ty Overby <ty@pre-alpha.com>", "Zoey Riordan <zoey@dos.cafe>", "Victor Koenders <bincode@trangar.com>"]
+-exclude = ["logo.svg", "examples/*", ".gitignore", ".github/"]
+-
+-publish =  true
+-
+-repository = "https://github.com/bincode-org/bincode"
+-documentation = "https://docs.rs/bincode"
+-readme = "./readme.md"
+-categories = ["encoding", "network-programming"]
+-keywords = ["binary", "encode", "decode", "serialize", "deserialize"]
+-
+-license = "MIT"
+-description = "A binary serialization / deserialization strategy for transforming structs into bytes and vice versa!"
+-
+-edition = "2021"
+-
+-[features]
+-default = ["std", "derive", "atomic"]
+-std = ["alloc"]
+-alloc = []
+-atomic = []
+-derive = ["bincode_derive"]
+-
+-# BlockedTODO: https://github.com/rust-lang/cargo/issues/8832
+-# We really want these features to automatically be enabled when both "serde" and either "alloc"/"std" is enabled
+-# But this is currently not possible
+-serde = ["std", "serde_incl", "serde_incl/std"]
+-
+-[dependencies]
+-bincode_derive = { path = "derive", version = "2.0.0-beta.0", optional = true }
+-serde_incl = { package = "serde", version = "1.0.130", optional = true }
+-
+-# Used for tests
+-[dev-dependencies]
+-serde_derive = "1.0.130"
+-serde_json = "1.0.68"
+-tempfile = "3.2.0"
+-criterion = "0.3"
+-rand = "0.8"
+-
+-[[bench]]
+-name = "varint"
+-harness = false
+-
+-[[bench]]
+-name = "inline"
+-harness = false
+-
+-[profile.bench]
+-codegen-units = 1
+-debug = 1
+-
+-[package.metadata.docs.rs]
+-all-features = true
+-rustdoc-args = ["--cfg", "docsrs"]
++[workspace]
++members = [
++    "derive"
++]
++
++[package]
++name = "bincode"
++version = "2.0.0-beta.0" # remember to update html_root_url and bincode_derive
++authors = ["Ty Overby <ty@pre-alpha.com>", "Zoey Riordan <zoey@dos.cafe>", "Victor Koenders <bincode@trangar.com>"]
++exclude = ["logo.svg", "examples/*", ".gitignore", ".github/"]
++
++publish =  true
++
++repository = "https://github.com/bincode-org/bincode"
++documentation = "https://docs.rs/bincode"
++readme = "./readme.md"
++categories = ["encoding", "network-programming"]
++keywords = ["binary", "encode", "decode", "serialize", "deserialize"]
++
++license = "MIT"
++description = "A binary serialization / deserialization strategy for transforming structs into bytes and vice versa!"
++
++edition = "2021"
++
++[features]
++default = ["std", "derive", "atomic"]
++std = ["alloc"]
++alloc = []
++atomic = []
++derive = ["bincode_derive"]
++
++# BlockedTODO: https://github.com/rust-lang/cargo/issues/8832
++# We really want these features to automatically be enabled when both "serde" and either "alloc"/"std" is enabled
++# But this is currently not possible
++serde = ["std", "serde_incl", "serde_incl/std"]
++
++[dependencies]
++bincode_derive = { path = "derive", version = "2.0.0-beta.0", optional = true }
++serde_incl = { package = "serde", version = "1.0.130", optional = true }
++
++# Used for tests
++[dev-dependencies]
++serde_derive = "1.0.130"
++serde_json = "1.0.68"
++tempfile = "3.2.0"
++criterion = "0.3"
++rand = "0.8"
++chrono = { version = "0.4", features = ["serde"] }
++uuid = { version = "0.8", features = ["serde"] }
++
++[[bench]]
++name = "varint"
++harness = false
++
++[[bench]]
++name = "inline"
++harness = false
++
++[profile.bench]
++codegen-units = 1
++debug = 1
++
++[package.metadata.docs.rs]
++all-features = true
++rustdoc-args = ["--cfg", "docsrs"]
+diff --git a/src/features/serde/de_owned.rs b/src/features/serde/de_owned.rs
+index 45c13d3..06896c5 100644
+--- a/src/features/serde/de_owned.rs
++++ b/src/features/serde/de_owned.rs
+@@ -121,6 +121,15 @@ impl<'a, 'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'a, DE> {
+         visitor.visit_char(Decode::decode(&mut self.de)?)
+     }
+ 
++    #[cfg(feature = "alloc")]
++    fn deserialize_str<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde_incl::de::Visitor<'de>,
++    {
++        visitor.visit_string(Decode::decode(&mut self.de)?)
++    }
++
++    #[cfg(not(feature = "alloc"))]
+     fn deserialize_str<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+     where
+         V: serde_incl::de::Visitor<'de>,
+@@ -135,6 +144,15 @@ impl<'a, 'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'a, DE> {
+         visitor.visit_string(Decode::decode(&mut self.de)?)
+     }
+ 
++    #[cfg(feature = "alloc")]
++    fn deserialize_bytes<V>(mut self, visitor: V) -> Result<V::Value, Self::Error>
++    where
++        V: serde_incl::de::Visitor<'de>,
++    {
++        visitor.visit_byte_buf(Decode::decode(&mut self.de)?)
++    }
++
++    #[cfg(not(feature = "alloc"))]
+     fn deserialize_bytes<V>(self, _visitor: V) -> Result<V::Value, Self::Error>
+     where
+         V: serde_incl::de::Visitor<'de>,
+@@ -167,7 +185,6 @@ impl<'a, 'de, DE: Decoder> Deserializer<'de> for SerdeDecoder<'a, DE> {
+     {
+         visitor.visit_unit()
+     }
+-
+     fn deserialize_unit_struct<V>(
+         self,
+         _name: &'static str,

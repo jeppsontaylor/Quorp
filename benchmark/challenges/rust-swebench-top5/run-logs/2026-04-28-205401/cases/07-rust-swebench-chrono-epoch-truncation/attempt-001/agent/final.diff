@@ -1,0 +1,24 @@
+diff --git a/src/round.rs b/src/round.rs
+index f2ef228..db4d4b1 100644
+--- a/src/round.rs
++++ b/src/round.rs
+@@ -177,9 +177,6 @@ where
+             return Err(RoundingError::DurationExceedsLimit);
+         }
+         let stamp = naive.timestamp_nanos_opt().ok_or(RoundingError::TimestampExceedsLimit)?;
+-        if span > stamp.abs() {
+-            return Err(RoundingError::DurationExceedsTimestamp);
+-        }
+         if span == 0 {
+             return Ok(original);
+         }
+@@ -216,9 +213,6 @@ where
+             return Err(RoundingError::DurationExceedsLimit);
+         }
+         let stamp = naive.timestamp_nanos_opt().ok_or(RoundingError::TimestampExceedsLimit)?;
+-        if span > stamp.abs() {
+-            return Err(RoundingError::DurationExceedsTimestamp);
+-        }
+         let delta_down = stamp % span;
+         match delta_down.cmp(&0) {
+             Ordering::Equal => Ok(original),

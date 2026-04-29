@@ -1,0 +1,48 @@
+{
+  "receipt_version": 1,
+  "run_id": "Expose compile_intermediates so callers can reuse object files safely:10-rust-swebench-cc-rs-compile-intermediates",
+  "source_commit": null,
+  "source_hash": null,
+  "sandbox_path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox",
+  "changed_files": [
+    "src/lib.rs"
+  ],
+  "validation": [
+    {
+      "command": "custom(1)",
+      "cwd": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox/workspace/proof-full",
+      "exit_code": 0,
+      "raw_log_path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/attempt-001/agent/events.jsonl",
+      "raw_log_sha256": "0840a00e789f7d328c24b078361b9f3deb460aa8441932d0679c321f36c18d12"
+    },
+    {
+      "command": "./evaluate.sh proof-full",
+      "cwd": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox/workspace/proof-full",
+      "exit_code": 0,
+      "raw_log_path": null,
+      "raw_log_sha256": null
+    }
+  ],
+  "evaluator_result": "success",
+  "raw_artifacts": {
+    "benchmark_report_json": {
+      "path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/benchmark-report.json",
+      "sha256": "ab99bf654e02b278e1563c3d7f543bd180c7974bfbcf30342c0fb7c7c136a701"
+    },
+    "benchmark_report_markdown": {
+      "path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/benchmark-report.md",
+      "sha256": "060161f162c8e30def728e942d6af01589ca7bcbb475f0d6877ee06c03c3764d"
+    }
+  },
+  "provider": "nvidia",
+  "model": "qwen/qwen3-coder-480b-a35b-instruct",
+  "usage": {
+    "cache_read_input_tokens": 2944,
+    "cache_write_input_tokens": 0,
+    "completion_tokens": 138,
+    "prompt_tokens": 19737,
+    "reasoning_tokens": 0,
+    "total_billed_tokens": 19875
+  },
+  "residual_risks": []
+}

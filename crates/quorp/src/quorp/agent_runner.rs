@@ -1,7 +1,6 @@
-use std::fs::{self, File};
-use std::io::{BufWriter, Write};
+use std::fs;
 use std::path::{Path, PathBuf};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use std::sync::mpsc::SyncSender;
 use std::time::{SystemTime, UNIX_EPOCH};
 
@@ -10,9 +9,20 @@ use futures::channel::mpsc;
 use futures::channel::oneshot;
 use quorp_agent_core::{
     AgentRunOutcome, AgentRunRequest, AgentRuntimeStatus, CompletionClient, CompletionRequest,
-    CompletionResponse, RuntimeEvent, RuntimeEventSink, ToolExecutionRequest, ToolExecutionResult,
-    ToolExecutor, TranscriptMessage, TranscriptRole, load_agent_config,
+    CompletionResponse, RuntimeEvent, RuntimeEventFanout, RuntimeEventSink,
+    RuntimeEventSubscription, RuntimeEventWorker, RunLedgerEvent, RunLedgerReader,
+    SubscriberCursor, ToolExecutionRequest, ToolExecutionResult, ToolExecutor, TranscriptMessage,
+    TranscriptRole, load_agent_config,
 };
+#[cfg(test)]
+use quorp_agent_core::{FailedEditRecord, StopReason};
+use quorp_ids::{SessionId, VerifyRunId};
+use quorp_memory::{Memory, MemoryEvent};
+use quorp_memory_model::{
+    EpisodicFact, FailedAttemptRecord, FailureFingerprint, NegativeSignature,
+};
+use quorp_rule_forge::{ClusterKey, RuleForge};
+use quorp_verify::sha256_hex;
 
 use crate::quorp::tui::chat_service::{ChatServiceMessage, ChatServiceRole, StreamRequest};
 use crate::quorp::tui::command_bridge::CommandBridgeRequest;
@@ -234,7 +244,7 @@ impl ToolExecutor for CommandBridgeToolExecutor {
 }
 
 pub struct HeadlessEventRecorder {
-    writer: Mutex<BufWriter<File>>,
+    event_log_path: PathBuf,
     result_dir: PathBuf,
     state: Mutex<HeadlessRecorderState>,
 }
@@ -287,7 +297,7 @@ pub struct RoutingSummary {
 }
 
 struct CompositeEventSink<'a> {
-    primary: &'a HeadlessEventRecorder,
+    primary: &'a dyn RuntimeEventSink,
     secondary: Option<&'a dyn RuntimeEventSink>,
 }
 
@@ -570,16 +580,18 @@ impl HeadlessEventRecorder {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let mut opts = fs::OpenOptions::new();
-        opts.create(true).write(true);
         if append {
-            opts.append(true);
+            let ledger_path = crate::quorp::run_support::run_ledger_path(path);
+            if ledger_path.exists() && ledger_path.metadata()?.len() == 0 {
+                fs::remove_file(&ledger_path).ok();
+            }
         } else {
-            opts.truncate(true);
+            fs::write(path, "")?;
+            let ledger_path = crate::quorp::run_support::run_ledger_path(path);
+            fs::write(&ledger_path, "")?;
         }
-        let file = opts.open(path)?;
         Ok(Self {
-            writer: Mutex::new(BufWriter::new(file)),
+            event_log_path: path.to_path_buf(),
             result_dir,
             state: Mutex::new(HeadlessRecorderState::default()),
         })
@@ -886,26 +898,22 @@ impl RuntimeEventSink for HeadlessEventRecorder {
             if let Err(error) = write_json(&path, checkpoint) {
                 log::error!("failed to write checkpoint.json: {error}");
             }
-            return;
         }
         if matches!(event, RuntimeEvent::TurnCompleted { .. }) {
             return;
         }
 
-        if let Ok(mut writer) = self.writer.lock() {
-            let payload = event.clone();
-            let record = serde_json::json!({
-                "ts_ms": timestamp_ms(),
-                "payload": payload,
-            });
-            if let Err(error) = writeln!(writer, "{}", record) {
-                log::error!("failed to write headless event record: {error}");
+        let payload = match serde_json::to_value(&event) {
+            Ok(payload) => payload,
+            Err(error) => {
+                log::error!("failed to serialize headless runtime event: {error}");
+                return;
             }
-            if let Err(error) = writer.flush() {
-                log::error!("failed to flush headless event record: {error}");
-            }
-        } else {
-            log::error!("failed to lock headless event recorder");
+        };
+        if let Err(error) =
+            crate::quorp::run_support::append_event_record(&self.event_log_path, payload)
+        {
+            log::error!("failed to write headless event record: {error}");
         }
         if let RuntimeEvent::ModelRequestFinished {
             usage: Some(usage), ..
@@ -945,6 +953,402 @@ impl RuntimeEventSink for HeadlessEventRecorder {
         }
         self.log_console_event(&event);
     }
+}
+
+struct DurableRuntimeConsumers {
+    workers: Vec<RuntimeEventWorker>,
+    catch_up: Vec<RuntimeConsumerCatchUp>,
+}
+
+type RuntimeConsumerCatchUp = Box<dyn Fn() -> anyhow::Result<()> + Send>;
+
+impl DurableRuntimeConsumers {
+    fn stop(self) -> anyhow::Result<()> {
+        for worker in self.workers {
+            worker
+                .stop()
+                .map_err(|_| anyhow::anyhow!("runtime event worker panicked"))?;
+        }
+        for catch_up in self.catch_up {
+            catch_up()?;
+        }
+        Ok(())
+    }
+}
+
+fn runtime_subscriber_event_path(result_dir: &Path, subscriber_name: &str) -> PathBuf {
+    result_dir
+        .join("artifacts")
+        .join("runtime-subscribers")
+        .join(subscriber_name)
+        .join("events.jsonl")
+}
+
+fn append_consumer_event(path: &Path, value: &serde_json::Value) -> anyhow::Result<()> {
+    if let Some(parent) = path.parent() {
+        fs::create_dir_all(parent)?;
+    }
+    let mut file = fs::OpenOptions::new().create(true).append(true).open(path)?;
+    serde_json::to_writer(&mut file, value)?;
+    use std::io::Write as _;
+    writeln!(file)?;
+    Ok(())
+}
+
+fn runtime_event_record(
+    subscriber_name: &str,
+    ledger_event: &RunLedgerEvent,
+    event: &RuntimeEvent,
+) -> serde_json::Value {
+    serde_json::json!({
+        "subscriber": subscriber_name,
+        "captured_at_ms": timestamp_ms(),
+        "ledger_seq": ledger_event.seq,
+        "ledger_hash": ledger_event.hash,
+        "event": event,
+    })
+}
+
+fn runtime_run_id(result_dir: &Path) -> String {
+    result_dir
+        .file_name()
+        .and_then(|name| name.to_str())
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("run")
+        .to_string()
+}
+
+fn failed_attempt_record_for_event(
+    run_id: &str,
+    event: &RuntimeEvent,
+) -> Option<FailedAttemptRecord> {
+    let RuntimeEvent::FailedEditRecorded { record, .. } = event else {
+        return None;
+    };
+    let serialized_record = serde_json::to_vec(record).ok()?;
+    let evidence_hash = sha256_hex(&serialized_record);
+    let attempted_fix_hash = record
+        .search_hash
+        .clone()
+        .or_else(|| record.replace_hash.clone())
+        .unwrap_or_else(|| format!("{}:{}:{}", record.action_kind, record.path, record.attempts));
+    Some(FailedAttemptRecord {
+        fingerprint: FailureFingerprint {
+            signature: format!(
+                "{}:{}:{}",
+                record.action_kind, record.path, record.failure_reason
+            ),
+            failure_kind: record.action_kind.clone(),
+            owner: Some(record.path.clone()),
+            attempted_fix_hash,
+            evidence_hash,
+        },
+        run_id: Some(VerifyRunId::new(run_id.to_string())),
+        seen_count: u32::try_from(record.attempts).unwrap_or(u32::MAX).max(1),
+        last_seen_unix: i64::try_from(timestamp_ms()).unwrap_or(i64::MAX),
+    })
+}
+
+fn memory_event_for_runtime_event(run_id: &str, event: &RuntimeEvent) -> Option<MemoryEvent> {
+    match event {
+        RuntimeEvent::RunStarted { goal, .. } => Some(MemoryEvent::RecordEpisodic(EpisodicFact {
+            session: SessionId::new(format!("run-{run_id}")),
+            summary: goal.clone(),
+            outcome: "started".to_string(),
+        })),
+        RuntimeEvent::RunFinished {
+            reason,
+            total_steps,
+            total_billed_tokens,
+            duration_ms,
+        } => Some(MemoryEvent::RecordEpisodic(EpisodicFact {
+            session: SessionId::new(format!("run-{run_id}")),
+            summary: format!(
+                "steps={} billed_tokens={} duration_ms={}",
+                total_steps, total_billed_tokens, duration_ms
+            ),
+            outcome: format!("{reason:?}"),
+        })),
+        RuntimeEvent::PolicyDenied { action, reason, .. } => Some(MemoryEvent::RecordNegative(
+            NegativeSignature {
+                signature: format!("{action}:{reason}"),
+                failure_kind: "policy".to_string(),
+                seen_count: 1,
+            },
+        )),
+        RuntimeEvent::PathResolutionFailed {
+            action,
+            request_path,
+            reason,
+            error,
+            ..
+        } => Some(MemoryEvent::RecordNegative(NegativeSignature {
+            signature: format!(
+                "{}:{}:{}:{}",
+                action,
+                request_path,
+                reason.as_deref().unwrap_or("path"),
+                error
+            ),
+            failure_kind: "path_resolution".to_string(),
+            seen_count: 1,
+        })),
+        RuntimeEvent::FailedEditRecorded { .. } => {
+            failed_attempt_record_for_event(run_id, event).map(MemoryEvent::RecordFailedAttempt)
+        }
+        _ => None,
+    }
+}
+
+fn failure_for_runtime_event(event: &RuntimeEvent) -> Option<quorp_verify::Failure> {
+    match event {
+        RuntimeEvent::FailedEditRecorded { record, .. } => Some(quorp_verify::Failure {
+            code: Some(record.action_kind.clone()),
+            message: record.failure_reason.clone(),
+            level: "runtime".to_string(),
+            file: Some(PathBuf::from(&record.path)),
+            line: record.matching_line_numbers.first().map(|line| *line as u32),
+        }),
+        RuntimeEvent::PolicyDenied { action, reason, .. } => Some(quorp_verify::Failure {
+            code: Some("policy_denied".to_string()),
+            message: format!("{action}: {reason}"),
+            level: "policy".to_string(),
+            file: None,
+            line: None,
+        }),
+        RuntimeEvent::PathResolutionFailed {
+            action,
+            request_path,
+            error,
+            ..
+        } => Some(quorp_verify::Failure {
+            code: Some("path_resolution_failed".to_string()),
+            message: format!("{action}: {request_path}: {error}"),
+            level: "runtime".to_string(),
+            file: Some(PathBuf::from(request_path)),
+            line: None,
+        }),
+        _ => None,
+    }
+}
+
+fn process_runtime_ledger_event(
+    subscriber_name: &str,
+    event_path: &Path,
+    run_id: &str,
+    ledger_event: &RunLedgerEvent,
+    memory: Option<&Memory>,
+    rule_forge: Option<&RuleForge>,
+) -> anyhow::Result<()> {
+    let event: RuntimeEvent = serde_json::from_value(ledger_event.payload.clone()).with_context(|| {
+        format!(
+            "failed to decode runtime event at ledger seq {}",
+            ledger_event.seq
+        )
+    })?;
+    append_consumer_event(
+        event_path,
+        &runtime_event_record(subscriber_name, ledger_event, &event),
+    )?;
+
+    if let Some(memory) = memory
+        && let Some(memory_event) = memory_event_for_runtime_event(run_id, &event)
+    {
+        memory.record(memory_event)?;
+    }
+
+    if let Some(rule_forge) = rule_forge
+        && let Some(failure) = failure_for_runtime_event(&event)
+    {
+        rule_forge.observe_failure(&failure)?;
+        let cluster_key = ClusterKey::from_failure(&failure);
+        if let Some(candidate) = rule_forge
+            .maybe_emit_candidate(&cluster_key, failure.message.clone())?
+        {
+            append_consumer_event(
+                &event_path.with_file_name("rule-candidates.jsonl"),
+                &serde_json::json!({
+                    "subscriber": subscriber_name,
+                    "captured_at_ms": timestamp_ms(),
+                    "candidate_rule_id": candidate,
+                    "ledger_seq": ledger_event.seq,
+                    "ledger_hash": ledger_event.hash,
+                    "event": event,
+                }),
+            )?;
+        }
+    }
+
+    Ok(())
+}
+
+fn process_missing_runtime_ledger_events(
+    result_dir: &Path,
+    subscriber_name: &str,
+    event_path: &Path,
+    run_id: &str,
+    memory: Option<&Memory>,
+    rule_forge: Option<&RuleForge>,
+) -> anyhow::Result<()> {
+    let ledger_path = result_dir.join("run-ledger.jsonl");
+    let reader = RunLedgerReader::open(&ledger_path);
+    let mut cursor = SubscriberCursor::load(result_dir, subscriber_name)?;
+    loop {
+        let (events, _) = reader.read_from(&cursor, 1024)?;
+        if events.is_empty() {
+            break;
+        }
+        for ledger_event in events {
+            process_runtime_ledger_event(
+                subscriber_name,
+                event_path,
+                run_id,
+                &ledger_event,
+                memory,
+                rule_forge,
+            )?;
+            cursor = SubscriberCursor::for_event(&ledger_event);
+            cursor.store(result_dir, subscriber_name)?;
+        }
+    }
+    Ok(())
+}
+
+fn process_missing_runtime_ledger_events_with_retry(
+    result_dir: &Path,
+    subscriber_name: &str,
+    event_path: &Path,
+    run_id: &str,
+    memory: Option<&Memory>,
+    rule_forge: Option<&RuleForge>,
+) -> anyhow::Result<()> {
+    let mut last_error = None;
+    for attempt in 0..3 {
+        match process_missing_runtime_ledger_events(
+            result_dir,
+            subscriber_name,
+            event_path,
+            run_id,
+            memory,
+            rule_forge,
+        ) {
+            Ok(()) => return Ok(()),
+            Err(error) => {
+                last_error = Some(error.to_string());
+                if attempt < 2 {
+                    std::thread::sleep(std::time::Duration::from_millis(10));
+                }
+            }
+        }
+    }
+    Err(anyhow::anyhow!(
+        "{}",
+        last_error.unwrap_or_else(|| "durable runtime ledger processing failed".to_string())
+    ))
+}
+
+fn spawn_runtime_event_consumer(
+    fanout: &RuntimeEventFanout,
+    subscription: RuntimeEventSubscription,
+    subscriber_name: &'static str,
+    result_dir: &Path,
+    memory: Option<Arc<Memory>>,
+    rule_forge: Option<Arc<RuleForge>>,
+) -> (RuntimeEventWorker, RuntimeConsumerCatchUp) {
+    let event_path = runtime_subscriber_event_path(result_dir, subscriber_name);
+    let run_id = runtime_run_id(result_dir);
+    if let Err(error) = process_missing_runtime_ledger_events_with_retry(
+        result_dir,
+        subscriber_name,
+        &event_path,
+        &run_id,
+        memory.as_deref(),
+        rule_forge.as_deref(),
+    ) {
+        log::error!("failed to catch up durable runtime consumer `{subscriber_name}`: {error}");
+    }
+    let result_dir = result_dir.to_path_buf();
+    let catch_up_result_dir = result_dir.clone();
+    let catch_up_event_path = event_path.clone();
+    let catch_up_run_id = run_id.clone();
+    let catch_up_memory = memory.clone();
+    let catch_up_rule_forge = rule_forge.clone();
+    let catch_up = Box::new(move || {
+        process_missing_runtime_ledger_events_with_retry(
+            &catch_up_result_dir,
+            subscriber_name,
+            &catch_up_event_path,
+            &catch_up_run_id,
+            catch_up_memory.as_deref(),
+            catch_up_rule_forge.as_deref(),
+        )
+    });
+    let worker = fanout.spawn_worker(subscription, move |_wake| {
+        if let Err(error) = process_missing_runtime_ledger_events_with_retry(
+            &result_dir,
+            subscriber_name,
+            &event_path,
+            &run_id,
+            memory.as_deref(),
+            rule_forge.as_deref(),
+        ) {
+            log::error!("failed to process durable runtime ledger for `{subscriber_name}`: {error}");
+        }
+    });
+    (worker, catch_up)
+}
+
+fn spawn_runtime_event_consumers(
+    workspace_root: &Path,
+    result_dir: &Path,
+    fanout: &RuntimeEventFanout,
+) -> DurableRuntimeConsumers {
+    let memory = match Memory::with_workspace(workspace_root) {
+        Ok(memory) => Some(Arc::new(memory)),
+        Err(error) => {
+            log::error!(
+                "failed to open workspace memory store for durable runtime consumers: {error}"
+            );
+            None
+        }
+    };
+    let rule_forge = Some(Arc::new(RuleForge::new()));
+    let consumers = vec![
+        spawn_runtime_event_consumer(
+            fanout,
+            fanout.subscribe_memory_writer(),
+            "memory_writer",
+            result_dir,
+            memory.clone(),
+            rule_forge.clone(),
+        ),
+        spawn_runtime_event_consumer(
+            fanout,
+            fanout.subscribe_rule_forge_observer(),
+            "rule_forge_observer",
+            result_dir,
+            memory.clone(),
+            rule_forge.clone(),
+        ),
+        spawn_runtime_event_consumer(
+            fanout,
+            fanout.subscribe_proof_recorder(),
+            "proof_recorder",
+            result_dir,
+            None,
+            None,
+        ),
+        spawn_runtime_event_consumer(
+            fanout,
+            fanout.subscribe_benchmark_recorder(),
+            "benchmark_recorder",
+            result_dir,
+            None,
+            None,
+        ),
+    ];
+    let (workers, catch_up) = consumers.into_iter().unzip();
+    DurableRuntimeConsumers { workers, catch_up }
 }
 
 pub struct HeadlessRunOptions {
@@ -1037,11 +1441,14 @@ pub fn run_headless_agent_with_progress(
     let completion_client =
         RecordingCompletionClient::new(RemoteCompletionClient, options.result_dir.clone());
     let tool_executor = CommandBridgeToolExecutor::new(command_tx);
-    let event_recorder = HeadlessEventRecorder::new(
+    let event_recorder = Arc::new(HeadlessEventRecorder::new(
         &options.result_dir.join("events.jsonl"),
         options.result_dir.clone(),
         false,
-    )?;
+    )?);
+    let event_fanout = RuntimeEventFanout::with_downstream(event_recorder.clone());
+    let durable_consumers =
+        spawn_runtime_event_consumers(&options.workspace, &options.result_dir, &event_fanout);
     let config = load_agent_config(&options.workspace);
 
     let mut initial_context = options.seed_context.clone();
@@ -1109,7 +1516,7 @@ pub fn run_headless_agent_with_progress(
 
     let outcome = if let Some(progress_tx) = progress_tx {
         let event_sink = CompositeEventSink {
-            primary: &event_recorder,
+            primary: &event_fanout,
             secondary: Some(&RuntimeEventProgressSink {
                 event_tx: progress_tx,
             }),
@@ -1126,10 +1533,12 @@ pub fn run_headless_agent_with_progress(
             &request,
             &completion_client,
             &tool_executor,
-            &event_recorder,
+            &event_fanout,
             None,
         ))
     };
+
+    durable_consumers.stop()?;
 
     write_json(
         &options.result_dir.join("transcript.json"),
@@ -1212,14 +1621,23 @@ pub fn resume_headless_agent_with_progress(
     let completion_client =
         RecordingCompletionClient::new(RemoteCompletionClient, result_dir.clone());
     let tool_executor = CommandBridgeToolExecutor::new(command_tx);
-    let event_recorder =
-        HeadlessEventRecorder::new(&result_dir.join("events.jsonl"), result_dir.clone(), true)?;
+    let event_recorder = Arc::new(HeadlessEventRecorder::new(
+        &result_dir.join("events.jsonl"),
+        result_dir.clone(),
+        true,
+    )?);
+    let event_fanout = RuntimeEventFanout::with_downstream(event_recorder.clone());
+    let durable_consumers = spawn_runtime_event_consumers(
+        &request.project_root,
+        &result_dir,
+        &event_fanout,
+    );
 
     let options_workspace = request.project_root.clone();
 
     let outcome = if let Some(progress_tx) = progress_tx {
         let event_sink = CompositeEventSink {
-            primary: &event_recorder,
+            primary: &event_fanout,
             secondary: Some(&RuntimeEventProgressSink {
                 event_tx: progress_tx,
             }),
@@ -1236,10 +1654,12 @@ pub fn resume_headless_agent_with_progress(
             &request,
             &completion_client,
             &tool_executor,
-            &event_recorder,
+            &event_fanout,
             Some(checkpoint),
         ))
     };
+
+    durable_consumers.stop()?;
 
     write_json(&result_dir.join("transcript.json"), &outcome.transcript)?;
     write_json(

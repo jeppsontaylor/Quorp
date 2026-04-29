@@ -22,7 +22,7 @@ Quorp takes the robust GPUI research foundation behind Zed and reworks it into a
 
 Quorp is mid-transition from the Zed backend into a standalone terminal-first agent runtime. The current tree already ships the extracted CLI/session crates, typed runtime actions, context expansion hooks, Patch VM-backed write receipts on the native backend, bounded runtime event fanout, verification reports with proof packets, and benchmark scoring gates.
 
-The remaining roadmap work is narrower than the earlier handoffs imply: durable subscriber workers, memory/rule policy, deeper verify execution, and broader replay/proof ergonomics are still being tightened. Historical upgrade audits currently live under `tips/upgrade/v1`; there is no tracked `tips/upgrade/v2` directory in this checkout, though v2-like notes were recovered from dangling git blobs.
+The earlier handoff work has now been closed in this branch. Historical upgrade audits live under `tips/upgrade/v1`, and the recovered `tips/upgrade/v2` advisory set is present in this checkout as 24 text notes covering repo localization, precise edit semantics, task runtime, verification, memory, permissions, MCP, and worktree isolation.
 
 ## License
 

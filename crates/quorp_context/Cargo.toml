@@ -20,8 +20,11 @@ quorp_ids = { workspace = true }
 quorp_memory = { workspace = true }
 quorp_memory_model = { workspace = true }
 quorp_repo_graph = { workspace = true }
+quorp_repo_scan = { workspace = true }
+rusqlite = "0.37.0"
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
+sha2.workspace = true
 toml.workspace = true
 
 [dev-dependencies]

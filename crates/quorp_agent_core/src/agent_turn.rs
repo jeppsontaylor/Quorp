@@ -953,7 +953,11 @@ fn normalize_tagged_payload(tag: &str, payload: serde_json::Value) -> serde_json
         "ReplaceRange" => {
             normalize_range_array_field(&mut object);
             copy_string_alias(&mut object, "path", &["file"]);
-            copy_string_alias(&mut object, "expected_hash", &["content_hash", "hash"]);
+            copy_string_alias(
+                &mut object,
+                "expected_hash",
+                &["expected_content_hash", "content_hash", "hash"],
+            );
             copy_string_alias(
                 &mut object,
                 "replacement",
@@ -962,7 +966,11 @@ fn normalize_tagged_payload(tag: &str, payload: serde_json::Value) -> serde_json
         }
         "ModifyToml" => {
             copy_string_alias(&mut object, "path", &["file"]);
-            copy_string_alias(&mut object, "expected_hash", &["content_hash", "hash"]);
+            copy_string_alias(
+                &mut object,
+                "expected_hash",
+                &["expected_content_hash", "content_hash", "hash"],
+            );
             normalize_toml_operations_field(&mut object);
             if object.get("operations").is_some() && object.get("expected_hash").is_none() {
                 object.insert(
@@ -1028,7 +1036,16 @@ fn hash_guard_prerequisite_read(tag: &str, payload: &serde_json::Value) -> Optio
                 .get("modify_toml")
                 .or_else(|| edit.get("ModifyToml"))
                 .and_then(serde_json::Value::as_object)
-                && string_field(payload, &["expected_hash", "content_hash", "hash"]).is_none()
+                && string_field(
+                    payload,
+                    &[
+                        "expected_hash",
+                        "expected_content_hash",
+                        "content_hash",
+                        "hash",
+                    ],
+                )
+                .is_none()
             {
                 return Some(AgentAction::ReadFile { path, range: None });
             }
@@ -1036,7 +1053,16 @@ fn hash_guard_prerequisite_read(tag: &str, payload: &serde_json::Value) -> Optio
                 .get("replace_range")
                 .or_else(|| edit.get("ReplaceRange"))
                 .and_then(serde_json::Value::as_object)
-                && string_field(payload, &["expected_hash", "content_hash", "hash"]).is_none()
+                && string_field(
+                    payload,
+                    &[
+                        "expected_hash",
+                        "expected_content_hash",
+                        "content_hash",
+                        "hash",
+                    ],
+                )
+                .is_none()
             {
                 return Some(AgentAction::ReadFile {
                     path,
@@ -1066,7 +1092,11 @@ fn normalize_preview_edit_payload(object: &mut serde_json::Map<String, serde_jso
         return;
     }
     if object.get("operations").is_some() {
-        copy_string_alias(object, "expected_hash", &["content_hash", "hash"]);
+        copy_string_alias(
+            object,
+            "expected_hash",
+            &["expected_content_hash", "content_hash", "hash"],
+        );
         if object.get("expected_hash").is_none() {
             object.insert(
                 "expected_hash".to_string(),
@@ -1095,11 +1125,16 @@ fn normalize_preview_edit_payload(object: &mut serde_json::Map<String, serde_jso
             || object.get("new").is_some()
             || object.get("content").is_some())
         && (object.get("expected_hash").is_some()
+            || object.get("expected_content_hash").is_some()
             || object.get("content_hash").is_some()
             || object.get("hash").is_some())
     {
         normalize_range_array_field(object);
-        copy_string_alias(object, "expected_hash", &["content_hash", "hash"]);
+        copy_string_alias(
+            object,
+            "expected_hash",
+            &["expected_content_hash", "content_hash", "hash"],
+        );
         copy_string_alias(
             object,
             "replacement",
@@ -1187,7 +1222,11 @@ fn normalize_preview_edit_value(value: serde_json::Value) -> Option<serde_json::
     {
         if let serde_json::Value::Object(payload_object) = &mut payload {
             normalize_range_array_field(payload_object);
-            copy_string_alias(payload_object, "expected_hash", &["content_hash", "hash"]);
+            copy_string_alias(
+                payload_object,
+                "expected_hash",
+                &["expected_content_hash", "content_hash", "hash"],
+            );
             copy_string_alias(
                 payload_object,
                 "replacement",
@@ -1241,10 +1280,15 @@ fn normalize_preview_edit_value(value: serde_json::Value) -> Option<serde_json::
         .as_deref()
         .is_some_and(|kind| matches!(kind, "replacerange" | "replace_range"))
         || object.get("replacement").is_some()
-            && object.get("expected_hash").is_some()
+            && (object.get("expected_hash").is_some()
+                || object.get("expected_content_hash").is_some())
             && object.get("range").is_some()
     {
-        copy_string_alias(&mut object, "expected_hash", &["content_hash", "hash"]);
+        copy_string_alias(
+            &mut object,
+            "expected_hash",
+            &["expected_content_hash", "content_hash", "hash"],
+        );
         copy_string_alias(
             &mut object,
             "replacement",
@@ -1261,7 +1305,11 @@ fn normalize_preview_edit_value(value: serde_json::Value) -> Option<serde_json::
         .is_some_and(|kind| matches!(kind, "modifytoml" | "modify_toml" | "toml"))
         || object.get("operations").is_some()
     {
-        copy_string_alias(&mut object, "expected_hash", &["content_hash", "hash"]);
+        copy_string_alias(
+            &mut object,
+            "expected_hash",
+            &["expected_content_hash", "content_hash", "hash"],
+        );
         if object.get("expected_hash").is_none() {
             object.insert(
                 "expected_hash".to_string(),
@@ -1508,9 +1556,15 @@ fn parse_flat_action(value: &serde_json::Value) -> Option<AgentAction> {
         "replacerange" | "replace_range" => {
             let path = string_field(object, &["path", "file"])?;
             let range = parse_flat_read_file_range(object)?;
-            let Some(expected_hash) =
-                string_field(object, &["expected_hash", "content_hash", "hash"])
-            else {
+            let Some(expected_hash) = string_field(
+                object,
+                &[
+                    "expected_hash",
+                    "expected_content_hash",
+                    "content_hash",
+                    "hash",
+                ],
+            ) else {
                 return Some(AgentAction::ReadFile {
                     path,
                     range: Some(range),
@@ -1528,8 +1582,16 @@ fn parse_flat_action(value: &serde_json::Value) -> Option<AgentAction> {
         }
         "modifytoml" | "modify_toml" => {
             let path = string_field(object, &["path", "file"])?;
-            let expected_hash = string_field(object, &["expected_hash", "content_hash", "hash"])
-                .unwrap_or_else(|| "not_specified_yet".to_string());
+            let expected_hash = string_field(
+                object,
+                &[
+                    "expected_hash",
+                    "expected_content_hash",
+                    "content_hash",
+                    "hash",
+                ],
+            )
+            .unwrap_or_else(|| "not_specified_yet".to_string());
             Some(AgentAction::ModifyToml {
                 path,
                 expected_hash,
@@ -1581,7 +1643,16 @@ fn parse_flat_preview_edit_payload(
     if let Some(patch) = string_field(object, &["patch"]) {
         return Some(PreviewEditPayload::ApplyPatch { patch });
     }
-    if string_field(object, &["expected_hash", "content_hash", "hash"]).is_some()
+    if string_field(
+        object,
+        &[
+            "expected_hash",
+            "expected_content_hash",
+            "content_hash",
+            "hash",
+        ],
+    )
+    .is_some()
         && string_field(
             object,
             &["replacement", "replace_with", "replace", "new", "content"],
@@ -1591,7 +1662,15 @@ fn parse_flat_preview_edit_payload(
     {
         return Some(PreviewEditPayload::ReplaceRange {
             range: parse_flat_read_file_range(object)?,
-            expected_hash: string_field(object, &["expected_hash", "content_hash", "hash"])?,
+            expected_hash: string_field(
+                object,
+                &[
+                    "expected_hash",
+                    "expected_content_hash",
+                    "content_hash",
+                    "hash",
+                ],
+            )?,
             replacement: string_field(
                 object,
                 &["replacement", "replace_with", "replace", "new", "content"],
@@ -1600,8 +1679,16 @@ fn parse_flat_preview_edit_payload(
     }
     if object.get("operations").is_some() {
         return Some(PreviewEditPayload::ModifyToml {
-            expected_hash: string_field(object, &["expected_hash", "content_hash", "hash"])
-                .unwrap_or_else(|| "not_specified_yet".to_string()),
+            expected_hash: string_field(
+                object,
+                &[
+                    "expected_hash",
+                    "expected_content_hash",
+                    "content_hash",
+                    "hash",
+                ],
+            )
+            .unwrap_or_else(|| "not_specified_yet".to_string()),
             operations: parse_toml_operations(object.get("operations")?)?,
         });
     }

@@ -1334,6 +1334,7 @@ pub(crate) fn benchmark_repair_state_from_ledger(
         .or_else(|| primary_failure_path.clone())
         .or_else(|| ledger.owner_files.first().cloned())
         .or_else(|| ledger.expected_touch_targets.first().cloned())?;
+    let owner_path = canonical_path(&owner_path);
     let repair_phase = if source_lease_should_drive_repair {
         BenchmarkRepairPhase::NeedsPatch
     } else {

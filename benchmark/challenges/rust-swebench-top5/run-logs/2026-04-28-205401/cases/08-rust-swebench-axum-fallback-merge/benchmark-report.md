@@ -1,0 +1,137 @@
+# Benchmark Report: Make router fallback merges panic instead of silently discarding behavior
+- Issue: `08-rust-swebench-axum-fallback-merge`
+- Executor: `native`
+- Model: `qwen/qwen3-coder-480b-a35b-instruct`
+- Safety mode: `nvidia_qwen_benchmark`
+- Scenario label: `QuorpRemoteApi`
+- Routing mode: `remote_api`
+- Requested provider: `nvidia`
+- Requested model: `qwen/qwen3-coder-480b-a35b-instruct`
+- Effective provider: `nvidia`
+- Effective model: `qwen/qwen3-coder-480b-a35b-instruct`
+- Used fallback: `false`
+- Comparable run: `true`
+- Provider request id: `chatcmpl-40074211-0bea-4db7-a2a6-8cba9adcf32b`
+- Routing status: `completed`
+- Repo capsule injected: `true`
+- Reasoning enabled: `false`
+- Path resolution failures: `0`
+- Recovery turns: `0`
+- Action contract: `strict_json_v1`
+- Action contract selected: `strict_json_v1`
+- Action contract fallback reason: `n/a`
+- Attempt lineage: `strict_json_v1`
+- Preview edits: `0` / `0` successful
+- Intent edits: replace_range=`0` (hash_mismatch=`0`), modify_toml=`0`, previews_created=`0`, apply_preview=`0` (hash_mismatch=`0`)
+- Effective prompt compaction: `benchmark-state-packet`
+- Fast-loop validation status: `green: fast-loop`
+- Success: `true`
+- Attempts run: `1` / `1`
+- Total requests: `9`
+- Wall clock ms: `180065`
+- Total billed tokens: `62702`
+- Input tokens (provider billed): `61988`
+- Completion tokens: `714`
+- Reasoning tokens: `0`
+- Cache read input tokens: `39168`
+- Cache write input tokens: `0`
+- Max prompt estimate seen: `7747`
+- Max completion cap seen: `4096`
+- First request prompt estimate: `2554`
+- First request raw prompt estimate: `2554`
+- First request compacted prompt estimate: `n/a`
+- First request first-token ms: `2823`
+- First model turn started: `true`
+- Bootstrap phase: `first_task_model_request`
+- Bootstrap phase detail: `first benchmark task model request started`
+- First task model request seen: `true`
+- Bootstrap elapsed ms before first task request: `1001`
+- Pre-model bootstrap stalled: `false`
+- Bootstrap stall class: `n/a`
+- First action emitted: `true`
+- Task model call count: `9`
+- Tool call count: `12`
+- Edit count: `1`
+- Read count: `9`
+- Write count: `1`
+- Rolled-back write count: `0`
+- Command execution count: `2`
+- Non-support edit count: `1`
+- Rolled-back non-support edit count: `0`
+- Fast loop command seen: `true`
+- Agent final evaluate command seen: `false`
+- Final evaluate command seen: `false`
+- Evaluation command seen: `true`
+- Host evaluation commands run: `1`
+- Text-only action failure: `false`
+- Watchdog near limit: `true`
+- Watchdog triggered: `false`
+- Widening happened: `false`
+- Lines added: `8`
+- Lines removed: `3`
+- Mistakes corrected: `0`
+- Validation commands run: `1`
+- Evaluation commands run: `1`
+- Deterministic evaluation passed: `true`
+- Run dir: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge`
+- Sandbox root: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox`
+- Exit code: `0`
+- Primary failure: `none`
+- Setup failure class: `none`
+- Last failure class: `success`
+- Judge: passed=true model=qwen/qwen3-coder-480b-a35b-instruct summary=Agent satisfied all success criteria for the challenge
+- Judge rationale: The agent successfully fixed the router fallback merge issue by making it panic instead of silently discarding behavior. The evaluation passed with all tests running successfully, and the fix addressed the bug described in START_HERE.md without reverting the dataset test patch. Changes were focused on the owning implementation as required.
+- Reset outcome: passed=true exit_code=0 duration_ms=288
+- Candidate models: `qwen/qwen3-coder-480b-a35b-instruct`
+- Challenge: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/cases/08-rust-swebench-axum-fallback-merge` condition=`proof-full` workspace=`/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full`
+- Prompt token series by turn: step1=2554 raw=2554 compacted=n/a cap=4096 | step2=2760 raw=2760 compacted=n/a cap=4096 | step3=3074 raw=3074 compacted=n/a cap=4096 | step4=3463 raw=3463 compacted=n/a cap=4096 | step5=3752 raw=3752 compacted=n/a cap=4096 | step6=3928 raw=3928 compacted=n/a cap=4096 | step7=6361 raw=6361 compacted=n/a cap=3072 | step8=6646 raw=6646 compacted=n/a cap=1536 | step9=7747 raw=7747 compacted=n/a cap=1536
+- Read range observations: axum/src/routing/mod.rs requested=none honored=none | axum/src/routing/tests/mod.rs requested=none honored=none | axum/src/lib.rs requested=361-393 honored=361-393 | axum/src/routing/mod.rs requested=154-271 honored=154-271
+- Failing tests: fallback, merging_routers_with_fallbacks_panics, nest, nesting_router_with_fallbacks_panics, routing::tests::merging_routers_with_fallbacks_panics, routing::tests::nesting_router_with_fallbacks_panics
+- Primary failure test: `routing::tests::nesting_router_with_fallbacks_panics`
+- Primary failure location: `[0maxum/src/lib.rs:369`
+- Assertion excerpt: `routing::tests::merging_routers_with_fallbacks_panics --- [31mFAILED(B[m`
+- Repair required: `false`
+- Repair phase terminal: `idle`
+- Implementation target lease: `axum/src/routing/mod.rs`
+- Failure-anchor reread: attempted=`false` honored=`false`
+- Implementation reread: allowed=`false` attempted=`false` honored=`false`
+- Patch packet injected: `true`
+- Patch packet honored range: `154-271`
+- Recommended rerun command: `cargo test --quiet -p axum --lib --features headers routing::tests::fallback routing::tests::merging_routers_with_fallbacks_panics routing::tests::nest routing::tests::nesting_router_with_fallbacks_panics routing::tests:...`
+- Fast-loop rerun match kind: `exact_fast_loop`
+- Agent scorecard: parser_recovery=`0` line_tools=`0` controller_reads=`0` redundant_reads=`1` first_write=`9` repeated_edits=`0` bare_replace_block_retries=`0` validation_rejects=`0` test_edit_rejects=`0` target_redirects=`0` evidence_fixations=`0` anchors=`0` syntax_previews=`0`/`0` prose_recoveries=`0` classification=`success`
+- Repair submode: entered=`true` turns=`3` invalid_streak_max=`0` write_locked=`false` write_refusals=`0` scaffold_offered=`false` scaffold_honored=`false` write_emitted=`true` soft_budget_inefficient=`false`
+- Repair-phase invalid action count: `0`
+- Post-fast-loop patch attempted: `true`
+- Post-fast-loop validation rerun attempted: `true`
+- Full validation requested before fast loop: `false`
+
+## Attempts
+- Attempt 1: executor=native, stop=Success, tokens=62702, requests=9, prompt_est=7747, max_tokens=4096, visible=n/a, collector=n/a, evaluation=true, judge=true
+  - Tokens: input=61988 output=714 reasoning=0 cache_read=39168 cache_write=0
+  - Files changed: axum/src/routing/mod.rs
+  - Ignored support-file changes: .quorp/challenge-capsule.json, REFERENCE.md, START_HERE.md, SUCCESS.md, benchmark.json
+  - Validations: custom(1)
+  - Fast-loop validation status: green: fast-loop
+  - Failing tests: fallback, merging_routers_with_fallbacks_panics, nest, nesting_router_with_fallbacks_panics, routing::tests::merging_routers_with_fallbacks_panics, routing::tests::nesting_router_with_fallbacks_panics
+  - Primary failure test: routing::tests::nesting_router_with_fallbacks_panics
+  - Primary failure location: [0maxum/src/lib.rs:369
+  - Assertion excerpt: routing::tests::merging_routers_with_fallbacks_panics --- [31mFAILED(B[m
+  - Repair required: false
+  - Repair phase terminal: idle
+  - Failure-anchor reread: attempted=false honored=false
+  - Implementation reread: allowed=false attempted=false honored=false
+  - Patch packet injected: true
+  - Patch packet honored range: 154-271
+  - Recommended rerun command: cargo test --quiet -p axum --lib --features headers routing::tests::fallback routing::tests::merging_routers_with_fallbacks_panics routing::tests::nest routing::tests::nesting_router_with_fallbacks_panics routing::tests:...
+  - Fast-loop rerun match kind: exact_fast_loop
+  - Implementation target lease: axum/src/routing/mod.rs
+  - Agent scorecard: parser_recovery=0 line_tools=0 controller_reads=0 redundant_reads=1 first_write=9 repeated_edits=0 bare_replace_block_retries=0 validation_rejects=0 test_edit_rejects=0 target_redirects=0 evidence_fixations=0 anchors=0 syntax_previews=0/0 prose_recoveries=0
+  - Repair submode: entered=true turns=3 invalid_streak_max=0 write_locked=false write_refusals=0 scaffold_offered=false scaffold_honored=false write_emitted=true rolled_back_writes=0 rolled_back_non_support=0 soft_budget_inefficient=false
+  - Repair-phase invalid action count: 0
+  - Post-fast-loop patch attempted: true
+  - Post-fast-loop validation rerun attempted: true
+  - Full validation requested before fast loop: false
+  - Prompt token series: step1=2554 | step2=2760 | step3=3074 | step4=3463 | step5=3752 | step6=3928 | step7=6361 | step8=6646 | step9=7747
+  - Read ranges: axum/src/routing/mod.rs [none -> none] | axum/src/routing/tests/mod.rs [none -> none] | axum/src/lib.rs [361-393 -> 361-393] | axum/src/routing/mod.rs [154-271 -> 154-271]
+  - Safety: nvidia_qwen_benchmark watchdog_near_limit=true watchdog_triggered=false

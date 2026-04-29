@@ -1,0 +1,48 @@
+{
+  "receipt_version": 1,
+  "run_id": "Fix duration truncation and rounding behavior near the Unix epoch:07-rust-swebench-chrono-epoch-truncation",
+  "source_commit": null,
+  "source_hash": null,
+  "sandbox_path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/07-rust-swebench-chrono-epoch-truncation/sandbox",
+  "changed_files": [
+    "src/round.rs"
+  ],
+  "validation": [
+    {
+      "command": "custom(1)",
+      "cwd": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/07-rust-swebench-chrono-epoch-truncation/sandbox/workspace/proof-full",
+      "exit_code": 0,
+      "raw_log_path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/07-rust-swebench-chrono-epoch-truncation/attempt-001/agent/events.jsonl",
+      "raw_log_sha256": "dcd7b3d351b9cfca77247af78a719d4b938cb21fbfa702779b099f6b59c6ec0b"
+    },
+    {
+      "command": "./evaluate.sh proof-full",
+      "cwd": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/07-rust-swebench-chrono-epoch-truncation/sandbox/workspace/proof-full",
+      "exit_code": 0,
+      "raw_log_path": null,
+      "raw_log_sha256": null
+    }
+  ],
+  "evaluator_result": "success",
+  "raw_artifacts": {
+    "benchmark_report_json": {
+      "path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/07-rust-swebench-chrono-epoch-truncation/benchmark-report.json",
+      "sha256": "854613bf96a68de4ea83075c4c79d3b2c74f7a81f03df3b5c23a76dc09099586"
+    },
+    "benchmark_report_markdown": {
+      "path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/07-rust-swebench-chrono-epoch-truncation/benchmark-report.md",
+      "sha256": "86668a235f8a47b00a431448a0a87dbbd78d04fd36a09c40f026237f22119b1c"
+    }
+  },
+  "provider": "nvidia",
+  "model": "qwen/qwen3-coder-480b-a35b-instruct",
+  "usage": {
+    "cache_read_input_tokens": 8512,
+    "cache_write_input_tokens": 0,
+    "completion_tokens": 350,
+    "prompt_tokens": 21503,
+    "reasoning_tokens": 0,
+    "total_billed_tokens": 21853
+  },
+  "residual_risks": []
+}

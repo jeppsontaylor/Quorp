@@ -1,0 +1,139 @@
+{
+  "resolved": {
+    "benchmark_root": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox",
+    "issue_id": "08-rust-swebench-axum-fallback-merge",
+    "benchmark_name": "Make router fallback merges panic instead of silently discarding behavior",
+    "issue_dir": null,
+    "workspace_source": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full",
+    "objective_source": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/QUORP_CHALLENGE_OBJECTIVE.md",
+    "visible_evaluator": null,
+    "collector_evaluator": null,
+    "context_files": [
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full/benchmark.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full/START_HERE.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full/SUCCESS.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full/REFERENCE.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full/.quorp/challenge-capsule.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full/AGENTS.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full/agent-map.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full/test-map.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full/.witness/witness-graph.json"
+    ],
+    "repair_artifacts": []
+  },
+  "executor": "native",
+  "model_id": "qwen/qwen3-coder-480b-a35b-instruct",
+  "safety_mode_label": "nvidia_qwen_benchmark",
+  "scenario_label": "QuorpRemoteApi",
+  "base_url_override": "https://integrate.api.nvidia.com/v1",
+  "briefing_file": "/Users/bentaylor/Code/quorp/crates/quorp_cli/../../docs/src/development/quorp-tui-leaning-plan.md",
+  "compaction_policy": "benchmark-state-packet",
+  "seed_transcript": null,
+  "max_steps": 100,
+  "max_seconds": 3600,
+  "max_total_tokens": null,
+  "autonomy_profile": "autonomous_host",
+  "max_attempts": 1,
+  "challenge": {
+    "case_root": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/cases/08-rust-swebench-axum-fallback-merge",
+    "sandbox_root": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox",
+    "workspace_dir": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full",
+    "condition": "proof-full",
+    "objective_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full/START_HERE.md",
+    "success_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full/SUCCESS.md",
+    "reference_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full/REFERENCE.md",
+    "reset_command": "./reset.sh <condition>",
+    "evaluate_command": "./evaluate.sh <condition>",
+    "expected_files_touched": [
+      "axum/CHANGELOG.md",
+      "axum/src/docs/routing/fallback.md",
+      "axum/src/docs/routing/merge.md",
+      "axum/src/docs/routing/nest.md",
+      "axum/src/routing/mod.rs"
+    ],
+    "allowed_generated_files": [],
+    "primary_metrics": [
+      "evaluate_passed",
+      "changed_files",
+      "widening_happened"
+    ],
+    "tags": [
+      "rust",
+      "rust-swebench",
+      "axum",
+      "routing",
+      "fallbacks"
+    ],
+    "capsule_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full/.quorp/challenge-capsule.json",
+    "capsule": {
+      "case_class": "breadth-heavy-companion",
+      "owner_files": [
+        "axum/src/routing/mod.rs",
+        "axum/src/routing/tests/"
+      ],
+      "first_reads": [
+        "axum/src/docs/routing/fallback.md",
+        "axum/src/routing/mod.rs",
+        "axum/src/routing/tests/mod.rs"
+      ],
+      "fast_loop_commands": [
+        "cargo test --quiet -p axum --lib --features headers routing::tests::"
+      ],
+      "expected_touch_targets": [
+        "axum/CHANGELOG.md",
+        "axum/src/docs/routing/fallback.md",
+        "axum/src/docs/routing/merge.md",
+        "axum/src/docs/routing/nest.md",
+        "axum/src/routing/mod.rs"
+      ],
+      "companion_files_required": [
+        "axum/CHANGELOG.md",
+        "axum/src/docs/routing/fallback.md",
+        "axum/src/docs/routing/merge.md",
+        "axum/src/docs/routing/nest.md"
+      ],
+      "strong_hints": [
+        "In `Router::nest`, the nested router's `fallback` is currently discarded. The intended fix is to keep destructuring that field and panic if it is `Fallback::Custom(_)`.",
+        "In `Router::merge`, the only behavior change is the `(Fallback::Custom(_), Fallback::Custom(_))` arm: it should panic instead of silently picking one side.",
+        "The exact panic strings are asserted in `axum/src/routing/tests/mod.rs`, so match those tests before you stop.",
+        "`axum/src/docs/routing/fallback.md` still documents the old merge/nest behavior and needs to be corrected, not extended.",
+        "Final evaluator: `./evaluate.sh proof-full`"
+      ],
+      "watch_points": [
+        "The user-facing panic message matters; it is part of the behavior contract.",
+        "`merge` and `nest` should agree about what happens when a nested router already owns a custom fallback.",
+        "Docs and changelog updates are part of the intended patch, not optional cleanup.",
+        "The relevant panic tests already exist in `axum/src/routing/tests/mod.rs`:",
+        "`merging_routers_with_fallbacks_panics`",
+        "`nesting_router_with_fallbacks_panics`",
+        "`fallback.md` currently documents the buggy behavior, so editing only the code will leave the evaluator failing."
+      ],
+      "named_tests": [
+        "(Fallback::Custom(_), Fallback::Custom(_))",
+        "Fallback::Custom(_)",
+        "Router::merge",
+        "Router::nest",
+        "fallback",
+        "merge",
+        "merging_routers_with_fallbacks_panics",
+        "nest",
+        "nesting_router_with_fallbacks_panics"
+      ]
+    }
+  },
+  "keep_sandbox": true,
+  "completion_policy": {
+    "include_repo_capsule": true,
+    "first_turn_max_completion_tokens": 4096,
+    "later_turn_max_completion_tokens": 4096,
+    "disable_reasoning": true,
+    "native_tool_calls": false,
+    "watchdog": {
+      "first_token_timeout_ms": 120000,
+      "idle_timeout_ms": 30000,
+      "total_timeout_ms": 360000
+    },
+    "safety_mode_label": "nvidia_qwen_benchmark",
+    "prompt_compaction_policy": "benchmark-state-packet"
+  }
+}

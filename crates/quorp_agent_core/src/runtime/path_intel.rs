@@ -227,6 +227,31 @@ pub(crate) async fn maybe_inject_exact_benchmark_source_patch(
             }
         }
     }
+    if let Some(ledger) = state.benchmark_case_ledger.as_mut() {
+        ledger.validation_details.repair_required = true;
+        ledger.validation_details.post_fast_loop_patch_attempted = true;
+        if let Some(validation_status) = injection.validation_status {
+            ledger.validation_status = Some(validation_status.to_string());
+        }
+    }
+    state.parser_recovery_failures = 0;
+    state.last_parse_error = None;
+    state.reset_parser_recovery_tracking();
+    state.enqueue_post_edit_validation(None);
+    event_sink.emit(RuntimeEvent::VerifierQueued {
+        step,
+        plans: state.queued_validation_summaries(),
+        reason: injection
+            .verifier_reason
+            .unwrap_or("controller_exact_source_patch")
+            .to_string(),
+    });
+    if let Some(verifier_message) = injection.verifier_message {
+        transcript.push(TranscriptMessage {
+            role: TranscriptRole::User,
+            content: verifier_message.to_string(),
+        });
+    }
     Ok(true)
 }
 

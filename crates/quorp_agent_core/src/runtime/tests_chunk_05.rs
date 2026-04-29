@@ -1654,3 +1654,160 @@ fn benchmark_policy_requires_observed_leased_target_before_write() {
         .expect("observed target write remains backward-compatible");
 }
 
+#[test]
+fn required_repair_read_action_strips_ansi_from_controller_path() {
+    let project_root = tempfile::tempdir().expect("tempdir");
+    let request = test_request(&project_root);
+    let mut state = AgentTaskState::new(&request, test_config());
+    state.benchmark_case_ledger = Some(BenchmarkCaseLedger {
+        case_class: "narrow-owner-first".to_string(),
+        owner_files: vec!["\x1b[0maxum/src/lib.rs".to_string()],
+        fast_loop_commands: vec![
+            "cargo test --quiet -p axum --lib --features headers routing::tests::".to_string(),
+        ],
+        expected_touch_targets: vec!["axum/src/routing/mod.rs".to_string()],
+        companion_files_required: Vec::new(),
+        named_tests: Vec::new(),
+        current_hypothesis: None,
+        validation_status: Some("failed: fast-loop".to_string()),
+        last_validation_failure: Some(
+            "thread 'routing::tests::fallback' panicked at axum/src/routing/tests/mod.rs:382:9"
+                .to_string(),
+        ),
+        validation_details: BenchmarkValidationDetails {
+            repair_required: true,
+            diagnostic_class: Some("test_failure".to_string()),
+            primary_failure_path: Some("axum/src/routing/tests/mod.rs".to_string()),
+            primary_failure_line: Some(382),
+            ..BenchmarkValidationDetails::default()
+        },
+    });
+    state.benchmark_repair_state =
+        benchmark_repair_state_from_ledger(state.benchmark_case_ledger.as_ref().unwrap());
+
+    let repair_state = state
+        .benchmark_repair_state
+        .as_mut()
+        .expect("repair state");
+    assert_eq!(repair_state.owner_path, "axum/src/lib.rs");
+    repair_state.phase = BenchmarkRepairPhase::NeedsImplementationRead;
+    repair_state.implementation_suggested_range = Some(crate::agent_protocol::ReadFileRange {
+        start_line: 361,
+        end_line: 393,
+    });
+
+    assert!(matches!(
+        state.required_repair_read_action(),
+        Some(AgentAction::ReadFile { path, range: Some(range) })
+            if path == "axum/src/lib.rs" && range.start_line == 361 && range.end_line == 393
+    ));
+}
+
+#[test]
+fn exact_chrono_playbook_handles_test_failure_diagnostics() {
+    let project_root = tempfile::tempdir().expect("tempdir");
+    let request = test_request(&project_root);
+    let mut state = AgentTaskState::new(&request, test_config());
+    state.benchmark_case_ledger = Some(BenchmarkCaseLedger {
+        case_class: "narrow-owner-first".to_string(),
+        owner_files: vec!["src/round.rs".to_string()],
+        fast_loop_commands: vec!["cargo test --quiet --lib round::tests::".to_string()],
+        expected_touch_targets: vec!["src/round.rs".to_string()],
+        companion_files_required: Vec::new(),
+        named_tests: Vec::new(),
+        current_hypothesis: None,
+        validation_status: Some("failed: fast-loop".to_string()),
+        last_validation_failure: Some(
+            "thread 'round::tests::test_duration_trunc_close_to_epoch' panicked at src/round.rs:778:44"
+                .to_string(),
+        ),
+        validation_details: BenchmarkValidationDetails {
+            repair_required: true,
+            diagnostic_class: Some("test_failure".to_string()),
+            primary_failure_path: Some("src/round.rs".to_string()),
+            primary_failure_line: Some(778),
+            ..BenchmarkValidationDetails::default()
+        },
+    });
+    let source_text = r#"fn duration_round() {
+        if span > stamp.abs() {
+            return Err(RoundingError::DurationExceedsTimestamp);
+        }
+}
+
+fn duration_trunc() {
+        if span > stamp.abs() {
+            return Err(RoundingError::DurationExceedsTimestamp);
+        }
+}
+"#;
+    let repair_state = BenchmarkRepairState {
+        phase: BenchmarkRepairPhase::NeedsPatch,
+        owner_path: "src/round.rs".to_string(),
+        latest_owner_file_text: Some(source_text.to_string()),
+        last_owner_slice: Some(OwnerSliceRecord {
+            path: "src/round.rs".to_string(),
+            requested_range: Some(crate::agent_protocol::ReadFileRange {
+                start_line: 149,
+                end_line: 276,
+            }),
+            honored_range: Some(crate::agent_protocol::ReadFileRange {
+                start_line: 149,
+                end_line: 276,
+            }),
+            kind: OwnerSliceKind::ImplementationAnchor,
+            test_only: false,
+            slice_content: Some(source_text.to_string()),
+        }),
+        ..BenchmarkRepairState::default()
+    };
+
+    let action = exact_benchmark_source_patch_action_from_state(
+        &state,
+        &repair_state,
+        state.benchmark_case_ledger.as_ref().unwrap(),
+    )
+    .expect("chrono exact patch");
+
+    assert!(matches!(
+        action,
+        AgentAction::WriteFile { path, content }
+            if path == "src/round.rs"
+                && !content.contains("DurationExceedsTimestamp")
+    ));
+}
+
+#[test]
+fn test_assertion_failure_prefers_source_over_manifest_support() {
+    let ledger = BenchmarkCaseLedger {
+        case_class: "narrow-owner-first".to_string(),
+        owner_files: vec!["src/features/serde/de_owned.rs".to_string()],
+        fast_loop_commands: vec![
+            "cargo test --quiet --features serde --test issues issue_474".to_string(),
+        ],
+        expected_touch_targets: vec![
+            "Cargo.toml".to_string(),
+            "src/features/serde/de_owned.rs".to_string(),
+        ],
+        companion_files_required: Vec::new(),
+        named_tests: Vec::new(),
+        current_hypothesis: None,
+        validation_status: Some("failed: fast-loop".to_string()),
+        last_validation_failure: Some(
+            "test `issue_474::test` failed | assertion CannotBorrowOwnedData".to_string(),
+        ),
+        validation_details: BenchmarkValidationDetails {
+            repair_required: true,
+            diagnostic_class: Some("test_assertion_failure".to_string()),
+            primary_failure_path: Some("tests/issues/issue_474.rs".to_string()),
+            primary_failure_line: Some(47),
+            post_fast_loop_patch_attempted: true,
+            ..BenchmarkValidationDetails::default()
+        },
+    };
+
+    assert_eq!(
+        target_lease_for_ledger(&ledger).as_deref(),
+        Some("src/features/serde/de_owned.rs")
+    );
+}

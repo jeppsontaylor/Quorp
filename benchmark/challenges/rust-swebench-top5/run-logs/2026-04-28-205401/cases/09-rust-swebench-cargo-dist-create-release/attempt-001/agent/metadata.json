@@ -1,0 +1,118 @@
+{
+  "autonomy_profile": "autonomous_host",
+  "completion_policy": {
+    "disable_reasoning": true,
+    "first_turn_max_completion_tokens": 4096,
+    "include_repo_capsule": true,
+    "later_turn_max_completion_tokens": 4096,
+    "native_tool_calls": false,
+    "prompt_compaction_policy": "benchmark-state-packet",
+    "safety_mode_label": "nvidia_qwen_benchmark",
+    "watchdog": {
+      "first_token_timeout_ms": 120000,
+      "idle_timeout_ms": 30000,
+      "total_timeout_ms": 360000
+    }
+  },
+  "max_seconds": 3600,
+  "max_steps": 100,
+  "max_total_tokens": null,
+  "model_id": "qwen/qwen3-coder-480b-a35b-instruct",
+  "objective": {
+    "action_contract_mode": "strict_json_v1",
+    "benchmark_case_class": "breadth-heavy-companion",
+    "benchmark_companion_files_required": [
+      "book/src/config.md",
+      "cargo-dist/templates/ci/github_ci.yml.j2"
+    ],
+    "benchmark_expected_touch_targets": [
+      "book/src/config.md",
+      "cargo-dist/src/backend/ci/github.rs",
+      "cargo-dist/src/config.rs",
+      "cargo-dist/src/init.rs",
+      "cargo-dist/src/tasks.rs",
+      "cargo-dist/templates/ci/github_ci.yml.j2"
+    ],
+    "benchmark_fast_loop_commands": [
+      "cargo test --quiet -p cargo-dist --test integration-tests axolotlsay_edit_existing -- --exact"
+    ],
+    "benchmark_mode": true,
+    "benchmark_name": "Add create-release configuration so CI can reuse an existing draft release",
+    "benchmark_named_tests": [
+      "DistGraph",
+      "DistMetadata",
+      "create-release",
+      "package.metadata.dist.create-release"
+    ],
+    "benchmark_owner_files": [
+      "cargo-dist/src/backend/ci/github.rs",
+      "cargo-dist/src/config.rs",
+      "cargo-dist/src/tasks.rs",
+      "cargo-dist/tests/",
+      "cargo-dist/src/init.rs",
+      "cargo-dist/templates/ci/github_ci.yml.j2"
+    ],
+    "benchmark_transcript_compression": true,
+    "context_files": [
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full/benchmark.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full/START_HERE.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full/SUCCESS.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full/REFERENCE.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full/.quorp/challenge-capsule.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full/AGENTS.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full/agent-map.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full/test-map.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full/.witness/witness-graph.json"
+    ],
+    "evaluate_command": "./evaluate.sh <condition>",
+    "executor_model": "qwen/qwen3-coder-480b-a35b-instruct",
+    "issue_id": "09-rust-swebench-cargo-dist-create-release",
+    "objective_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/QUORP_CHALLENGE_OBJECTIVE.md",
+    "planner_model": null,
+    "prompt_compaction_policy": "benchmark-state-packet",
+    "reasoning_enabled": false,
+    "repair_artifacts": [],
+    "repo_capsule_injected": true,
+    "warpos_capture_call_class": "task_model_call",
+    "warpos_capture_scope": "benchmark_task"
+  },
+  "objective_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/QUORP_CHALLENGE_OBJECTIVE.md",
+  "policy_allow_network": false,
+  "policy_allow_run_command": [
+    "cargo ",
+    "./evaluate.sh",
+    "bash ./evaluate.sh",
+    "sh ./evaluate.sh",
+    "./evaluate_visible.sh",
+    "bash ./evaluate_visible.sh",
+    "sh ./evaluate_visible.sh"
+  ],
+  "policy_max_command_output_bytes": 131072,
+  "policy_max_command_runtime_seconds": 180,
+  "policy_mode": "benchmark_autonomous",
+  "provider": "nvidia",
+  "routing": {
+    "auth_mode": "nvidia_api_key",
+    "candidate_models": [
+      "qwen/qwen3-coder-480b-a35b-instruct"
+    ],
+    "comparable": true,
+    "effective_model": "qwen/qwen3-coder-480b-a35b-instruct",
+    "effective_provider": "nvidia",
+    "fallback_reason": null,
+    "provider_base_url": "https://integrate.api.nvidia.com/v1",
+    "provider_request_id": "chatcmpl-f51c9790-93b6-404a-8a18-c92edf3ae08b",
+    "proxy_visible_remote_egress_expected": true,
+    "requested_model": "qwen/qwen3-coder-480b-a35b-instruct",
+    "requested_provider": "nvidia",
+    "routing_mode": "remote_api",
+    "routing_status": "completed",
+    "scenario_label": "QuorpRemoteApi",
+    "used_fallback": false
+  },
+  "runtime": {
+    "mode": "native"
+  },
+  "scenario_label": "QuorpRemoteApi",
+  "workspace": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full"
+}

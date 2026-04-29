@@ -1498,10 +1498,63 @@ fn compact_turn_actions_keeps_cargo_dist_generated_snapshot_batch() {
         parse_warnings: Vec::new(),
     };
 
-    compact_turn_actions(&mut turn);
+    compact_turn_actions(&mut turn, true);
 
     assert_eq!(turn.actions.len(), 7);
     assert!(turn.actions.iter().any(|action| {
+        matches!(
+            action,
+            AgentAction::WriteFile { path, .. }
+                if path == "cargo-dist/tests/snapshots/axolotlsay_edit_existing.snap"
+        )
+    }));
+}
+
+#[test]
+fn compact_turn_actions_uses_default_cap_outside_benchmark_mode() {
+    let mut turn = AgentTurnResponse {
+        assistant_message: String::new(),
+        actions: vec![
+            AgentAction::WriteFile {
+                path: "cargo-dist/src/backend/ci/github.rs".to_string(),
+                content: "github".to_string(),
+            },
+            AgentAction::WriteFile {
+                path: "cargo-dist/src/config.rs".to_string(),
+                content: "config".to_string(),
+            },
+            AgentAction::WriteFile {
+                path: "cargo-dist/src/init.rs".to_string(),
+                content: "init".to_string(),
+            },
+            AgentAction::WriteFile {
+                path: "cargo-dist/src/tasks.rs".to_string(),
+                content: "tasks".to_string(),
+            },
+            AgentAction::WriteFile {
+                path: "cargo-dist/templates/ci/github_ci.yml.j2".to_string(),
+                content: "template".to_string(),
+            },
+            AgentAction::WriteFile {
+                path: "book/src/config.md".to_string(),
+                content: "docs".to_string(),
+            },
+            AgentAction::WriteFile {
+                path: "cargo-dist/tests/snapshots/axolotlsay_edit_existing.snap".to_string(),
+                content: "snapshot".to_string(),
+            },
+        ],
+        task_updates: Vec::new(),
+        memory_updates: Vec::new(),
+        requested_mode_change: None,
+        verifier_plan: None,
+        parse_warnings: Vec::new(),
+    };
+
+    compact_turn_actions(&mut turn, false);
+
+    assert_eq!(turn.actions.len(), 6);
+    assert!(!turn.actions.iter().any(|action| {
         matches!(
             action,
             AgentAction::WriteFile { path, .. }
@@ -1681,4 +1734,3 @@ fn benchmark_policy_rejects_test_file_edit_preview_without_explicit_target() {
 
     assert!(error.contains("refused test-file edit preview"));
 }
-

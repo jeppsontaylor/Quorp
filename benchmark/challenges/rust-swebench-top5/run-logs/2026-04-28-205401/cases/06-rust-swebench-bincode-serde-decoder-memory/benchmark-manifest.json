@@ -1,0 +1,111 @@
+{
+  "resolved": {
+    "benchmark_root": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox",
+    "issue_id": "06-rust-swebench-bincode-serde-decoder-memory",
+    "benchmark_name": "Fix serde-owned decode allocation behavior for borrowed cache payloads",
+    "issue_dir": null,
+    "workspace_source": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full",
+    "objective_source": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/QUORP_CHALLENGE_OBJECTIVE.md",
+    "visible_evaluator": null,
+    "collector_evaluator": null,
+    "context_files": [
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/benchmark.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/START_HERE.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/SUCCESS.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/REFERENCE.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/.quorp/challenge-capsule.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/AGENTS.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/agent-map.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/test-map.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/.witness/witness-graph.json"
+    ],
+    "repair_artifacts": []
+  },
+  "executor": "native",
+  "model_id": "qwen/qwen3-coder-480b-a35b-instruct",
+  "safety_mode_label": "nvidia_qwen_benchmark",
+  "scenario_label": "QuorpRemoteApi",
+  "base_url_override": "https://integrate.api.nvidia.com/v1",
+  "briefing_file": "/Users/bentaylor/Code/quorp/crates/quorp_cli/../../docs/src/development/quorp-tui-leaning-plan.md",
+  "compaction_policy": "benchmark-state-packet",
+  "seed_transcript": null,
+  "max_steps": 100,
+  "max_seconds": 3600,
+  "max_total_tokens": null,
+  "autonomy_profile": "autonomous_host",
+  "max_attempts": 1,
+  "challenge": {
+    "case_root": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/cases/06-rust-swebench-bincode-serde-decoder-memory",
+    "sandbox_root": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox",
+    "workspace_dir": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full",
+    "condition": "proof-full",
+    "objective_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/START_HERE.md",
+    "success_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/SUCCESS.md",
+    "reference_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/REFERENCE.md",
+    "reset_command": "./reset.sh <condition>",
+    "evaluate_command": "./evaluate.sh <condition>",
+    "expected_files_touched": [
+      "Cargo.toml",
+      "src/features/serde/de_owned.rs"
+    ],
+    "allowed_generated_files": [],
+    "primary_metrics": [
+      "evaluate_passed",
+      "changed_files",
+      "widening_happened"
+    ],
+    "tags": [
+      "rust",
+      "rust-swebench",
+      "bincode",
+      "serde",
+      "memory"
+    ],
+    "capsule_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/.quorp/challenge-capsule.json",
+    "capsule": {
+      "case_class": "narrow-owner-first",
+      "owner_files": [
+        "src/features/serde/de_owned.rs",
+        "tests/issues.rs",
+        "tests/issues/issue_474.rs"
+      ],
+      "first_reads": [
+        "src/features/serde/de_owned.rs",
+        "tests/issues.rs",
+        "tests/issues/issue_474.rs"
+      ],
+      "fast_loop_commands": [
+        "cargo test --quiet --features serde --test issues issue_474"
+      ],
+      "expected_touch_targets": [
+        "Cargo.toml",
+        "src/features/serde/de_owned.rs"
+      ],
+      "companion_files_required": [],
+      "strong_hints": [
+        "Final evaluator: `./evaluate.sh proof-full`"
+      ],
+      "watch_points": [
+        "This is specifically the owned decode path, not the borrowed-slice helpers.",
+        "Keep existing serde round-trip behavior intact for strings, byte buffers, and borrowed data.",
+        "If you touch `Cargo.toml`, make sure it is only to support the regression coverage already implied by the issue."
+      ],
+      "named_tests": []
+    }
+  },
+  "keep_sandbox": true,
+  "completion_policy": {
+    "include_repo_capsule": true,
+    "first_turn_max_completion_tokens": 4096,
+    "later_turn_max_completion_tokens": 4096,
+    "disable_reasoning": true,
+    "native_tool_calls": false,
+    "watchdog": {
+      "first_token_timeout_ms": 120000,
+      "idle_timeout_ms": 30000,
+      "total_timeout_ms": 360000
+    },
+    "safety_mode_label": "nvidia_qwen_benchmark",
+    "prompt_compaction_policy": "benchmark-state-packet"
+  }
+}

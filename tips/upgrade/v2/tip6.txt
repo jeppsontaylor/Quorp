@@ -1,0 +1,569 @@
+I reviewed Quorp via GitHub raw/tree views; the sandbox here could not complete a local `git clone` because outbound DNS to GitHub failed, so this is a source-based architecture review rather than a locally compiled audit. My bottom line: **Quorp has unusually strong bones for a Rust-native coding agent, but the next leap is not more tools; it is turning the current runtime into a durable, event-sourced “agent kernel” with world-class context selection, verification, sandboxing, and memory/rule policy.**
+
+## Executive diagnosis
+
+Quorp is already pointed in the right direction: terminal-first Rust, typed agent actions, Patch VM write receipts, proof packets, benchmark gates, permission primitives, worktree/tmp-copy sandboxing, memory/rule scaffolding, and Qwen3-Coder via an OpenAI-compatible provider path. The README says Quorp is “mid-transition” from the Zed/GPUI backend into a standalone terminal-first agent runtime, with remaining work around durable subscriber workers, memory/rule policy, deeper verification, and replay/proof ergonomics. That matches my read exactly. ([GitHub][1])
+
+The fastest route to “better than Claude CLI, Codex CLI, OpenCode, Goose, and Crush” is to differentiate on **reliability, replayability, security, and long-task competence**, not just a prettier TUI. Claude Code and Codex already have polished modes, permissions, subagents, local review, image inputs, web search, MCP, and scripting; Goose already ships desktop/CLI/API and MCP extensions; OpenCode has agent-level permissions; Crush has very high terminal UX polish and desktop notifications. ([OpenAI Developers][2])
+
+The north star should be:
+
+> **Quorp is a Rust-native, terminal-first autonomous software engineering system that can run for hours safely, recover from crashes, prove what it did, learn from mistakes, and keep the model focused on the exact code context needed to solve hard tasks.**
+
+---
+
+## What Quorp already gets right
+
+The current support audit describes a strong release-candidate base: stream-first CLI, headless autonomous run path, typed tools, git-worktree/tmp-copy sandboxing, permission primitives, Patch VM writes, proof packets, memory/rule scaffolding, benchmark scoreboards, and proof receipts. That is already more serious than a basic chat wrapper. ([GitHub][3])
+
+The runtime shape is also promising: `quorp run` and `quorp exec` write artifacts such as `request.json`, `metadata.json`, `summary.json`, `events.jsonl`, `proof-receipt.json`, and logs, while the agent runtime owns completion, structured-turn parsing, typed tool dispatch, validation state, checkpointing, retry, and stop conditions. ([GitHub][3])
+
+The repository has the right crate vocabulary: `quorp_agent_core`, `quorp_context`, `quorp_memory`, `quorp_rule_forge`, `quorp_verify`, `quorp_repo_scan`, `quorp_repo_graph`, `quorp_rust_intel`, `quorp_sandbox`, `quorp_permissions`, `quorp_patch_vm`, `quorp_mcp`, and related protocol/model crates. That modular outline is exactly where a serious Rust-native agent should go. ([GitHub][3])
+
+The Qwen direction is sensible. Quorp’s support audit already points the default provider direction at NVIDIA NIM / Qwen3-Coder through an OpenAI-compatible chat-completions API. Qwen’s own announcement describes Qwen3-Coder-480B-A35B-Instruct as a 480B-parameter MoE with 35B active parameters, 256K native context, and up to 1M context with extrapolation; the Hugging Face model card similarly emphasizes repo-scale long-context coding and agentic tool use. ([GitHub][3])
+
+---
+
+## Immediate P0 fixes
+
+### 1. Resolve the license conflict before anything else
+
+The README says Quorp is GPLv3-or-later, while the GitHub sidebar says MIT. That conflict must be fixed before serious adoption, contributors, packaging, or company use. ([GitHub][1])
+
+Recommended action: choose one license, update `LICENSE`, README, repository metadata, crate metadata, installer metadata, and any generated docs. For a commercial-friendly open CLI, MIT/Apache-2.0 dual license is easier. For a copyleft strategy, GPLv3 is fine, but it will limit some users.
+
+### 2. Turn “release candidate” into real release engineering
+
+GitHub shows no releases published, and `AGENT_SUPPORT.md` says packaging/signing is not represented and the workspace is still a binary/worktree release candidate. ([GitHub][4])
+
+Recommended action: add signed release pipelines for macOS/Linux/Windows, Homebrew tap, shell installer, cargo-binstall support, GitHub release artifacts, SBOM, checksums, provenance, and notarized macOS universal binaries. The Mac GUI DMG can wait; a signed CLI should not.
+
+### 3. Make security gates non-negotiable
+
+The support audit says `gitleaks` exists but is currently non-fatal because local `.env` findings appear in worktree scans. That is exactly the kind of gap that becomes catastrophic in a coding agent with shell access. ([GitHub][3])
+
+Recommended action: move provider secrets completely out of scanned worktrees, hard-fail release/security lanes on secrets, redact env vars from logs, and require explicit env allowlists for shell commands, MCP servers, provider clients, and Docker containers.
+
+### 4. Finish durable subscribers and replay
+
+Quorp already has bounded runtime event fanout; the code exposes a default runtime event queue capacity of 1024, while the support audit explicitly calls durable subscriber workers future work. ([GitHub][5])
+
+Recommended action: make the event log the source of truth. Every model token chunk, tool call, permission decision, patch preview, file write, validation result, memory proposal, rule proposal, and stop reason should be append-only, hash-linked, replayable, and crash-resumable.
+
+---
+
+## Core architecture: build an agent kernel, not a chat loop
+
+Quorp should be organized around a small **Agent Kernel** with strict boundaries:
+
+```text
+quorp_kernel
+  ├── event_log          append-only, hash-linked run ledger
+  ├── task_graph         plan DAG, dependencies, budgets, validation lanes
+  ├── context_engine     select / compress / isolate / recall
+  ├── model_router       model profiles, fallbacks, cost/latency policy
+  ├── tool_runtime       typed tools, MCP, shell, LSP, browser, patch VM
+  ├── policy_engine      permissions, sandbox, risk scoring, approvals
+  ├── verifier           tests, static analysis, proof lanes, rollback gates
+  ├── memory_engine      observations, reflections, rule candidates
+  └── ui_bus             TUI, headless JSON, logs, proof packets
+```
+
+The CLI and TUI should be thin surfaces over this kernel. That lets Quorp have one brain for interactive chat, `quorp exec`, CI, future desktop GUI, remote runs, and benchmark harnesses.
+
+A key cleanup: keep benchmark-specific logic out of the production runtime. The runtime folder currently includes `benchmark_playbooks.rs`; that is fine as an eval harness artifact, but product behavior must not depend on benchmark playbooks or hidden benchmark-specific steering. ([GitHub][6])
+
+Also split large command orchestration. The CLI implementation file is currently 1,655 lines / 62.5 KB, while the binary `main.rs` is a clean dispatcher. Keep the dispatcher, but break CLI orchestration into command modules: `commands/run.rs`, `commands/session.rs`, `commands/doctor.rs`, `commands/benchmark.rs`, `commands/permissions.rs`, `commands/memory.rs`, `commands/rules.rs`, and `commands/replay.rs`. ([GitHub][7])
+
+---
+
+## Long-task reliability: make every run resumable and inspectable
+
+For difficult SWE tasks, Quorp needs a **TaskRun DAG**, not just iterative turns.
+
+Each node should contain:
+
+```text
+task_id
+objective
+status: planned | running | blocked | validating | repaired | done | failed
+dependencies
+allowed_tools
+sandbox_profile
+file_scope
+context_budget
+validation_lane
+rollback_checkpoint
+evidence_required
+artifacts
+```
+
+The agent should always know: “What am I doing? Why this file? What evidence do I have? What test proves it? What is the next safe action?” Quorp’s current `AgentTaskState` already tracks useful fields such as goal, mode, autonomy profile, policy, acceptance criteria, working set, last failing verifier, last safe checkpoint, parse error, failed tool error, and stall count. That should be promoted into a persisted task graph rather than remaining transient runtime state. ([GitHub][5])
+
+Add these long-run mechanics:
+
+1. **Crash resume**: restart from the latest hash-linked checkpoint, not from a summary.
+2. **Budget-aware planning**: token, time, tool-call, validation, and shell budgets per task node.
+3. **Verifier drain**: never finish with dirty writes and no validation unless user explicitly permits.
+4. **Loop detection**: detect repeated reads, repeated failed patches, repeated shell failures, and repeated validation failures.
+5. **Repair lanes**: after failure, require localization → hypothesis → minimal patch → validation, rather than letting the model flail.
+6. **Parallel read-only probes**: spawn small read-only localization agents for big repos, then merge findings.
+7. **Patch tournament mode**: generate several candidate patches in isolated worktrees, validate each, choose the smallest passing patch.
+
+This is where research supports a surprisingly practical lesson: complex agents should borrow from simple systems. SWE-agent showed that the agent-computer interface itself strongly affects the ability to navigate, edit, and test repositories, while Agentless showed that a simple localization → repair → patch validation pipeline can be highly competitive and cheap. ([arXiv][8])
+
+---
+
+## Context management: Quorp’s biggest opportunity
+
+Do not rely on Qwen’s long context alone. Qwen3-Coder’s 256K native context is powerful, but dumping huge repos into context will still degrade precision, latency, and cost. The current research direction is clear: agents need write/select/compress/isolate context strategies, and compaction must preserve unresolved bugs, architectural decisions, implementation details, and recently accessed files. ([langchain.com][9])
+
+Build a **three-layer context engine**:
+
+### Hot context
+
+Always in prompt:
+
+```text
+goal
+current plan node
+acceptance criteria
+constraints
+working set
+changed files
+recent validation results
+current hypothesis
+known failures
+relevant rules
+open questions
+next intended action
+```
+
+### Warm context
+
+Retrieved on demand:
+
+```text
+repo map
+symbol graph
+owner map
+test map
+proof lanes
+unsafe ledger
+recently edited slices
+related call graph
+dependency manifests
+AGENTS.md chain
+```
+
+Quorp already has `agent/owner-map.json`, `test-map.json`, `proof-lanes.toml`, `generated-zones.toml`, `unsafe-ledger.toml`, and `phase-tracker.md`; these should become first-class context artifacts selected by the context engine before the model widens edits or validation. ([GitHub][10])
+
+### Cold context
+
+Stored but not prompted unless needed:
+
+```text
+full transcript
+raw tool outputs
+full validation logs
+full file snapshots
+prior run traces
+memory evidence
+rule evidence
+benchmark traces
+```
+
+Use a **lossless archive + lossy summary + retrieval index** pattern. Never throw information away; store full artifacts on disk, summarize for prompt continuity, and retrieve exact snippets via AST/LSP/ripgrep before edits.
+
+ContextBench is especially relevant here because it evaluates not just final task success, but whether agents retrieve the correct files, blocks, and line ranges while solving issues. It contains 1,136 issue-resolution tasks across 66 repos and 8 languages, with human-verified gold contexts. Quorp should add a ContextBench-style metric to its own benchmark gate: context recall, precision, and F1 at file/block/line levels. ([arXiv][11])
+
+---
+
+## Memory and rule learning: make it evidence-based, lightweight, and git-checkable
+
+Quorp already has memory/rule scaffolding, explicit `expand_context`, `recall_memory`, and `propose_rule` actions, negative retry memory, and rule-forge shadow lifecycle accounting. The support audit also says these remain support crates rather than fully autonomous runtime policy. That is the key upgrade: make memory/rules automatic but tightly governed. ([GitHub][3])
+
+The best pattern is **observe → reflect → propose → shadow → promote → retrieve**.
+
+Reflexion is directly relevant: it improves agents by having them reflect on task feedback and keep verbal memory without changing model weights. A recent memory survey frames agent memory as a write–manage–read loop spanning compression, retrieval stores, reflection, hierarchical context, and learned management policies. ([arXiv][12])
+
+A git-checkable rule object should look like this:
+
+```toml
+version = 1
+id = "rust-reread-after-hash-mismatch"
+scope = { repo = "Quorp", globs = ["crates/**/*.rs"], language = "rust" }
+
+trigger = {
+  events = ["replace_range_hash_mismatch", "validation_failure"],
+  tools = ["replace_range", "apply_patch"]
+}
+
+guidance = """
+After a range/hash mismatch, reread the exact slice and use Patch VM preview
+before applying another edit. Do not guess offsets from stale context.
+"""
+
+confidence = 0.74
+status = "shadow" # shadow | active | retired
+created_from_run = "2026-04-28T..."
+evidence = [
+  { run = "run_abc", validator = "cargo test --workspace --lib", outcome = "fixed" }
+]
+expires_at = "2026-07-01"
+```
+
+Rules must be tiny. At runtime, Quorp should retrieve only the top 3–8 applicable rules, each capped at roughly one sentence. Store full evidence outside the prompt. Categories should include:
+
+```text
+repo invariant
+language invariant
+tool hygiene
+model-specific quirk
+validation lane
+security rule
+style rule
+dependency rule
+```
+
+Promotion policy should be conservative. A rule becomes active only after human approval or repeated evidence that it prevented failures. This avoids “agent folklore” accumulating into prompt bloat.
+
+---
+
+## Planning and internal task model
+
+Quorp should have four visible modes:
+
+```text
+Ask       read-only Q&A
+Plan      read, inspect, safe commands, no edits
+Act       propose/edit with approval gates
+AutoSafe  autonomous inside sandbox + policy classifier
+```
+
+This matches the familiar pattern users know from Claude and Codex. Claude Code supports plan mode that researches and proposes without editing, `acceptEdits`, and an auto mode gated by a classifier; Codex separates approval policy from sandbox boundaries and supports interactive TUI, model switching, subagents, local code review, web search, MCP, and scripting. ([Claude][13])
+
+Quorp can do better by making planning structured and inspectable. A plan should not be prose only; it should be a task graph with file scopes, validation lanes, risks, and rollback checkpoints.
+
+Example plan node:
+
+```toml
+[id.fix_parser_recovery]
+goal = "Make parser recovery handle truncated native tool calls"
+files = [
+  "crates/quorp_agent_core/src/runtime/recovery.rs",
+  "crates/quorp_agent_core/src/runtime/turn.rs"
+]
+allowed_tools = ["read", "search", "replace_range", "cargo_test"]
+validation = ["cargo test -p quorp_agent_core parser_recovery"]
+risk = "medium"
+requires_approval = true
+```
+
+The TUI should show this as a live checklist, not hide it in chat.
+
+---
+
+## TUI/CLI: familiar, but more powerful
+
+Quorp should feel familiar to Claude CLI and Codex CLI:
+
+```bash
+quorp
+quorp "fix the failing parser recovery tests"
+quorp --model qwen3-coder-480b-a35b-instruct
+quorp --provider nvidia-nim
+quorp --sandbox docker
+quorp --approval ask
+quorp --resume
+quorp exec "upgrade the CLI permission UI" --json
+```
+
+Suggested slash commands:
+
+```text
+/model          switch model/provider/profile
+/permissions    view/edit allow/ask/deny rules
+/sandbox        host/tmp-copy/git-worktree/docker status
+/plan           enter plan mode
+/act            approve current plan into act mode
+/auto           enter AutoSafe mode
+/diff           show pending patch
+/apply          apply approved patch
+/reject         reject current patch
+/revert         rollback to checkpoint
+/test           run validation lane
+/verify         run full proof lane
+/context        show current context packet
+/compact        force compaction and show summary
+/memory         show retrieved memories
+/rules          show active/shadow rule candidates
+/cost           token/cost/latency report
+/logs           open run artifacts
+/replay         replay run from event log
+/mcp            manage MCP servers
+/doctor         environment diagnosis
+/export         proof packet / markdown / JSONL
+```
+
+Full-screen TUI layout:
+
+```text
+┌────────────────────────────────────────────────────────────────────┐
+│ Quorp  qwen3-coder  AutoSafe  docker:no-net  branch:quorp/run-123  │
+├───────────────┬──────────────────────────────────────┬─────────────┤
+│ Plan          │ Transcript / tool cards              │ Context     │
+│ ✓ inspect     │                                      │ files       │
+│ → patch       │ [read] src/parser.rs                 │ rules       │
+│ □ validate    │ [patch preview] 2 files              │ memory      │
+│ □ summarize   │ [test] cargo test ...                │ risks       │
+├───────────────┴──────────────────────────────────────┴─────────────┤
+│ composer: fix parser recovery bug…              tokens/cost/status │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+Every write should produce a **trust card**:
+
+```text
+Patch Trust Card
+- Files touched: 2
+- Generated-zone impact: none
+- Unsafe-ledger impact: none
+- Hash guards: passed
+- Rollback checkpoint: run_123_ckpt_04
+- Validation lane: cargo test -p quorp_agent_core parser_recovery
+- Risk: medium
+```
+
+For “best telling,” Quorp should narrate work in compact, evidence-based cards:
+
+```text
+Hypothesis: the runtime treats a truncated tool call as fatal before parser recovery.
+Evidence: recovery.rs has missing close-brace handling, turn.rs queues recovery once.
+Next action: add recovery test, patch parser recovery, run targeted tests.
+```
+
+This is the differentiator: the user should always know **what Quorp believes, why it believes it, what it will do next, and what proof exists**.
+
+---
+
+## Permissions and sandboxing: make Quorp safer than competitors
+
+Quorp already has `host`, `tmp-copy`, and `git-worktree` sandbox support, plus `read-only`, `ask`, `accept-edits`, `auto-safe`, and `yolo-sandbox`; it also rejects `--yolo` with direct host sandboxing. That is good. ([GitHub][3])
+
+Now make sandbox and approval separate, like Codex documents: sandbox defines technical boundaries, approvals decide when the agent must ask before crossing them. ([OpenAI Developers][14])
+
+Recommended policy model:
+
+```toml
+[approval]
+mode = "ask" # ask | accept-edits | auto-safe | never
+
+[sandbox]
+mode = "docker" # host | tmp-copy | git-worktree | docker
+network = "off"
+env_allow = ["PATH", "HOME", "LANG", "RUST_LOG"]
+write_roots = ["."]
+read_roots = [".", "~/.cargo/registry"]
+deny_paths = ["~/.ssh", "~/.aws", "~/.config/gcloud", ".env"]
+
+[commands]
+allow = ["git status", "git diff *", "cargo test *", "cargo check *", "rg *"]
+ask = ["cargo update *", "npm install *", "git commit *"]
+deny = ["git push *", "rm -rf *", "curl * | sh", "chmod -R *"]
+```
+
+AutoSafe should use deterministic rules first, a classifier second, and human approval for anything with external side effects. Never let a model-only classifier be the sole gate for cloud CLIs, package publishing, credential reads, migrations, destructive deletes, network exfiltration, or `git push`.
+
+For MCP, be extra strict. MCP servers expose resources, prompts, and tools, and clients may expose sampling, roots, and elicitation; that is powerful but broad. ([Model Context Protocol][15]) Recent reporting also highlights MCP STDIO / command-execution supply-chain concerns, so Quorp should require MCP server manifests, checksums, env allowlists, per-server roots, command allowlists, and explicit user approval before adding or running MCP servers. ([Tom's Hardware][16])
+
+---
+
+## Model strategy for Qwen3-Coder and others
+
+Use model profiles, not provider conditionals:
+
+```toml
+[models.qwen3_coder_480b]
+provider = "openai_compatible"
+default_base_url = "nvidia_nim"
+context_native = 262144
+context_extended = 1000000
+tool_calling = "qwen_function_format"
+strengths = ["repo_scale", "agentic_coding", "tool_use"]
+default_temperature = 0.2
+verifier_temperature = 0.0
+patch_temperature = 0.1
+
+[models.local_qwen_30b]
+provider = "vllm"
+role = "cheap_local_probe"
+use_for = ["localization", "summaries", "rule_drafts"]
+
+[models.frontier_verifier]
+provider = "openai_or_anthropic"
+role = "independent_review"
+use_for = ["security_review", "patch_review", "hard_failures"]
+```
+
+Do not force one model to do everything. The latest terminal-agent research frames multi-model cost/latency/capability tradeoffs, safety, and long-running context limits as core open questions. ([arXiv][17]) Use Qwen3-Coder as the main coding model, but route smaller tasks to cheaper/local models: repo scanning, summarization, rule candidate drafting, context compression, test-log triage, and non-authoritative review.
+
+---
+
+## Verification and proof packets
+
+Quorp already has verification reports and staged proof packets. Upgrade this into a first-class **Proof Lane** system:
+
+```toml
+[proof_lanes.rust_fast]
+commands = [
+  "cargo check --workspace",
+  "cargo test --workspace --lib"
+]
+
+[proof_lanes.rust_deep]
+commands = [
+  "./script/clippy",
+  "just medium",
+  "just benchmark-gate"
+]
+
+[proof_lanes.security]
+commands = [
+  "cargo deny check",
+  "cargo audit",
+  "gitleaks detect --no-git"
+]
+hard_fail = true
+```
+
+Every run should end with:
+
+```text
+What changed
+Why it changed
+Files touched
+Tests run
+Tests not run and why
+Remaining risks
+Rollback command
+Rule candidates learned
+Proof receipt hash
+```
+
+SWE-bench Verified is a good external target because it is a human-validated 500-instance subset designed for reliable coding-agent evaluation, and its leaderboard compares systems ranging from simple agent loops to RAG and multi-rollout/review systems. ([SWE-bench][18])
+
+Quorp’s internal eval should track:
+
+```text
+solve rate
+time to first correct localization
+context recall / precision
+patch size
+number of broad writes
+validation-before-finish rate
+rollback success
+permission prompts per task
+security denials
+token cost
+latency to first token
+latency to first patch
+parse recovery rate
+loop/stall rate
+```
+
+---
+
+## Code layout recommendations
+
+Keep the Rust-native modular workspace, but tighten boundaries:
+
+```text
+crates/
+  quorp             tiny binary wrapper
+  quorp_cli         command parsing only
+  quorp_kernel      core event-sourced runtime
+  quorp_agent_core  model-turn and tool orchestration
+  quorp_context     repo maps, AGENTS.md chain, compression
+  quorp_memory      memory store, retrieval, reflection
+  quorp_rules       rule objects, selection, promotion
+  quorp_policy      permissions, approvals, risk
+  quorp_sandbox     host/worktree/tmp/docker
+  quorp_tools       typed tools
+  quorp_patch_vm    guarded edits and receipts
+  quorp_verify      validation lanes and proof packets
+  quorp_mcp         hardened MCP client/server layer
+  quorp_tui         ratatui/crossterm UI
+  quorp_render      deterministic rendering/replay
+  quorp_eval        benchmark harness
+```
+
+Avoid any crate where UI, benchmark harness, provider handling, and agent policy bleed together. The more Quorp can replay a run deterministically without the TUI, the better the TUI will become.
+
+Also adopt `AGENTS.md` discovery as a standard. AGENTS.md is now a simple open format used by many projects, and Codex reads layered global/project AGENTS files before work. Quorp should support global, repo, directory, and generated contracts, with a visible `/instructions` or `/context instructions` command. ([Agents][19])
+
+---
+
+## Mac GUI DMG bonus
+
+Keep CLI primary. Build the GUI as a thin session viewer over the same kernel:
+
+```text
+Quorp Desktop
+- session browser
+- live run viewer
+- diff/patch review
+- permission prompts
+- proof packet viewer
+- memory/rule review
+- replay timeline
+```
+
+For “Rust as much as possible,” use `egui`, `gpui`, or a Rust-native shell first. Tauri is viable for fast DMG polish, but it introduces a web frontend. Either way, do not fork the agent logic into the GUI. The GUI should call the same event log, kernel, and policy APIs as the CLI.
+
+---
+
+## Suggested roadmap
+
+### P0: 1–2 weeks
+
+Fix the license conflict. Add signed release scaffolding. Make secrets scanning a hard gate. Move credentials out of worktree scans. Add event-log hash chaining. Split CLI command modules. Add `/permissions`, `/sandbox`, `/context`, `/diff`, `/verify`, `/memory`, and `/rules` basics. Remove or isolate benchmark-specific runtime steering.
+
+### P1: 3–6 weeks
+
+Implement durable subscriber workers, crash resume, task DAG planning, policy-mediated memory/rules, Docker sandbox mode, AGENTS.md discovery, proof-lane config, replayable TUI sessions, and context compression with hot/warm/cold layers.
+
+### P2: 6–12 weeks
+
+Add patch tournament mode, parallel read-only localization probes, independent verifier agent, ContextBench-style retrieval metrics, SWE-bench Verified harness, MCP server manifest/checksum hardening, rule promotion UI, and signed macOS universal binary releases.
+
+### P3: later
+
+Mac GUI DMG, team memory governance, remote workers, PR automation, cloud/offline hybrid runs, local model management, and enterprise policy packs.
+
+---
+
+## The one sentence strategy
+
+**Do not try to beat Claude/Codex/OpenCode/Goose/Crush by being flashier; beat them by making Quorp the most reliable, inspectable, secure, replayable, Rust-native coding agent that can sustain hard multi-hour SWE tasks while learning lightweight, evidence-backed repo rules over time.**
+
+[1]: https://github.com/jeppsontaylor/Quorp/raw/refs/heads/main/README.md "raw.githubusercontent.com"
+[2]: https://developers.openai.com/codex/cli "CLI – Codex | OpenAI Developers"
+[3]: https://github.com/jeppsontaylor/Quorp/raw/refs/heads/main/AGENT_SUPPORT.md "raw.githubusercontent.com"
+[4]: https://github.com/jeppsontaylor/Quorp "GitHub - jeppsontaylor/Quorp: Quorp is a blazing-fast, Rust-built, terminal-native AI code IDE for power users — with tabs, agents, AutoResearch, SSD-MOE support, and zero patience for bloated, crashy editors. Have an idea? Just change it yourself. · GitHub"
+[5]: https://github.com/jeppsontaylor/Quorp/blob/main/crates/quorp_agent_core/src/runtime.rs "Quorp/crates/quorp_agent_core/src/runtime.rs at main · jeppsontaylor/Quorp · GitHub"
+[6]: https://github.com/jeppsontaylor/Quorp/tree/main/crates/quorp_agent_core/src/runtime "Quorp/crates/quorp_agent_core/src/runtime at main · jeppsontaylor/Quorp · GitHub"
+[7]: https://github.com/jeppsontaylor/Quorp/blob/main/crates/quorp_cli/src/quorp/cli.rs "Quorp/crates/quorp_cli/src/quorp/cli.rs at main · jeppsontaylor/Quorp · GitHub"
+[8]: https://arxiv.org/abs/2405.15793 "[2405.15793] SWE-agent: Agent-Computer Interfaces Enable Automated Software Engineering"
+[9]: https://www.langchain.com/blog/context-engineering-for-agents "Context Engineering"
+[10]: https://github.com/jeppsontaylor/Quorp/tree/main/agent "Quorp/agent at main · jeppsontaylor/Quorp · GitHub"
+[11]: https://arxiv.org/html/2602.05892v3 "ContextBench: A Benchmark for Context Retrieval in Coding Agents"
+[12]: https://arxiv.org/abs/2303.11366 "[2303.11366] Reflexion: Language Agents with Verbal Reinforcement Learning"
+[13]: https://code.claude.com/docs/en/permission-modes "Choose a permission mode - Claude Code Docs"
+[14]: https://developers.openai.com/codex/concepts/sandboxing "Sandbox – Codex | OpenAI Developers"
+[15]: https://modelcontextprotocol.io/specification/2025-11-25 "Specification - Model Context Protocol"
+[16]: https://www.tomshardware.com/tech-industry/artificial-intelligence/anthropics-model-context-protocol-has-critical-security-flaw-exposed "Anthropic's Model Context Protocol includes a critical remote code execution vulnerability — newly discovered exploit puts 200,000 AI servers at risk | Tom's Hardware"
+[17]: https://arxiv.org/html/2603.05344v1 "Building AI Coding Agents for the Terminal: Scaffolding, Harness, Context Engineering, and Lessons Learned"
+[18]: https://www.swebench.com/verified.html "SWE-bench Verified"
+[19]: https://agents.md/ "AGENTS.md"
+

@@ -1,0 +1,11 @@
+{
+  "attempt": 1,
+  "bootstrap_phase": "first_task_model_request",
+  "bootstrap_phase_detail": "first benchmark task model request started",
+  "started_at_epoch_ms": 1777431718659,
+  "updated_at_epoch_ms": 1777431719666,
+  "first_task_model_request_seen": true,
+  "bootstrap_elapsed_ms_before_first_task_request": 1006,
+  "pre_model_bootstrap_stalled": false,
+  "bootstrap_stall_class": null
+}

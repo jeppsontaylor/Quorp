@@ -1,0 +1,786 @@
+Here’s the blunt, constructive read: **Quorp is already pointed in the right direction**. It has many of the right subsystem names: `quorp_context`, `quorp_memory`, `quorp_rule_forge`, `quorp_patch_vm`, `quorp_verify`, `quorp_permissions`, `quorp_plan_mode`, `quorp_provider`, `quorp_sandbox`, `quorp_render`, `quorp_rust_intel`, and benchmark/proof machinery. The README and handoff docs describe exactly the kind of terminal-first Claude/Codex-style agent runtime you want: Patch VM receipts, verification reports, bounded event fanout, context expansion hooks, and a roadmap toward durable memory/rules and deeper verification. ([GitHub][1])
+
+The opportunity is huge, but the repo currently looks like **an ambitious scaffold that needs to be turned into a hardened agent OS**. The names are there; the next level is making those crates deeply integrated, durable, benchmarked, secure, and pleasant enough that users trust it for multi-hour real SWE work.
+
+## 1. Biggest immediate issue: code layout must be cleaned up before anything else
+
+The current repository has a serious maintainability smell: several important files are effectively minified or collapsed into huge one-line / few-line Rust files. `Cargo.toml` is one giant line, `quorp_cli.rs` is a one-line wrapper, `cli.rs` contains large amounts of CLI logic in extremely dense form, and `quorp_context.rs` is only 18 huge lines while containing meaningful compiler/context logic. ([GitHub][2])
+
+For a world-class Rust-native coding agent, this is the first thing I would fix.
+
+**Hard recommendation:** create a `refactor/real-modules` branch and make code layout a non-negotiable engineering standard.
+
+The production Rust rules should be:
+
+```text
+- rustfmt always
+- no giant single-line modules
+- no production file above ~2k LOC
+- no unrelated responsibilities in one module
+- every crate has clear public API boundaries
+- every important state machine has typed events and tests
+- every fallible operation is handled explicitly
+- no agent/tool/permission code hidden behind ad hoc string parsing
+```
+
+The handoff already says “2k LOC cap,” “no mod.rs paths,” and “no `let _ =` on fallible ops,” which is excellent. Now enforce it mechanically in CI with `cargo fmt`, `cargo clippy`, `cargo deny`, `cargo nextest`, and a small internal layout linter. ([GitHub][3])
+
+Also resolve the license inconsistency: the README says GPL v3.0-or-later, while the GitHub sidebar reports MIT. That needs to be cleaned up immediately before distribution, integrations, or commercial adoption. ([GitHub][1])
+
+## 2. Current Quorp strengths worth preserving
+
+Quorp already has the bones of a very strong system.
+
+**Context compiler:** The existing `quorp_context` design already talks about token-budgeted `ContextPack`s, multi-source retrieval, knapsack-style selection, progressive disclosure via handles, memory recall, file excerpts, lexical excerpts, and agent contracts. That is directionally right. ([GitHub][4])
+
+**Memory OS:** `quorp_memory` already models multiple memory tiers: working, episodic, semantic, procedural, negative, and rule memory. It also has failed-attempt tracking, retry decisions, SQLite/WAL persistence, and optional FTS5-style support. That is exactly the right foundation for a coding agent that learns from mistakes. ([GitHub][5])
+
+**Rule Forge:** `quorp_rule_forge` already mines failure signals, clusters normalized messages, creates candidate rules, validates them in shadow mode, and promotes verified rules. This is one of the most promising ideas in the repo. ([GitHub][6])
+
+**Patch VM:** `quorp_patch_vm` already validates file-change preconditions, uses expected hashes, previews high-risk changes, emits rollback tokens, classifies risky edits, and has tests for rollback/stale hash/large rewrite behavior. That is a strong security and reliability primitive. ([GitHub][7])
+
+**Verification ladder:** `quorp_verify` has staged verification, proof packets, cargo JSON diagnostic parsing, test-failure parsing, security finding parsing, and a content-addressed cache concept. This should become one of Quorp’s defining features. ([GitHub][8])
+
+**Permissions:** `quorp_permissions` already has sensible modes: read-only, ask, accept-edits, auto-safe, and yolo-sandbox. It distinguishes host vs sandbox execution and gates mutating capabilities. This aligns well with Claude/Codex-style approval flows. ([GitHub][9])
+
+**Plan/Act controller:** `quorp_plan_mode` already has a Plan ↔ Act state machine and a `SweController` with Understand, Plan, Inspect, Patch, Verify, Review, Learn, Done, Blocked, and Cancelled stages. That should become the heart of long-task reliability. ([GitHub][10])
+
+**Provider layer:** The OpenAI-compatible provider already supports streaming deltas, reasoning deltas, usage accounting, request config, extra body fields, retry backoff, and a Nvidia/Qwen path. This is a strong base for Qwen3-Coder and other providers. ([GitHub][11])
+
+## 3. The biggest product gap: many TUI commands are placeholders
+
+The fullscreen TUI is promising: custom ANSI/crossterm rendering, scrollback-first ideas, splash, shell footer, transcript, permission modal, shimmer, and session rendering. ([GitHub][12])
+
+But the fullscreen CLI currently recognizes many high-value slash commands that are not implemented yet, including `/tasks`, `/checkpoint`, `/rollback`, `/theme`, `/memory`, `/rules`, `/session`, `/init`, `/edit`, `/undo`, `/redo`, `/files`, `/hooks`, `/mcp`, `/diff`, `/apply`, `/revert`, `/test`, `/verify`, `/save`, `/load`, `/think`, and `/compact`. Those are not “nice to have”; they are core to matching and beating Claude CLI / Codex CLI behavior. ([GitHub][13])
+
+**This is the highest-impact product milestone:** make the TUI actually operational.
+
+The minimum excellent TUI should have:
+
+```text
+/quorp init         create .quorp config, rules, memory policy
+/plan               enter read-only planning mode
+/act                approve current plan and enter edit mode
+/permissions        switch read-only / ask / accept-edits / auto-safe / sandbox
+/diff               show current Patch VM diff
+/apply              apply approved patch
+/revert             revert last patch receipt
+/checkpoint         create filesystem + git + memory checkpoint
+/rollback           rollback to checkpoint
+/verify             run verification ladder
+/test               run detected project tests
+/compact            summarize/compress current session
+/memory             inspect retrieved memories and failed-attempt history
+/rules              inspect active/candidate/shadow rules
+/tasks              show internal task graph
+/hooks              configure lifecycle hooks
+/mcp                manage MCP servers
+/model              switch provider/model
+/session            save/load/resume sessions
+```
+
+The user experience should feel familiar to Claude Code and Codex CLI, but Quorp can be better by making state visible: not just “thinking,” but **Plan → Inspect → Patch → Verify → Learn** with live proof packets, rollback receipts, and memory/rule updates.
+
+## 4. Competitive bar: what Quorp must match or beat
+
+OpenCode emphasizes terminal/IDE/desktop usage, automatic LSP loading, multi-session workflows, share links, and a client/server architecture. ([OpenCode][14])
+
+Goose has CLI, desktop, API, a large MCP ecosystem, and many extensions. ([Goose Docs][15])
+
+Crush emphasizes multi-model support, switching LLMs mid-session while preserving context, project sessions, LSP enhancement, and MCP support. ([GitHub][16])
+
+Claude Code’s plan mode is a strong UX pattern: the agent can inspect files and run read-only commands, produce a plan, and only begin edits after approval. Claude also has hooks for lifecycle automation and permission behaviors. ([Claude][17])
+
+Codex CLI has a very broad feature set: interactive TUI, model switching, image inputs, local code review, subagents, web search, exec scripting, MCP, approval modes, and sandboxed autonomy. Its docs also emphasize sandbox boundaries and separate approval modes. ([OpenAI Developers][18])
+
+So Quorp should not merely be “another terminal agent.” It should become:
+
+```text
+A Rust-native, evidence-driven SWE agent runtime
+with durable task state, world-class context compression,
+semantic patching, proof-based verification, secure permissions,
+fast memory, and self-improving repo-local rules.
+```
+
+That is the differentiated product.
+
+## 5. Qwen3-Coder design implications
+
+Qwen3-Coder-480B-A35B-Instruct is a great target model because it is built for agentic coding, tool use, and long-context repository understanding. Official/model-card material describes 256K native context, extension up to 1M tokens with YaRN, and a function-call format designed for agentic coding workflows. ([Hugging Face][19])
+
+But the key product insight is this: **do not treat 256K/1M context as permission to dump the repo.** Long context should be a safety net, not the strategy.
+
+Quorp should route Qwen through a model router:
+
+```text
+Planner model       : cheap/fast or strongest reasoning model
+Coder model         : Qwen3-Coder-480B-A35B-Instruct
+Verifier model      : independent judge / smaller deterministic checker
+Summarizer model    : compression and session-memory generation
+Rule model          : converts repeated failures into candidate rules
+Fallback model      : alternate provider when Qwen stalls or fails
+```
+
+The provider layer should become a **router + policy engine**, not just a single OpenAI-compatible client. It should support:
+
+```text
+- model profiles
+- provider failover
+- max-cost budgets
+- max-latency budgets
+- tool-call compatibility shims
+- prompt-template compatibility per model
+- structured output validation
+- tool retry policies
+- cache-token accounting
+- context window aware packing
+```
+
+## 6. World-class context compression: the centerpiece
+
+The current context compiler is a good start, but to beat other coding agents it needs to become Quorp’s strongest subsystem.
+
+I would split context into five compact, hashable capsules:
+
+```text
+Repo Capsule
+- module map
+- public APIs
+- dependency graph
+- test layout
+- generated/vendor zones
+- ownership/contract notes
+
+Task Capsule
+- user request
+- constraints
+- accepted plan
+- current hypotheses
+- open questions
+- done/pending task graph
+
+Patch Capsule
+- changed files
+- semantic hunks
+- invariants touched
+- rollback receipt IDs
+- risk classification
+
+Proof Capsule
+- exact commands run
+- compiler diagnostics
+- failing tests
+- normalized error fingerprints
+- proof packet hashes
+
+Learning Capsule
+- active rules
+- relevant negative memories
+- prior failed attempts
+- successful fixes for similar fingerprints
+```
+
+Then give the model only what it needs for the current stage. The Inspect stage should get repo/search/symbol context. The Patch stage should get active files, invariants, and precise diagnostics. The Verify stage should get commands and proof history. The Learn stage should get failure fingerprints and patch outcomes.
+
+Retrieval should be hybrid:
+
+```text
+- BM25 lexical retrieval via Tantivy
+- symbol graph via tree-sitter + LSP/rust-analyzer
+- dependency graph via cargo metadata / package manager metadata
+- git history retrieval for recent changes and blame
+- test graph mapping source files to tests
+- optional local embeddings via sqlite-vec / fastembed / provider embeddings
+- failed-attempt memory retrieval
+- rule retrieval by diagnostic fingerprint, path, language, and AST shape
+```
+
+Recent research strongly supports this direction. SWE-agent showed that the agent-computer interface materially affects coding performance; it is not just about model quality. ([arXiv][20]) InlineCoder-style work argues that surface-level RAG/function selection misses rich repository dependencies, which supports Quorp investing in dependency-aware context inlining. ([arXiv][21]) Memory-transfer and experience-compression work also points toward compact reusable knowledge rather than shoving raw history into the prompt. ([arXiv][22])
+
+## 7. Learning from mistakes: make Rule Forge a killer feature
+
+This is where Quorp can leap ahead.
+
+The existing `Rule Forge` idea is excellent. I would formalize it into lightweight, git-checkable rule objects under:
+
+```text
+.quorp/
+  rules/
+    rust/
+      e0382-move-after-borrow.toml
+      patch-vm-high-risk-delete.toml
+    repo/
+      generated-files.toml
+      api-compatibility.toml
+  memory/
+    index.sqlite        # local, not checked in
+  sessions/
+    ...
+  policies/
+    permissions.toml
+```
+
+A checked-in rule should be tiny:
+
+```toml
+version = 1
+id = "rust.e0382.move-after-borrow.v1"
+status = "active" # candidate | shadow | active | retired
+scope = { kind = "repo", paths = ["crates/**"] }
+
+[trigger]
+language = "rust"
+diagnostic_code = "E0382"
+message_contains = ["borrow", "moved value"]
+
+[rule]
+text = "Before fixing E0382 by cloning, inspect ownership intent and prefer borrowing or narrower lifetimes when possible."
+
+[evidence]
+created_from = "proof:sha256:..."
+promoted_after_successes = 3
+false_positive_count = 0
+last_seen = "2026-04-28"
+```
+
+The learning lifecycle should be:
+
+```text
+1. Observe failure
+2. Normalize diagnostic / test / command output
+3. Fingerprint failure
+4. Detect repeated pattern
+5. Draft candidate rule
+6. Run in shadow mode for N similar tasks
+7. Promote only after verified benefit
+8. Retrieve only when trigger matches
+9. Retire or downgrade if false positives appear
+```
+
+The important part: **rules must not slow the model down.** Do not dump the rulebook into context. Index rules locally and retrieve only the top few triggered rules. Cap rules per turn, maybe 5–8 rules or 800 total tokens. The checked-in objects stay small; the heavy retrieval index stays local and ignored by git.
+
+This aligns with Reflexion/Self-Refine/Tree-of-Thought style findings: agents improve when they can reflect on failures, iteratively refine, and explore alternatives, but this must be bounded and tied to external feedback rather than endless self-talk. ([arXiv][23])
+
+## 8. Long-task reliability: make the SWE controller durable
+
+The `SweController` stages are exactly right, but long tasks need durable execution, not just in-memory control flow.
+
+Every agent run should be event-sourced:
+
+```text
+.quorp/runs/<run-id>/
+  request.json
+  plan.json
+  events.jsonl
+  context-packs/
+  patches/
+  proof-packets/
+  checkpoints/
+  memory-updates/
+  final-report.md
+```
+
+The runtime should support:
+
+```text
+- resume after crash
+- pause/cancel
+- checkpoint before every risky patch
+- rollback by Patch VM receipt
+- task graph with dependencies
+- subtask retry budgets
+- stall detection
+- automatic compacting
+- proof-based progress scoring
+- “blocked” state with exact reason
+- deterministic replay of tool calls where possible
+```
+
+The current inline task runner appears to use fixed limits like `max_steps 12` and `max_seconds 3600`; for hard SWE tasks, 12 steps is far too small. ([GitHub][13]) Replace that with stage-specific budgets:
+
+```text
+Understand: max 5 inspections
+Plan: max 3 plan revisions
+Inspect: max 20 repo operations
+Patch: max 10 patch attempts
+Verify: max 8 verification rounds
+Learn: max 2 reflection/rule updates
+```
+
+And make the agent stop because of **typed reasons**, not vague exhaustion:
+
+```rust
+enum StopReason {
+    Completed,
+    UserCancelled,
+    BudgetExceeded(BudgetKind),
+    VerificationStalled { fingerprint: FailureFingerprint },
+    PermissionDenied(Capability),
+    ContextInsufficient { missing: Vec<ContextNeed> },
+    PatchConflict,
+    ProviderFailure,
+}
+```
+
+## 9. Verification should become Quorp’s trust engine
+
+`quorp_verify` already has proof packets and staged verification. Expand this into a serious verification ladder.
+
+Recommended ladder:
+
+```text
+L0: static patch sanity
+- no forbidden paths
+- no generated/vendor edits unless approved
+- no deleted public APIs without reason
+
+L1: formatting and syntax
+- rustfmt / prettier / gofmt / black
+- cargo check / tsc --noEmit / mypy / etc.
+
+L2: targeted tests
+- tests related to touched files
+- failing test reproduction
+- package-local tests
+
+L3: full project verification
+- cargo nextest / npm test / pytest / go test ./...
+- lint
+- docs tests
+
+L4: deep verification
+- miri where applicable
+- cargo audit / cargo deny
+- property tests
+- fuzz smoke tests
+- semver/public API checks
+- benchmark regression checks
+```
+
+Proof packets should be content-addressed and explainable:
+
+```json
+{
+  "proof_id": "sha256:...",
+  "stage": "L2_TARGETED_TESTS",
+  "command": "cargo nextest run -p quorp_patch_vm",
+  "exit_code": 0,
+  "duration_ms": 18420,
+  "repo_hash": "...",
+  "patch_receipt": "...",
+  "diagnostics": [],
+  "result": "pass"
+}
+```
+
+SWE-bench and SWE-bench Verified are still highly relevant because they evaluate patch generation on real GitHub issues, with Verified using a human-validated 500-task subset. ([SWE-bench][24]) Quorp should maintain an internal benchmark suite that includes SWE-bench Verified-style tasks, Rust-specific crates, long-horizon refactors, and adversarial tasks that stress memory, rollback, and permission boundaries.
+
+Also look at ABTest-style behavior-driven fuzzing for coding agents: it mines user-reported anomalies into executable tests and found many real anomalies across popular coding CLIs. That is exactly the kind of testing harness Quorp should run against itself. ([arXiv][25])
+
+## 10. Patch VM: make it semantic, not just textual
+
+The Patch VM is already one of Quorp’s strongest pieces. Next step: make it language-aware.
+
+Add:
+
+```text
+- tree-sitter AST diffing
+- semantic edit classes: rename, move, delete, signature change, import change
+- public API impact detection
+- generated-file protection
+- dependency-aware touched-test selection
+- atomic writes via temp file + fsync + rename
+- conflict retry with fresh file hash
+- preview receipts before high-risk edits
+- rollback receipt after every successful edit
+```
+
+For Rust specifically:
+
+```text
+- cargo metadata graph
+- rust-analyzer diagnostics
+- rustdoc public API extraction
+- trait implementation impact checks
+- feature-flag matrix checks
+- workspace package boundary checks
+```
+
+`quorp_rust_intel` already has Rust-specific ideas like borrow diagnostics, trait explainer, Send/Sync auditor, feature matrix, and macro expansion placeholders. It should become a real Rust intelligence engine wired into Patch VM and Verify. ([GitHub][26])
+
+## 11. Security and permissions: be stricter than competitors
+
+Quorp should be safe enough that users can run aggressive agents without panic.
+
+The permission system should have deterministic layers:
+
+```text
+Project trust
+- trusted repo
+- untrusted repo
+- temporary sandbox
+
+Path policy
+- read allowed
+- write allowed
+- generated write blocked
+- secrets blocked
+- system paths blocked
+
+Command policy
+- safe read-only
+- safe build/test
+- risky mutation
+- network
+- package install
+- destructive
+
+Network policy
+- off
+- allow package registries
+- allow docs/search
+- allow configured domains only
+
+MCP policy
+- server identity
+- capability allowlist
+- tool-level destructive annotations
+- per-server env var access
+- audit log
+```
+
+MCP support is necessary because competitors already use it, but Quorp should treat MCP as **untrusted integration code**. MCP tools/resources/prompts are standardized, and recent MCP specs include tools, resources, prompts, roots, tasks, and authorization concepts. ([Model Context Protocol][27]) The MCP spec also emphasizes consent, authorization, access controls, and security best practices; roots are useful coordination but should not be treated as a hard security boundary. ([Model Context Protocol][28])
+
+For Quorp:
+
+```text
+- Docker sandbox should be default for YOLO
+- macOS: use sandbox profile / restricted child process where possible
+- Linux: user namespaces + seccomp + Landlock where possible
+- Windows: start with Docker/WSL isolation if native sandbox is not ready
+- never expose full env by default
+- redact secrets in transcript and proof packets
+- require explicit approval for network, package install, credential access, and destructive commands
+```
+
+## 12. TUI: familiar, but visibly smarter
+
+Make the UI feel familiar to Claude/Codex:
+
+```text
+- transcript in main pane
+- composer at bottom
+- slash command autocomplete
+- plan/act mode indicator
+- permission mode indicator
+- model/provider indicator
+- live streaming assistant output
+- tool-call cards
+- diff preview
+- approval modal
+- Ctrl+C cancellation
+- compact/resume behavior
+```
+
+Then make it better:
+
+```text
+Left rail: task graph
+- Understand
+- Plan
+- Inspect
+- Patch
+- Verify
+- Review
+- Learn
+
+Right rail: evidence
+- active files
+- retrieved context
+- active rules
+- failed-attempt memories
+- proof packets
+- patch receipts
+
+Bottom status
+- model
+- context usage
+- cache tokens
+- cost
+- sandbox mode
+- git branch
+- dirty files
+- current verifier stage
+```
+
+High-value TUI features:
+
+```text
+- “Why did you read this file?” context inspector
+- “What changed?” semantic diff summary
+- “What failed before?” negative-memory card
+- “Which rule fired?” rule explanation
+- “Rollback to here” timeline
+- “Approve this patch only” granular permission
+- “Continue in sandbox” mode switch
+- “Promote this lesson to repo rule” prompt
+- “Run same task with another model” comparison
+```
+
+Use scrollback-first CLI for default trust and compatibility, and offer fullscreen as an upgrade:
+
+```text
+quorp                 # scrollback-first interactive
+quorp tui             # fullscreen TUI
+quorp exec "..."      # script/headless mode
+quorp resume <run>    # resume durable run
+quorp verify          # standalone verification
+quorp benchmark       # benchmark runner
+```
+
+## 13. Proposed Rust-native architecture
+
+I would organize the app around a small kernel and strict crates:
+
+```text
+crates/
+  quorp_app              # binary orchestration only
+  quorp_tui              # fullscreen + scrollback UI
+  quorp_agent_runtime    # event-sourced SWE controller
+  quorp_agent_protocol   # messages, tool calls, events
+  quorp_provider         # provider clients
+  quorp_model_router     # model selection/fallback/budgets
+  quorp_context_engine   # context packs, retrieval, compression
+  quorp_repo_index       # files, symbols, deps, git, tests
+  quorp_memory_os        # memory tiers, persistence, retrieval
+  quorp_rule_forge       # rule lifecycle
+  quorp_patch_vm         # semantic patches, receipts, rollback
+  quorp_verify           # proof ladder
+  quorp_permissions      # policies and approvals
+  quorp_sandbox          # Docker/native sandboxing
+  quorp_mcp              # MCP client/server integration
+  quorp_lsp              # LSP bridge
+  quorp_rust_intel       # Rust-specific intelligence
+  quorp_benchmark        # SWE-bench-like tasks
+  quorp_storage          # SQLite/event store abstractions
+```
+
+Keep the binary boring. The intelligence should live in typed crates.
+
+For persistence, a pragmatic Rust-native stack:
+
+```text
+SQLite/rusqlite or libsql  : durable run state, memory metadata
+Tantivy                    : lexical code search
+tree-sitter                : AST indexing
+ignore/walkdir             : repo scanning
+notify                     : file watching
+git2 or gix                : git operations
+ratatui avoided if desired : custom crossterm renderer
+serde + schemars           : typed JSON artifacts
+```
+
+For a Mac GUI/DMG bonus, I would not let GUI distract the CLI effort. The best path is:
+
+```text
+Phase 1: CLI/TUI only
+Phase 2: optional desktop wrapper that talks to the same local Quorp daemon
+Phase 3: DMG packaging, codesign, notarization
+```
+
+If you want the GUI to stay close to Rust-native, use an egui/eframe-style app or a very thin Tauri shell with the Rust backend doing all real work. The CLI should remain the source of truth.
+
+## 14. The “agent OS” loop Quorp should implement
+
+The core loop should be deterministic outside the model:
+
+```text
+1. Intake
+   - parse user goal
+   - classify repo/task/language/risk
+   - create durable run
+
+2. Understand
+   - scan repo
+   - retrieve context
+   - build repo/task capsule
+
+3. Plan
+   - produce plan in read-only mode
+   - user approval or auto policy
+
+4. Inspect
+   - targeted file/symbol/test exploration
+   - update hypotheses
+
+5. Patch
+   - generate semantic patch
+   - Patch VM preview
+   - permission gate
+   - apply with receipt
+
+6. Verify
+   - run proof ladder
+   - parse diagnostics
+   - update proof capsule
+
+7. Repair
+   - if failed, retrieve negative memories/rules
+   - revise patch or rollback
+   - bounded retry
+
+8. Review
+   - summarize changes
+   - risk report
+   - proof report
+
+9. Learn
+   - record failure/success memories
+   - draft/promote rules if justified
+   - compact session
+
+10. Done
+   - final answer with evidence, commands, files changed
+```
+
+This is how Quorp becomes reliable on long tasks: the model proposes; the runtime verifies; the memory learns; the Patch VM protects; the TUI explains.
+
+## 15. Prioritized roadmap
+
+### Phase 0 — Engineering hygiene
+
+```text
+- de-minify/reformat all major files
+- split CLI runtime into real modules
+- enforce rustfmt/clippy/deny/nextest
+- resolve license mismatch
+- document crate boundaries
+- create architecture.md
+```
+
+### Phase 1 — Durable runtime
+
+```text
+- event-sourced run store
+- resumable sessions
+- typed StopReason
+- checkpoint/rollback
+- proper task graph
+- staged SWE controller wired into CLI
+```
+
+### Phase 2 — TUI completeness
+
+```text
+- implement slash commands
+- permission modal
+- diff/apply/revert UI
+- verify/test UI
+- memory/rules inspector
+- task graph panel
+- model switcher
+- context compaction command
+```
+
+### Phase 3 — Context engine
+
+```text
+- repo indexer
+- tree-sitter symbols
+- Tantivy lexical search
+- LSP/rust-analyzer integration
+- dependency/test graph
+- progressive disclosure handles
+- capsule-based compression
+```
+
+### Phase 4 — Verification and Patch VM
+
+```text
+- persistent proof cache
+- cargo nextest/rustfmt/clippy/miri/audit/deny lanes
+- semantic patch classification
+- atomic writes
+- public API impact checks
+- proof packet UI
+```
+
+### Phase 5 — Learning system
+
+```text
+- durable memory subscribers
+- failed-attempt fingerprinting
+- .quorp/rules/*.toml
+- shadow rule validation
+- active rule retrieval
+- rule promotion/retirement
+```
+
+### Phase 6 — Ecosystem parity
+
+```text
+- MCP with strict policy
+- hooks
+- subagents
+- LSP for multiple languages
+- web/doc search
+- local code review
+- shareable proof transcript
+- benchmark dashboard
+```
+
+### Phase 7 — Distribution
+
+```text
+- cargo install
+- Homebrew tap
+- Docker image
+- signed macOS binary
+- optional DMG GUI wrapper
+```
+
+## 16. My top “make it elite” recommendations
+
+The five highest-leverage changes are:
+
+1. **Turn the current module scaffold into clean, tested Rust architecture.** The repo has the right crate names; now make them real, readable, and enforceable.
+
+2. **Make the SWE controller durable and event-sourced.** Long tasks need resume, checkpoint, rollback, proof packets, and typed failure reasons.
+
+3. **Build the best context engine in the category.** Use repo capsules, task capsules, patch capsules, proof capsules, memory capsules, and progressive disclosure handles instead of giant prompt dumps.
+
+4. **Make Rule Forge real.** Lightweight git-checkable repo rules plus local indexes can become Quorp’s signature advantage: an agent that genuinely gets better inside a codebase.
+
+5. **Ship a beautiful, operational TUI.** The slash-command list is already ambitious; implement it and expose the runtime’s intelligence visually: task graph, proof packets, patch receipts, active rules, and rollback timeline.
+
+Quorp can absolutely become more than “a Claude/Codex clone.” The winning identity is: **a Rust-native SWE agent runtime that edits only with receipts, verifies with proof, remembers failures, learns repo-local rules, and gives the user total visibility and control.**
+
+[1]: https://github.com/jeppsontaylor/Quorp "GitHub - jeppsontaylor/Quorp: Quorp is a blazing-fast, Rust-built, terminal-native AI code IDE for power users — with tabs, agents, AutoResearch, SSD-MOE support, and zero patience for bloated, crashy editors. Have an idea? Just change it yourself. · GitHub"
+[2]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/Cargo.toml "raw.githubusercontent.com"
+[3]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/HANDOFF.md "raw.githubusercontent.com"
+[4]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_context/src/quorp_context.rs "raw.githubusercontent.com"
+[5]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_memory/src/quorp_memory.rs "raw.githubusercontent.com"
+[6]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_rule_forge/src/quorp_rule_forge.rs "raw.githubusercontent.com"
+[7]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_patch_vm/src/quorp_patch_vm.rs "raw.githubusercontent.com"
+[8]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_verify/src/quorp_verify.rs "raw.githubusercontent.com"
+[9]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_permissions/src/quorp_permissions.rs "raw.githubusercontent.com"
+[10]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_plan_mode/src/quorp_plan_mode.rs "raw.githubusercontent.com"
+[11]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_provider/src/lib.rs "raw.githubusercontent.com"
+[12]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_render/src/quorp_render.rs "raw.githubusercontent.com"
+[13]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_cli/src/quorp/cli_runtime.rs "raw.githubusercontent.com"
+[14]: https://opencode.ai/?utm_source=chatgpt.com "OpenCode | The open source AI coding agent"
+[15]: https://goose-docs.ai/?utm_source=chatgpt.com "goose | Your open source AI agent"
+[16]: https://github.com/charmbracelet/crush?utm_source=chatgpt.com "charmbracelet/crush: Glamourous agentic coding for all"
+[17]: https://code.claude.com/docs/en/permission-modes?utm_source=chatgpt.com "Choose a permission mode - Claude Code Docs"
+[18]: https://developers.openai.com/codex/cli?utm_source=chatgpt.com "Codex CLI"
+[19]: https://huggingface.co/Qwen/Qwen3-Coder-480B-A35B-Instruct?utm_source=chatgpt.com "Qwen/Qwen3-Coder-480B-A35B-Instruct"
+[20]: https://arxiv.org/abs/2405.15793?utm_source=chatgpt.com "SWE-agent: Agent-Computer Interfaces Enable Automated ..."
+[21]: https://arxiv.org/html/2601.00376v1?utm_source=chatgpt.com "Repository-Level Code Generation via Context Inlining"
+[22]: https://arxiv.org/html/2604.14004?utm_source=chatgpt.com "How Memories are Transferred Across Domains in Coding ..."
+[23]: https://arxiv.org/abs/2303.11366?utm_source=chatgpt.com "Reflexion: Language Agents with Verbal Reinforcement Learning"
+[24]: https://www.swebench.com/SWE-bench/?utm_source=chatgpt.com "Overview"
+[25]: https://arxiv.org/abs/2604.03362?utm_source=chatgpt.com "ABTest: Behavior-Driven Testing for AI Coding Agents"
+[26]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_rust_intel/src/quorp_rust_intel.rs "raw.githubusercontent.com"
+[27]: https://modelcontextprotocol.io/specification/2025-11-25?utm_source=chatgpt.com "Specification"
+[28]: https://modelcontextprotocol.io/specification/2025-06-18?utm_source=chatgpt.com "Specification"
+

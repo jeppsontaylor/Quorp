@@ -459,7 +459,10 @@ pub(crate) async fn handle_model_turn(
     canonicalize_benchmark_turn_actions(&mut turn, state.benchmark_case_ledger.as_ref());
     fill_hash_guards_from_observed_context(&mut turn, state);
     normalize_benchmark_repair_turn_actions(&mut turn, state);
-    compact_turn_actions(&mut turn);
+    compact_turn_actions(
+        &mut turn,
+        state.policy.mode == PolicyMode::BenchmarkAutonomous,
+    );
     if turn
         .parse_warnings
         .iter()
@@ -1298,17 +1301,21 @@ pub(crate) fn emit_assistant_turn_summary(
     });
 }
 
-pub(crate) fn compact_turn_actions(turn: &mut AgentTurnResponse) {
+pub(crate) fn compact_turn_actions(
+    turn: &mut AgentTurnResponse,
+    allow_benchmark_playbook_extras: bool,
+) {
     const MAX_ACTIONS_PER_TURN: usize = 6;
 
     let original_len = turn.actions.len();
-    let max_actions = if turn.actions.iter().any(|action| {
-        matches!(
-            action,
-            AgentAction::WriteFile { path, .. }
-                if benchmark_playbook_allows_extra_compacted_action(path)
-        )
-    }) {
+    let max_actions = if allow_benchmark_playbook_extras
+        && turn.actions.iter().any(|action| {
+            matches!(
+                action,
+                AgentAction::WriteFile { path, .. }
+                    if benchmark_playbook_allows_extra_compacted_action(path)
+            )
+        }) {
         8
     } else {
         MAX_ACTIONS_PER_TURN

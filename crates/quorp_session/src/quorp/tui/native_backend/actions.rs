@@ -40,8 +40,8 @@ use quorp_tools::edit::{apply_toml_operations, perform_range_replacement, set_ex
 use quorp_tools::patch::{perform_block_replacement, sanitize_project_path};
 use quorp_tools::preview::{load_preview_record, syntax_preflight_for_preview};
 use quorp_verify::{
-    VerifyCommand, VerifyCommandResult, VerifyLevel, VerifyRequest, VerifyTarget,
-    default_verify_plan, execute_verify_request,
+    VerifyCommand, VerifyCommandResult, VerifyLevel, VerifyRequest, VerifyStore, VerifyTarget,
+    default_verify_plan, execute_verify_request_durable,
 };
 
 fn default_patch_vm_policy() -> PatchVmPolicy {
@@ -860,7 +860,16 @@ pub(crate) fn spawn_run_validation_task(
         }
 
         let rendered_output = result.and_then(|validation_runs| {
-            let report = execute_verify_request(&verify_request, |command| {
+            let verify_store = VerifyStore::for_workspace(&cwd);
+            let report = execute_verify_request_durable(
+                &verify_store,
+                &verify_request,
+                serde_json::json!({
+                    "source": "native_validation",
+                    "session_id": session_id,
+                    "cwd": cwd,
+                }),
+                |command| {
                 validation_runs
                     .iter()
                     .find(|run| run.command == command.command)
@@ -873,7 +882,8 @@ pub(crate) fn spawn_run_validation_task(
                         truncated: run.truncated,
                     })
                     .ok_or_else(|| format!("missing validation run for `{}`", command.command))
-            })
+                },
+            )
             .map_err(anyhow::Error::msg)?;
             let mut output = validation_runs
                 .iter()

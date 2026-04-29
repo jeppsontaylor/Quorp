@@ -1,0 +1,86 @@
+{
+  "agent_mode": "act",
+  "autonomy_profile": "autonomous_host",
+  "base_url_override": "https://integrate.api.nvidia.com/v1",
+  "completion_policy": {
+    "disable_reasoning": true,
+    "first_turn_max_completion_tokens": 4096,
+    "include_repo_capsule": true,
+    "later_turn_max_completion_tokens": 4096,
+    "native_tool_calls": false,
+    "prompt_compaction_policy": "benchmark-state-packet",
+    "safety_mode_label": "nvidia_qwen_benchmark",
+    "watchdog": {
+      "first_token_timeout_ms": 120000,
+      "idle_timeout_ms": 30000,
+      "total_timeout_ms": 360000
+    }
+  },
+  "cwd": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full",
+  "enable_rollback_on_validation_failure": false,
+  "goal": "The editable workspace root for every tool call is `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full`. Do not prefix tool paths with `workspace/`. If the brief mentions `workspace/<condition>/`, that alias already refers to the current root for this run. Start with `ListDirectory` on `.` or one of the expected touch targets, keep all paths relative to the current root, and continue autonomously until the requirements are satisfied. Stop only when the visible evaluator `./evaluate.sh <condition>` succeeds.",
+  "initial_context": [
+    {
+      "content": "The editable workspace root for every tool call is `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full`. Do not prefix tool paths with `workspace/`. If the brief mentions `workspace/<condition>/`, that alias already refers to the current root for this run. Start with `ListDirectory` on `.` or one of the expected touch targets, keep all paths relative to the current root, and continue autonomously until the requirements are satisfied. Stop only when the visible evaluator `./evaluate.sh <condition>` succeeds.",
+      "role": "user"
+    },
+    {
+      "content": "[Objective File]\npath: /Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/QUORP_CHALLENGE_OBJECTIVE.md\n# Quorp Challenge Objective\n\nYou are running challenge `06-rust-swebench-bincode-serde-decoder-memory`: Fix serde-owned decode allocation behavior for borrowed cache payloads.\nKeep working until the case evaluator passes or you hit a budget stop.\n\n## Workspace\n- Editable workspace root: `.`\n- Condition: `proof-full`\n- Mirrored briefing files: START_HERE.md, SUCCESS.md, REFERENCE.md, benchmark.json\n- Do not modify files outside the workspace root.\n\n## Workspace Path Rules\n- All tool paths must be relative to the workspace root.\n- Do not use absolute paths in tool calls.\n- If you need orientation, start with `ListDirectory` on `.`.\n- Prefer the expected touch targets before top-level metadata files.\n- Avoid rereading `AGENTS.md`, `Cargo.lock`, `README.md`, or other root metadata unless the brief explicitly requires them.\n- Workspace root entries:\n- `.git/`\n- `.github/`\n- `.gitignore`\n- `.mailmap`\n- `.quorp/`\n- `.rustfmt.toml`\n- `.witness/`\n- `AGENTS.md`\n- `Cargo.lock`\n- `Cargo.toml`\n- `LICENSE.md`\n- `REFERENCE.md`\n\n## Objective\n- File: `START_HERE.md`\n- Inline summary:\n- Objective\n- Fix `bincode-org__bincode-475` in the local `proof-full` workspace.\n- A serde-backed bincode decode path rejects owned payloads for types that should deserialize cleanly from cached bytes.\n- Why This Matters\n- - The reported failure shows up in a realistic cache flow: bytes are stored once, then decoded later into fully owned application structs.\n- - The bug is subtle because plain owned strings work, while serde-heavy types such as `Uuid` and `DateTime<Utc>` trigger `CannotBorrowOwnedData`.\n- Available Local Context\n- - [`ISSUE_CONTEXT.md`](ISSUE_CONTEXT.md) summarizes the user-visible failure and acceptance target.\n- - [`LOCAL_REPRO.md`](LOCAL_REPRO.md) gives a fast loop, first reads, and review checklist.\n- - [`REFERENCE.md`](REFERENCE.md) keeps the dataset provenance and upstream links.\n- Constraints\n- - Keep the workspace in Rust and preserve the public API shape unless the tests require a documented breaking change.\n\n## Success Criteria\n- File: `SUCCESS.md`\n- Inline summary:\n- Success Criteria\n- - `cargo test --quiet --features serde --test issues issue_474` exits successfully.\n- - The fix addresses the bug described in [`START_HERE.md`](START_HERE.md) without reverting the dataset test patch.\n- - Changes stay focused on the owning implementation and any gold-patch documentation/config files that are needed.\n- Dataset Fail-to-Pass Coverage\n- - `varint::decode_unsigned::test_decode_u32`\n- - `varint::decode_unsigned::test_decode_u16`\n- - `varint::decode_unsigned::test_decode_u128`\n- - `varint::decode_unsigned::test_decode_u64`\n- - `varint::encode_signed::test_encode_i128`\n- - `varint::encode_signed::test_encode_i16`\n- - `varint::encode_signed::test_encode_i32`\n\n## Commands\n- Reset: `./reset.sh proof-full`\n- Evaluate: `./evaluate.sh proof-full`\n- Stop when the evaluate command reports success.\n\n## Expected Touch Targets\n- `Cargo.toml`\n- `src/features/serde/de_owned.rs`\n\n## Primary Metrics\n- `evaluate_passed`\n- `changed_files`\n- `widening_happened`\n\n## Challenge Capsule\n- Case class: `narrow-owner-first`\n- Primary owner files:\n- `src/features/serde/de_owned.rs`\n- `tests/issues.rs`\n- `tests/issues/issue_474.rs`\n- First reads:\n- `src/features/serde/de_owned.rs`\n- `tests/issues.rs`\n- `tests/issues/issue_474.rs`\n- Fast loop commands:\n- `cargo test --quiet --features serde --test issues issue_474`\n- Companion files required:\n- [none]\n- Named tests/assertions to keep in view:\n- [none]\n- Strong hints:\n- `Final evaluator: `./evaluate.sh proof-full``\n- Watch points:\n- `This is specifically the owned decode path, not the borrowed-slice helpers.`\n- `Keep existing serde round-trip behavior intact for strings, byte buffers, and borrowed data.`\n- `If you touch `Cargo.toml`, make sure it is only to support the regression coverage already implied by the issue.`\n\n## Validation Ladder\n- First prove progress with the fast loop before full evaluation.\n- Fast loop: `cargo test --quiet --features serde --test issues issue_474`\n- After any failed validation, summarize the failing test/assertion, patch or read the next owner file, and rerun the smallest relevant validation before widening.\n- Run `./evaluate.sh proof-full` only after the fast loop is green or the failure clearly requires broader validation.\n\n## Narrow-Case Mode\n- Do not widen beyond the primary owner files and named tests until the fast loop proves the current hypothesis wrong.\n\n## Reference\n- File: `REFERENCE.md`\n- Inline summary:\n- Reference\n- - Dataset: `user2f86/rustbench`\n- - Split: `train`\n- - Instance: `bincode-org__bincode-475`\n- - Repository: `bincode-org/bincode`\n- - Base commit: `f33abb21b45ff20b63be2a5ab134fce0d6d86d59`\n- - Dataset version: `1.0`\n- - Issue: https://github.com/bincode-org/bincode/issues/474\n- - Pull request: https://github.com/bincode-org/bincode/pull/475\n- Problem Statement\n- See [`upstream/problem_statement.md`](upstream/problem_statement.md).\n- Gold Patch Files\n\n## Tags\n- `rust`\n- `rust-swebench`\n- `bincode`\n- `serde`\n- `memory`",
+      "role": "user"
+    }
+  ],
+  "max_iterations": 100,
+  "max_seconds": 3600,
+  "max_total_tokens": null,
+  "model_id": "qwen/qwen3-coder-480b-a35b-instruct",
+  "parser_recovery_budget": 2,
+  "project_root": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full",
+  "run_metadata": {
+    "action_contract_mode": "strict_json_v1",
+    "benchmark_case_class": "narrow-owner-first",
+    "benchmark_companion_files_required": [],
+    "benchmark_expected_touch_targets": [
+      "Cargo.toml",
+      "src/features/serde/de_owned.rs"
+    ],
+    "benchmark_fast_loop_commands": [
+      "cargo test --quiet --features serde --test issues issue_474"
+    ],
+    "benchmark_mode": true,
+    "benchmark_name": "Fix serde-owned decode allocation behavior for borrowed cache payloads",
+    "benchmark_named_tests": [],
+    "benchmark_owner_files": [
+      "src/features/serde/de_owned.rs",
+      "tests/issues.rs",
+      "tests/issues/issue_474.rs"
+    ],
+    "benchmark_transcript_compression": true,
+    "context_files": [
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/benchmark.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/START_HERE.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/SUCCESS.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/REFERENCE.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/.quorp/challenge-capsule.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/AGENTS.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/agent-map.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/test-map.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full/.witness/witness-graph.json"
+    ],
+    "evaluate_command": "./evaluate.sh <condition>",
+    "executor_model": "qwen/qwen3-coder-480b-a35b-instruct",
+    "issue_id": "06-rust-swebench-bincode-serde-decoder-memory",
+    "objective_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/QUORP_CHALLENGE_OBJECTIVE.md",
+    "planner_model": null,
+    "prompt_compaction_policy": "benchmark-state-packet",
+    "reasoning_enabled": false,
+    "repair_artifacts": [],
+    "repo_capsule_injected": true,
+    "warpos_capture_call_class": "task_model_call",
+    "warpos_capture_scope": "benchmark_task"
+  },
+  "runtime": {
+    "mode": "native"
+  },
+  "session_id": 0,
+  "verifier_drain_budget": 4
+}

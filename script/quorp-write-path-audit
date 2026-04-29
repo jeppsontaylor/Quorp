@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+allowlist_file="$repo_root/agent/write-path-allowlist.toml"
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --repo-root)
+      repo_root="$2"
+      shift 2
+      ;;
+    --allowlist)
+      allowlist_file="$2"
+      shift 2
+      ;;
+    *)
+      echo "[quorp-write-path-audit] unknown argument: $1" >&2
+      exit 1
+      ;;
+  esac
+done
+
+cd "$repo_root"
+
+fail() {
+  echo "[quorp-write-path-audit] $1" >&2
+  exit 1
+}
+
+[[ -f "$allowlist_file" ]] || fail "missing allowlist file: $allowlist_file"
+
+declare -a allowlist_records=()
+while IFS=$'\t' read -r path pattern owner sink reviewed_on; do
+  [[ -z "$path" && -z "$pattern" && -z "$owner" && -z "$sink" && -z "$reviewed_on" ]] && continue
+  [[ -n "$path" ]] || fail "allowlist entry is missing path"
+  [[ -n "$pattern" ]] || fail "allowlist entry for $path is missing pattern"
+  [[ -n "$owner" ]] || fail "allowlist entry for $path :: $pattern is missing owner"
+  [[ -n "$sink" ]] || fail "allowlist entry for $path :: $pattern is missing sink"
+  [[ -n "$reviewed_on" ]] || fail "allowlist entry for $path :: $pattern is missing reviewed_on"
+  case "$sink" in
+    artifact|log|ledger|proof|storage|test_only|workspace_mutation) ;;
+    *)
+      fail "allowlist entry for $path :: $pattern has invalid sink \`$sink\`"
+      ;;
+  esac
+  allowlist_records+=("$path"$'\t'"$pattern"$'\t'"$owner"$'\t'"$sink"$'\t'"$reviewed_on")
+done < <(
+  awk '
+    function flush() {
+      if (!in_block) {
+        return
+      }
+      print path "\t" pattern "\t" owner "\t" sink "\t" reviewed_on
+      path = ""
+      pattern = ""
+      owner = ""
+      sink = ""
+      reviewed_on = ""
+    }
+    /^\[\[allowlist\]\]/ {
+      flush()
+      in_block = 1
+      next
+    }
+    /^path = "/ { split($0, parts, "\""); path = parts[2]; next }
+    /^pattern = "/ { split($0, parts, "\""); pattern = parts[2]; next }
+    /^owner = "/ { split($0, parts, "\""); owner = parts[2]; next }
+    /^sink = "/ { split($0, parts, "\""); sink = parts[2]; next }
+    /^reviewed_on = "/ { split($0, parts, "\""); reviewed_on = parts[2]; next }
+    END { flush() }
+  ' "$allowlist_file"
+)
+
+is_allowlisted_hit() {
+  local path="$1"
+  local line="$2"
+  local record allowlist_path allowlist_pattern
+  for record in "${allowlist_records[@]}"; do
+    IFS=$'\t' read -r allowlist_path allowlist_pattern _ <<< "$record"
+    case "$path" in
+      $allowlist_path)
+        if [[ "$line" == *"$allowlist_pattern"* ]]; then
+          return 0
+        fi
+        ;;
+    esac
+  done
+  return 1
+}
+
+echo "[quorp-write-path-audit] scanning production source for direct write paths"
+
+hits=()
+while IFS= read -r hit; do
+  [[ -n "$hit" ]] || continue
+  hits+=("$hit")
+done < <(
+  rg -n \
+    --glob 'crates/**/src/**/*.rs' \
+    --glob '!**/tests/**' \
+    --glob '!**/*tests*.rs' \
+    'fs::write|std::fs::write|remove_file|rename\(|OpenOptions::new|set_permissions|File::create' \
+    crates || true
+)
+
+if [[ "${#hits[@]}" -eq 0 ]]; then
+  echo "[quorp-write-path-audit] ok"
+  exit 0
+fi
+
+unallowlisted_hits=()
+for hit in "${hits[@]}"; do
+  path="${hit%%:*}"
+  if is_allowlisted_hit "$path" "$hit"; then
+    continue
+  fi
+  unallowlisted_hits+=("$hit")
+done
+
+if [[ "${#unallowlisted_hits[@]}" -ne 0 ]]; then
+  printf '%s\n' "${unallowlisted_hits[@]}" >&2
+  fail "found direct write paths outside the reviewed allowlist"
+fi
+
+echo "[quorp-write-path-audit] ok"

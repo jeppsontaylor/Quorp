@@ -1,0 +1,19 @@
+{
+  "scenario_label": "QuorpRemoteApi",
+  "routing_mode": "remote_api",
+  "requested_provider": "nvidia",
+  "requested_model": "qwen/qwen3-coder-480b-a35b-instruct",
+  "candidate_models": [
+    "qwen/qwen3-coder-480b-a35b-instruct"
+  ],
+  "effective_provider": "nvidia",
+  "effective_model": "qwen/qwen3-coder-480b-a35b-instruct",
+  "used_fallback": false,
+  "fallback_reason": null,
+  "comparable": true,
+  "provider_base_url": "https://integrate.api.nvidia.com/v1",
+  "auth_mode": "nvidia_api_key",
+  "proxy_visible_remote_egress_expected": true,
+  "provider_request_id": "chatcmpl-d684f2c0-b3f5-4ef0-b614-debd8a36e635",
+  "routing_status": "completed"
+}

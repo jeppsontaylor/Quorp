@@ -1252,10 +1252,7 @@ fn source_patch_intent_example(
         payload.insert("end_line".to_string(), serde_json::json!(range.end_line));
     }
     if let Some(content_hash) = content_hash {
-        payload.insert(
-            "expected_content_hash".to_string(),
-            serde_json::json!(content_hash),
-        );
+        payload.insert("expected_hash".to_string(), serde_json::json!(content_hash));
     }
     payload.insert(
         "replacement".to_string(),

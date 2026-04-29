@@ -374,7 +374,7 @@ Verification:
 
 ## Phase 13: General Rust SWE Recovery Upgrade
 
-Status: in progress
+Status: complete
 
 Scope:
 - Improve the failing 3/5 top5 run without benchmark-oracle patches.
@@ -418,3 +418,149 @@ Verification:
 - `which quorp` from `/Users/bentaylor/Code/zitpit` resolves to `/opt/homebrew/bin/quorp`.
 - `quorp --version` from `/Users/bentaylor/Code/zitpit` prints `quorp 0.231.0`.
 - `printf '/exit\n' | quorp` from `/Users/bentaylor/Code/zitpit` starts the ad hoc session against `/Users/bentaylor/Code/zitpit`.
+
+## Phase 15: Durable Run Ledger
+
+Status: complete
+
+Scope:
+- Add a durable append-only run ledger alongside the existing headless event log.
+- Hash-chain run events with `seq`, `prev_hash`, `hash`, `actor`, `kind`, `payload`, and `timestamp_ms`.
+- Preserve backward-compatible `events.jsonl` consumers while making the ledger the preferred replay source.
+
+Completed:
+- Added `RunLedgerEvent` and `RunLedgerCursor` helpers to the shared run-support layer.
+- Wrote run-ledger sidecar records whenever headless or CLI event records are appended.
+- Merged attempt ledgers into parent run ledgers with a continuous hash chain.
+- Preferred `run-ledger.jsonl` during run summary reconstruction, while still supporting legacy `events.jsonl`.
+- Added tests for ledger chaining, ledger readback, and merged ledger replay.
+
+Verification:
+- `cargo test -p quorp_session --lib`
+- `cargo test -p quorp --bin quorp -- --test-threads=2`
+
+## Phase 16: Durable Runtime Subscribers
+
+Status: complete
+
+Scope:
+- Make runtime event subscriptions block-aware instead of drain-only queues.
+- Allow long-lived worker threads to own a subscription, receive wakeups, and flush pending events before shutdown.
+- Keep the existing in-memory fanout semantics and backpressure behavior intact.
+
+Completed:
+- Added a condvar-backed runtime event queue so subscriptions can wake when new events arrive.
+- Added a generic runtime event worker helper that drains a subscription on a background thread and stops cleanly.
+- Kept subscriber backpressure handling unchanged while making worker delivery deterministic.
+- Added runtime tests for worker delivery and clean shutdown.
+
+Verification:
+- `cargo test -p quorp_agent_core --lib runtime_event_worker_drains_subscriber_queue`
+
+## Phase 17: Durable Runtime Consumers
+
+Status: complete
+
+Scope:
+- Wire the runtime event workers into real persistence sinks instead of leaving them as queue-drain demos.
+- Keep memory, rule-forge, proof, and benchmark consumption durable on disk or in workspace storage.
+- Preserve the existing event fanout and headless recorder behavior.
+
+Completed:
+- Routed headless runs through a `RuntimeEventFanout` with a downstream event recorder.
+- Added durable worker consumers for workspace memory, rule-forge observation, proof journaling, and benchmark journaling.
+- Persisted failed-edit memory records into the workspace SQLite memory store from runtime events.
+- Recorded rule-forge observations and per-subscriber journals under each run artifact directory.
+- Added a focused consumer integration test that writes runtime events, reopens memory, and verifies durable journals exist.
+
+Verification:
+- `cargo test -p quorp_session --lib durable_runtime_consumers_persist_memory_and_journals -- --test-threads=2`
+- `cargo test -p quorp --bin quorp -- --test-threads=2`
+
+## Phase 18: Ledger Kernel V2
+
+Status: complete
+
+Scope:
+- Move run-ledger schema and hash-chain behavior into a shared `quorp_agent_core::ledger` module.
+- Make durable runtime consumers resume from disk cursors and use live fanout delivery only as wake signals.
+- Add replay validation over `run-ledger.jsonl`.
+
+Completed:
+- Added shared ledger types and APIs for `RunLedgerEvent`, writer/reader handles, subscriber cursors, validation reports, snapshots, and `read_from` resume.
+- Removed the process-global ledger cursor correctness path from run-support append behavior; writers initialize from disk.
+- Preserved `events.jsonl` compatibility while making `run-ledger.jsonl` the first durable write.
+- Persisted subscriber cursors under `artifacts/runtime-subscribers/<subscriber>/cursor.json`.
+- Reworked durable memory/rule/proof/benchmark consumers to read missed events from the ledger before committing cursors.
+- Added `quorp replay <run-dir>` to validate a ledger and print deterministic run facts.
+
+Verification:
+- `cargo test -p quorp_agent_core --lib ledger`
+- `cargo test -p quorp_session --lib durable_runtime_consumers_persist_memory_and_journals -- --test-threads=2`
+- `cargo test -p quorp --bin quorp replay`
+- `cargo check --workspace`
+
+## Phase 19: Proof Engine V2
+
+Status: complete
+
+Scope:
+- Persist proof DAGs and verification cache entries on disk.
+- Make verify execution use explicit cache/store handles instead of a process-global correctness cache.
+- Add proof show/export/verify CLI surfaces with hash recomputation and tamper detection.
+
+Completed:
+- Added durable proof DAG schema types to `quorp_verify_model`.
+- Added `VerifyStore`, `MemoryVerifyCache`, `FileVerifyCache`, `execute_verify_request_with_cache`, and `execute_verify_request_durable`.
+- Wrote proof DAGs under `.quorp/verify/runs/<verify-run-id>/proof-dag.json` and cache entries under `.quorp/verify/cache/<cache-key-hash>.json`.
+- Routed native validation through durable verify execution.
+- Extended run proof receipts with `run-ledger.jsonl`, proof DAG, and raw verification log artifacts when present.
+- Added `quorp proof show`, `quorp proof export`, and `quorp proof verify`.
+
+Verification:
+- `cargo test -p quorp_verify --lib`
+- `cargo test -p quorp_verify_model --lib`
+- `cargo test -p quorp_cli --lib`
+- `cargo test -p quorp --bin quorp proof`
+- `cargo check --workspace`
+
+## Open World-Class Gaps
+
+Status: open
+
+These gaps are the remaining acceptance criteria from the roadmap. They are recorded here so completion claims stay tied to evidence rather than to the number of phases completed.
+Each item stays open until the corresponding subsystem has code, tests, and verification evidence in the workspace.
+
+Ledger:
+- Closed in Phase 18. Ledger cursors, snapshots, replay validation, and replay-backed durable consumers are now implemented.
+
+Proof:
+- Closed in Phase 19. Durable proof DAGs, persistent verify cache entries, proof receipts, and proof show/export/verify surfaces are now implemented.
+
+Context:
+- Context packing still needs a persistent repo-intelligence store with language-server facts, symbol/index history, and deterministic budget accounting.
+- Acceptance: repo index invalidation, symbol/hover/ref lookup, and context-pack provenance are durable and testable.
+
+Patch VM:
+- Native backend write-handler parity is guarded, but the write contract still needs a repo-wide audit gate that enforces Patch VM usage for all production writes and keeps benchmark-only repairs quarantined.
+- Acceptance: direct write paths are blocked unless they are approved artifact/log/storage sinks.
+
+Rules:
+- Rule forge and memory still need a durable policy store for candidate, shadow, active, rejected, and deprecated rules.
+- Acceptance: repeated failures are blocked by negative memory unless fresh evidence or a materially different patch is present.
+
+Sandbox:
+- Permission parsing and trust escalation still need finer-grained policy for compound shell commands, dependency installs, network, MCP, browser, and generated executables.
+- Acceptance: untrusted project config cannot elevate the runtime, and full-auto stays sandbox-bound by default.
+
+Subagents:
+- Task DAG and subagent orchestration still need first-class ledgered tasks, scoped worktrees, and proof-backed returns.
+- Acceptance: planner/explorer/implementer/verifier/reviewer roles are observable and resumable from persisted task artifacts.
+
+TUI:
+- Fullscreen mission-control panes and slash-command parity still need the same execution fidelity as the scrollback mode.
+- Acceptance: plan, permissions, sandbox, proof, context, diff, rollback, verify, memory, rules, MCP, settings, agents, browser, GitHub, and export panes execute rather than only list actions.
+
+Evals:
+- Benchmark-only action-budget behavior is gated on benchmark policy, but the eval surface still needs broader lanes, replayable scoreboards, and release packaging/signing evidence.
+- Acceptance: benchmark and live-task scoreboards can be replayed from ledger plus artifacts, with release gates proving the run is reproducible.

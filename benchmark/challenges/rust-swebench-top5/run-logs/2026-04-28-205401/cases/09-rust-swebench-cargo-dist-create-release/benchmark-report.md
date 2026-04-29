@@ -1,0 +1,125 @@
+# Benchmark Report: Add create-release configuration so CI can reuse an existing draft release
+- Issue: `09-rust-swebench-cargo-dist-create-release`
+- Executor: `native`
+- Model: `qwen/qwen3-coder-480b-a35b-instruct`
+- Safety mode: `nvidia_qwen_benchmark`
+- Scenario label: `QuorpRemoteApi`
+- Routing mode: `remote_api`
+- Requested provider: `nvidia`
+- Requested model: `qwen/qwen3-coder-480b-a35b-instruct`
+- Effective provider: `nvidia`
+- Effective model: `qwen/qwen3-coder-480b-a35b-instruct`
+- Used fallback: `false`
+- Comparable run: `true`
+- Provider request id: `chatcmpl-f51c9790-93b6-404a-8a18-c92edf3ae08b`
+- Routing status: `completed`
+- Repo capsule injected: `true`
+- Reasoning enabled: `false`
+- Path resolution failures: `0`
+- Recovery turns: `1`
+- Action contract: `strict_json_v1`
+- Action contract selected: `strict_json_v1`
+- Action contract fallback reason: `n/a`
+- Attempt lineage: `strict_json_v1`
+- Preview edits: `0` / `0` successful
+- Intent edits: replace_range=`0` (hash_mismatch=`0`), modify_toml=`0`, previews_created=`0`, apply_preview=`0` (hash_mismatch=`0`)
+- Effective prompt compaction: `benchmark-state-packet`
+- Fast-loop validation status: `green: fast-loop`
+- Success: `true`
+- Attempts run: `1` / `1`
+- Total requests: `3`
+- Wall clock ms: `155654`
+- Total billed tokens: `24033`
+- Input tokens (provider billed): `23791`
+- Completion tokens: `242`
+- Reasoning tokens: `0`
+- Cache read input tokens: `10304`
+- Cache write input tokens: `0`
+- Max prompt estimate seen: `5614`
+- Max completion cap seen: `4096`
+- First request prompt estimate: `2577`
+- First request raw prompt estimate: `2577`
+- First request compacted prompt estimate: `n/a`
+- First request first-token ms: `30776`
+- First model turn started: `true`
+- Bootstrap phase: `first_task_model_request`
+- Bootstrap phase detail: `first benchmark task model request started`
+- First task model request seen: `true`
+- Bootstrap elapsed ms before first task request: `1006`
+- Pre-model bootstrap stalled: `false`
+- Bootstrap stall class: `n/a`
+- First action emitted: `true`
+- Task model call count: `3`
+- Tool call count: `16`
+- Edit count: `6`
+- Read count: `8`
+- Write count: `6`
+- Rolled-back write count: `0`
+- Command execution count: `2`
+- Non-support edit count: `6`
+- Rolled-back non-support edit count: `0`
+- Fast loop command seen: `false`
+- Agent final evaluate command seen: `false`
+- Final evaluate command seen: `false`
+- Evaluation command seen: `true`
+- Host evaluation commands run: `1`
+- Text-only action failure: `false`
+- Watchdog near limit: `true`
+- Watchdog triggered: `false`
+- Widening happened: `false`
+- Lines added: `58`
+- Lines removed: `0`
+- Mistakes corrected: `0`
+- Validation commands run: `1`
+- Evaluation commands run: `1`
+- Deterministic evaluation passed: `true`
+- Run dir: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release`
+- Sandbox root: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox`
+- Exit code: `0`
+- Primary failure: `none`
+- Setup failure class: `none`
+- Last failure class: `success`
+- Judge: passed=true model=qwen/qwen3-coder-480b-a35b-instruct summary=The agent successfully implemented the create-release configuration feature
+- Judge rationale: The agent correctly modified all required files (config.rs, tasks.rs, github.rs, init.rs, config.md, and the CI template) to add the create-release configuration option. The evaluation passed, indicating the implementation works as expected. The changes are focused on the core functionality without unnecessary modifications, and the integration test axolotlsay_edit_existing passed, confirming the fix is correct.
+- Reset outcome: passed=true exit_code=0 duration_ms=365
+- Candidate models: `qwen/qwen3-coder-480b-a35b-instruct`
+- Challenge: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/cases/09-rust-swebench-cargo-dist-create-release` condition=`proof-full` workspace=`/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full`
+- Prompt token series by turn: step1=2577 raw=2577 compacted=n/a cap=4096 | step2=3871 raw=3871 compacted=n/a cap=4096 | step3=5614 raw=5614 compacted=n/a cap=4096
+- Read range observations: START_HERE.md requested=none honored=none | REFERENCE.md requested=none honored=none | SUCCESS.md requested=none honored=none | cargo-dist/src/config.rs requested=none honored=none | cargo-dist/src/tasks.rs requested=none honored=none | cargo-dist/src/backend/ci/github.rs requested=none honored=none | cargo-dist/src/init.rs requested=none honored=none
+- Repair required: `false`
+- Repair phase terminal: `idle`
+- Implementation target lease: `cargo-dist/src/backend/ci/github.rs`
+- Failure-anchor reread: attempted=`false` honored=`false`
+- Implementation reread: allowed=`false` attempted=`false` honored=`false`
+- Patch packet injected: `false`
+- Fast-loop rerun match kind: `exact_fast_loop`
+- Agent scorecard: parser_recovery=`1` line_tools=`0` controller_reads=`0` redundant_reads=`0` first_write=`3` repeated_edits=`0` bare_replace_block_retries=`0` validation_rejects=`0` test_edit_rejects=`0` target_redirects=`0` evidence_fixations=`0` anchors=`0` syntax_previews=`0`/`0` prose_recoveries=`0` classification=`success`
+- Repair submode: entered=`false` turns=`0` invalid_streak_max=`0` write_locked=`false` write_refusals=`0` scaffold_offered=`false` scaffold_honored=`false` write_emitted=`false` soft_budget_inefficient=`false`
+- Repair-phase invalid action count: `0`
+- Post-fast-loop patch attempted: `true`
+- Post-fast-loop validation rerun attempted: `true`
+- Full validation requested before fast loop: `false`
+
+## Attempts
+- Attempt 1: executor=native, stop=Success, tokens=24033, requests=3, prompt_est=5614, max_tokens=4096, visible=n/a, collector=n/a, evaluation=true, judge=true
+  - Tokens: input=23791 output=242 reasoning=0 cache_read=10304 cache_write=0
+  - Files changed: book/src/config.md, cargo-dist/src/backend/ci/github.rs, cargo-dist/src/config.rs, cargo-dist/src/init.rs, cargo-dist/src/tasks.rs, cargo-dist/templates/ci/github_ci.yml.j2
+  - Ignored support-file changes: .quorp/challenge-capsule.json, REFERENCE.md, START_HERE.md, SUCCESS.md, benchmark.json
+  - Validations: custom(1)
+  - Fast-loop validation status: green: fast-loop
+  - Repair required: false
+  - Repair phase terminal: idle
+  - Failure-anchor reread: attempted=false honored=false
+  - Implementation reread: allowed=false attempted=false honored=false
+  - Patch packet injected: false
+  - Fast-loop rerun match kind: exact_fast_loop
+  - Implementation target lease: cargo-dist/src/backend/ci/github.rs
+  - Agent scorecard: parser_recovery=1 line_tools=0 controller_reads=0 redundant_reads=0 first_write=3 repeated_edits=0 bare_replace_block_retries=0 validation_rejects=0 test_edit_rejects=0 target_redirects=0 evidence_fixations=0 anchors=0 syntax_previews=0/0 prose_recoveries=0
+  - Repair submode: entered=false turns=0 invalid_streak_max=0 write_locked=false write_refusals=0 scaffold_offered=false scaffold_honored=false write_emitted=false rolled_back_writes=0 rolled_back_non_support=0 soft_budget_inefficient=false
+  - Repair-phase invalid action count: 0
+  - Post-fast-loop patch attempted: true
+  - Post-fast-loop validation rerun attempted: true
+  - Full validation requested before fast loop: false
+  - Prompt token series: step1=2577 | step2=3871 | step3=5614
+  - Read ranges: START_HERE.md [none -> none] | REFERENCE.md [none -> none] | SUCCESS.md [none -> none] | cargo-dist/src/config.rs [none -> none] | cargo-dist/src/tasks.rs [none -> none] | cargo-dist/src/backend/ci/github.rs [none -> none] | cargo-dist/src/init.rs [none -> none]
+  - Safety: nvidia_qwen_benchmark watchdog_near_limit=true watchdog_triggered=false

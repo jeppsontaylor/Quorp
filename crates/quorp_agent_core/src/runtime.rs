@@ -1,7 +1,9 @@
 use std::collections::{BTreeSet, VecDeque};
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Condvar, Mutex};
+use std::thread;
+use std::time::Duration;
 
 use futures::future::BoxFuture;
 use serde::Serialize;
@@ -714,7 +716,7 @@ const MIN_RUNTIME_EVENT_QUEUE_CAPACITY: usize = 2;
 #[derive(Debug, Clone)]
 pub struct RuntimeEventSubscription {
     subscriber_name: Arc<str>,
-    queue: Arc<Mutex<VecDeque<RuntimeEvent>>>,
+    queue: Arc<RuntimeEventQueue>,
     capacity: usize,
 }
 
@@ -728,15 +730,71 @@ impl RuntimeEventSubscription {
     }
 
     pub fn drain(&self) -> Vec<RuntimeEvent> {
-        let mut queue = self.queue.lock().expect("runtime event subscription lock");
+        let mut queue = self
+            .queue
+            .queue
+            .lock()
+            .expect("runtime event subscription lock");
         queue.drain(..).collect()
+    }
+
+    pub fn wait_for_events(&self, timeout: Duration) -> Vec<RuntimeEvent> {
+        let queue = self
+            .queue
+            .queue
+            .lock()
+            .expect("runtime event subscription lock");
+        let (mut queue, _) = self
+            .queue
+            .wake_signal
+            .wait_timeout_while(queue, timeout, |queue| queue.is_empty())
+            .expect("runtime event subscription wait");
+        queue.drain(..).collect()
+    }
+
+    pub fn notify_all(&self) {
+        self.queue.wake_signal.notify_all();
+    }
+}
+
+#[derive(Debug)]
+struct RuntimeEventQueue {
+    queue: Mutex<VecDeque<RuntimeEvent>>,
+    wake_signal: Condvar,
+}
+
+impl RuntimeEventQueue {
+    fn new() -> Self {
+        Self {
+            queue: Mutex::new(VecDeque::new()),
+            wake_signal: Condvar::new(),
+        }
     }
 }
 
 struct RuntimeEventSubscriber {
     name: Arc<str>,
-    queue: Arc<Mutex<VecDeque<RuntimeEvent>>>,
+    queue: Arc<RuntimeEventQueue>,
     capacity: usize,
+}
+
+#[derive(Debug)]
+pub struct RuntimeEventWorker {
+    subscription: RuntimeEventSubscription,
+    stop_flag: Arc<AtomicBool>,
+    join_handle: Option<thread::JoinHandle<()>>,
+}
+
+impl RuntimeEventWorker {
+    pub fn stop(mut self) -> std::thread::Result<()> {
+        self.stop_flag.store(true, Ordering::Relaxed);
+        self.subscription.notify_all();
+        if let Some(join_handle) = self.join_handle.take() {
+            join_handle.join()
+        } else {
+            Ok(())
+        }
+    }
 }
 
 #[derive(Default)]
@@ -795,7 +853,7 @@ impl RuntimeEventFanout {
     ) -> RuntimeEventSubscription {
         let capacity = capacity.max(MIN_RUNTIME_EVENT_QUEUE_CAPACITY);
         let subscriber_name: Arc<str> = Arc::from(subscriber_name.into());
-        let queue = Arc::new(Mutex::new(VecDeque::new()));
+        let queue = Arc::new(RuntimeEventQueue::new());
         self.subscribers
             .lock()
             .expect("runtime event fanout lock")
@@ -808,6 +866,38 @@ impl RuntimeEventFanout {
             subscriber_name,
             queue,
             capacity,
+        }
+    }
+
+    pub fn spawn_worker<F>(
+        &self,
+        subscription: RuntimeEventSubscription,
+        handler: F,
+    ) -> RuntimeEventWorker
+    where
+        F: FnMut(RuntimeEvent) + Send + 'static,
+    {
+        let stop_flag = Arc::new(AtomicBool::new(false));
+        let worker_stop_flag = stop_flag.clone();
+        let worker_subscription = subscription.clone();
+        let join_handle = thread::spawn(move || {
+            let mut handler = handler;
+            loop {
+                if worker_stop_flag.load(Ordering::Relaxed) {
+                    for event in worker_subscription.drain() {
+                        handler(event);
+                    }
+                    break;
+                }
+                for event in worker_subscription.wait_for_events(Duration::from_millis(50)) {
+                    handler(event);
+                }
+            }
+        });
+        RuntimeEventWorker {
+            subscription,
+            stop_flag,
+            join_handle: Some(join_handle),
         }
     }
 }
@@ -824,13 +914,16 @@ impl RuntimeEventSink for RuntimeEventFanout {
         };
 
         for subscriber in subscribers.iter() {
-            match subscriber.queue.lock() {
-                Ok(mut queue) => push_bounded_event(
-                    &mut queue,
-                    &subscriber.name,
-                    subscriber.capacity,
-                    event.clone(),
-                ),
+            match subscriber.queue.queue.lock() {
+                Ok(mut queue) => {
+                    push_bounded_event(
+                        &mut queue,
+                        &subscriber.name,
+                        subscriber.capacity,
+                        event.clone(),
+                    );
+                    subscriber.queue.wake_signal.notify_all();
+                }
                 Err(error) => {
                     log::error!(
                         "runtime event subscriber `{}` lock poisoned; event was not delivered: {error}",

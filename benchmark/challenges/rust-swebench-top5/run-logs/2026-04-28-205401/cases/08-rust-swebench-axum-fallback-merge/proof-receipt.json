@@ -1,0 +1,48 @@
+{
+  "receipt_version": 1,
+  "run_id": "Make router fallback merges panic instead of silently discarding behavior:08-rust-swebench-axum-fallback-merge",
+  "source_commit": null,
+  "source_hash": null,
+  "sandbox_path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox",
+  "changed_files": [
+    "axum/src/routing/mod.rs"
+  ],
+  "validation": [
+    {
+      "command": "custom(1)",
+      "cwd": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full",
+      "exit_code": 0,
+      "raw_log_path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/attempt-001/agent/events.jsonl",
+      "raw_log_sha256": "4d1099f6f6bf2d7bbe1d101ec6729556a20eba96696c6a6fd81151832930a832"
+    },
+    {
+      "command": "./evaluate.sh proof-full",
+      "cwd": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/sandbox/workspace/proof-full",
+      "exit_code": 0,
+      "raw_log_path": null,
+      "raw_log_sha256": null
+    }
+  ],
+  "evaluator_result": "success",
+  "raw_artifacts": {
+    "benchmark_report_json": {
+      "path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/benchmark-report.json",
+      "sha256": "d0b67d38b0a70f246d56df598ade5f34bbbee7ea1e15ec591b01cc036965aed4"
+    },
+    "benchmark_report_markdown": {
+      "path": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/08-rust-swebench-axum-fallback-merge/benchmark-report.md",
+      "sha256": "a09e19a2ab8d6c96efd1e63d10e44301997d27f4b0dc08f161aca32f607a0a3e"
+    }
+  },
+  "provider": "nvidia",
+  "model": "qwen/qwen3-coder-480b-a35b-instruct",
+  "usage": {
+    "cache_read_input_tokens": 39168,
+    "cache_write_input_tokens": 0,
+    "completion_tokens": 714,
+    "prompt_tokens": 61988,
+    "reasoning_tokens": 0,
+    "total_billed_tokens": 62702
+  },
+  "residual_risks": []
+}

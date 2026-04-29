@@ -199,7 +199,7 @@ pub(crate) fn request_challenge_judge_completion(
                     idle_timeout_ms: Some(20_000),
                     total_timeout_ms: Some(90_000),
                 }),
-                safety_mode_label: Some(context.manifest.safety_mode_label.clone()),
+                safety_mode_label: None,
                 prompt_compaction_policy: None,
                 capture_scope: Some("evaluation".to_string()),
                 capture_call_class: Some("evaluation".to_string()),

@@ -1,0 +1,109 @@
+{
+  "content": "{\n  \"passed\": true,\n  \"summary\": \"The agent successfully exposed compile_intermediates API without regressing existing functionality\",\n  \"rationale\": \"The evaluation passed with all tests successful, indicating the agent correctly implemented the compile_intermediates API while preserving existing object-path naming behavior. The solution involved minimal changes to src/lib.rs as expected, and the final verification command ./evaluate.sh proof-full completed successfully.\"\n}",
+  "parsed": {
+    "error": null,
+    "model_id": "qwen/qwen3-coder-480b-a35b-instruct",
+    "passed": true,
+    "rationale": "The evaluation passed with all tests successful, indicating the agent correctly implemented the compile_intermediates API while preserving existing object-path naming behavior. The solution involved minimal changes to src/lib.rs as expected, and the final verification command ./evaluate.sh proof-full completed successfully.",
+    "raw_response": {
+      "passed": true,
+      "rationale": "The evaluation passed with all tests successful, indicating the agent correctly implemented the compile_intermediates API while preserving existing object-path naming behavior. The solution involved minimal changes to src/lib.rs as expected, and the final verification command ./evaluate.sh proof-full completed successfully.",
+      "summary": "The agent successfully exposed compile_intermediates API without regressing existing functionality"
+    },
+    "summary": "The agent successfully exposed compile_intermediates API without regressing existing functionality"
+  },
+  "raw_response": {
+    "provider_response": {
+      "choices": [],
+      "created": 1777431942,
+      "id": "chatcmpl-1958766e-e3fc-4173-86ab-d9731c573c0f",
+      "model": "qwen/qwen3-coder-480b-a35b-instruct",
+      "object": "chat.completion.chunk",
+      "service_tier": null,
+      "stream_payload_sha256": [
+        "32b212cc4b39dca6badcd3ddd44484044de9bef39719bedad72bca01953abdaf",
+        "6eea5fcff029a85a7f62f1aa362db146832259e9d022efd361e51721f5133d9d",
+        "f478af243247d3802dc3214e9a868cad195c0417a226e6d41c86d0c61314122f",
+        "e46c5041e68a1d5ce00b73fbd07dd94bed50baa2833bb0922323b70e3d3fc8af",
+        "bfffab76c82299eff1efc5b034b86b1b28311b8591e7ebfd169f2cbf7bd0ad90",
+        "9571e7892eadad0177555dfd9ea1aa2a53f5b75abc274e629626c02af2431321",
+        "2509e98434570fa1468384f15cea2ea8e987cbcdcc787c8744ede284aacb0550",
+        "36daca9925d42d854b5b179012ef877460e4e760c244976bd3b47ce2c39a8ed7",
+        "4295f3653ec36bbe6573da5b15bf2e11df70453cade98a7034c74296cb58fdf3",
+        "48e4c8cf248d861c5afa23a3ff41f97c3ef4d13b5698df1dde3d1739e2b8bf9e",
+        "17e9d19613210a1f5503bb4fcea1c4a261e2579121c1c9485b50eb140c378d7b",
+        "02ad356a62f937c768be823eb688dc790a5784aae1929c58aa1c803765599e58",
+        "94d6e238ebe8a4d0030ff5bd749bae451a1deeb09227f9af01c5be27f3887375",
+        "bcabb33a774f122ae292b587aaf9d686224bf674da25167f3543b096e93ec311",
+        "42888a295e98ec902dbc37041ce4cd18b4a2b844f9075e75d405d8fb92f0c071",
+        "22c39472c83c593082e03341060ce0785254b31ba4099b83a6a6ca3538be4346",
+        "29dd67a464d11141994852d03a9b27e897ae239de646e4b391551a4d66904215",
+        "e15584751bdc2bd8a9711051eee12fe4be7e8fabf92187d0adfb1e9ab12ed5e2",
+        "2d479d16247177ae6241e4fd9a923fd29586bf3dc5d10ad0cbe6bb76d17077c2",
+        "9571e7892eadad0177555dfd9ea1aa2a53f5b75abc274e629626c02af2431321",
+        "6e594e5f1bc6f61972f21d9c170bdd301f9a58b5c22cf1c0fc8850d5656d64fa",
+        "f7f0b4c87b056a787d0fa3124b6a0c95a8a341583b13246c0788c46b674c49e7",
+        "bfbd94bca0d454d0d91238009aad23bc35c6f462c63bce99086eec5ff0ebbdd4",
+        "83e22b8f010e5d34b234971826e63347b71cb9a47f531e83b5b6c222c4c60b8a",
+        "f3e6f6e0f52b7b2e6d37909f4b4a410ecea0b53161a63ab52934615b9a420ed0",
+        "cc7ec4d58ddce6f57cca2e587a337c1842d10b8867f78f726af435902e082e1a",
+        "a78526c8a4ea1a0ed58f714f13ea63cb3aa52faec9d88d84d06a60857a0dc4f1",
+        "2509e98434570fa1468384f15cea2ea8e987cbcdcc787c8744ede284aacb0550",
+        "6b53643d15d9147c8115dc59535a533d5d38f798f0b6d252f415f497166ab2d8",
+        "6f7351c40f295af44e7782234c6f32fa2082d2f4079aa1d45866ae3e69edf43d",
+        "71ba1bef2d8bf5986e9cdb6b5b9a2b2c75a57e801bcac0f2a6d74ec5fca495e3",
+        "7b1a0444f16b345b34f99711dce552a1d68eee1624851d8ca400e89f571f1786",
+        "17e9d19613210a1f5503bb4fcea1c4a261e2579121c1c9485b50eb140c378d7b",
+        "a2a1dde40f0d28c64a21f5418c83d7ec8417f08af2870ab2ca5c9711c3108619",
+        "e71de6ac34a9bd29a7986865770ad34409c0824197c781cf7531df99ecfed596",
+        "3c3f796ff06ec04c47b21a81e449ce51b79cac1c7227ace0aa1d2496d87fc643",
+        "413eee864f6dcf70e52f7cea0625138c1c8a3415a482c6cb225f060a8441863c",
+        "4e45ffe016ec7b0c2ddf28cfd4d05ce97e8212b20d33c2d3d3b27aa480aac4ab",
+        "1ea47aab0a523cca908ff1393da60349514f0f812359ddd5ce5f156cb1509995",
+        "321dc5098445e991f15fce4b3721a71341fa726d7ada07c40e212799bafb469c",
+        "31926ac862690fe7278c68b39169941cb1459d3acb7c0992453d0f0c6ce40af1",
+        "e43e109187bb785db623e44335f32e4c8e9f37479ca0b6241ce7533927555968",
+        "2dfa9eb84eaddf912c29937561a300c69e36196cbe40f1cf3dadf749fc40a935",
+        "1c83b2153cda4309e373d9db5243d6c1fd5490c131fd857a5b654c1a4010b456",
+        "68186b8e772248d58d979873698c9ed6c00913e8dc488c6e5dcee51fb9a5613c",
+        "90e845b23292af502ea718c7ab36d27662352bbcfd6c3c6a73067f817c779b9b",
+        "07f8bd9beca8affe11ef599cf2c2090d054cea7f237f37e1630ca06cf728f0a9",
+        "c0858b651fca599de6dc674dccf6f1c80305ed8ed448fdbebf16ed35898d637b",
+        "2551dd299aa75572b27618e3b811b55cd693c2e8d79a52bee148828349092881",
+        "93025cd32d93da150e42afcc948a12ba6e01c63aed4ff47550bf36c09664b968",
+        "f020a95149a679a4e0f7a0cd13a1a1e58e25054fb0c9472e5211c15968a8315e",
+        "733ef453a5d5f4a83a47cf99f1957599cf9eb0a54315248a50f5ef0250195ec7",
+        "c20d81ffe055bd64351224dd20cce702594edf893d5853ce61bab34cba12c404",
+        "8352d95bc6141650f358d43341332c8b313a0a188654d68b0449000a8b1b35f4",
+        "e00e612d09c468e9aa2f87887c2a99eb3f7cfa89a6fbff0fbaf68e91b9d4007b",
+        "37d7b58c13f181a70b07b732cb224cb7520e0d9fdf07fb7d185186902df4fc4e"
+      ],
+      "system_fingerprint": null,
+      "usage": {
+        "completion_tokens": 87,
+        "prompt_tokens": 5246,
+        "prompt_tokens_details": {
+          "audio_tokens": null,
+          "cached_tokens": 2368
+        },
+        "total_tokens": 5333
+      }
+    },
+    "routing": {
+      "auth_mode": "nvidia_api_key",
+      "candidate_models": [
+        "qwen/qwen3-coder-480b-a35b-instruct"
+      ],
+      "comparable": true,
+      "effective_model": "qwen/qwen3-coder-480b-a35b-instruct",
+      "effective_provider": "nvidia",
+      "fallback_reason": null,
+      "provider_base_url": "https://integrate.api.nvidia.com/v1",
+      "proxy_visible_remote_egress_expected": true,
+      "requested_model": "qwen/qwen3-coder-480b-a35b-instruct",
+      "requested_provider": "nvidia",
+      "routing_mode": "remote_api",
+      "used_fallback": false
+    }
+  }
+}

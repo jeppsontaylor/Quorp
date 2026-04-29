@@ -513,3 +513,31 @@ fn runtime_event_fanout_records_subscriber_backpressure() {
             if phase == "third" && detail.is_none()
     ));
 }
+
+#[test]
+fn runtime_event_worker_drains_subscriber_queue() {
+    let fanout = RuntimeEventFanout::new();
+    let subscription = fanout.subscribe_named_with_capacity("memory_writer", 4);
+    let (event_tx, event_rx) = std::sync::mpsc::channel();
+
+    let worker = fanout.spawn_worker(subscription.clone(), move |event| {
+        event_tx.send(event).expect("send runtime event");
+    });
+
+    fanout.emit(RuntimeEvent::PhaseChanged {
+        phase: "planning".to_string(),
+        detail: Some("worker test".to_string()),
+    });
+
+    let delivered = event_rx
+        .recv_timeout(std::time::Duration::from_secs(1))
+        .expect("worker should receive runtime event");
+    assert!(matches!(
+        delivered,
+        RuntimeEvent::PhaseChanged { phase, detail }
+            if phase == "planning" && detail.as_deref() == Some("worker test")
+    ));
+
+    worker.stop().expect("worker should stop cleanly");
+    assert!(subscription.drain().is_empty());
+}

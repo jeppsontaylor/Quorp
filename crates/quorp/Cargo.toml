@@ -69,7 +69,14 @@ quorp_log.workspace = true
 quorp_agent_core = { path = "../quorp_agent_core" }
 quorp_lsp.workspace = true
 quorp_benchmark.workspace = true
+quorp_context.workspace = true
+quorp_ids.workspace = true
+quorp_memory.workspace = true
+quorp_memory_model.workspace = true
+quorp_patch_vm.workspace = true
+quorp_rule_forge.workspace = true
 quorp_tracing.workspace = true
+quorp_verify.workspace = true
 
 [target.'cfg(any(target_os = "linux", target_os = "freebsd"))'.dependencies]
 ashpd.workspace = true

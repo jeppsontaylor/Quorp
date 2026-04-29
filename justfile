@@ -18,6 +18,7 @@ deep: medium
 # Security: triggered on auth/secrets/unsafe/FFI/CI/shell/deser/path changes.
 security:
     cargo audit
+    ./script/quorp-audit-gaps
     gitleaks detect --source . --redact || true
     ./script/check-loc-cap 2000
 

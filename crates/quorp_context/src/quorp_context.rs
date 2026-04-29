@@ -19,6 +19,9 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod index;
+pub use index::*;
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompileContext {
     pub git_sha: Option<String>,
@@ -71,6 +74,8 @@ impl<'a> ContextCompiler<'a> {
                             trust: Trust::Recalled,
                             cost_tokens: cost,
                             source: Source::Memory,
+                            source_hash: None,
+                            selection_reason: Some("memory recall".to_string()),
                         },
                     });
                 } else {
@@ -119,8 +124,37 @@ impl<'a> ContextCompiler<'a> {
         let mut seen = pack_seen_keys(&pack);
         let mut budget_used = pack.budget_used;
         let agent_contracts = load_agent_contracts(workspace_root)?;
+        let index_reader = IndexReader::open_if_fresh(workspace_root)?;
+        let lexical_limit = 4usize;
 
         for anchor in &request.anchors {
+            if let Some(index_reader) = index_reader.as_ref() {
+                match anchor {
+                    Anchor::Symbol(symbol) => {
+                        for excerpt in index_reader.symbol_excerpts(symbol)? {
+                            push_budgeted_item(
+                                &mut pack,
+                                &mut seen,
+                                &mut budget_used,
+                                request.budget,
+                                excerpt,
+                            );
+                        }
+                    }
+                    Anchor::Query(query) => {
+                        for excerpt in index_reader.lexical_excerpts(query, lexical_limit)? {
+                            push_budgeted_item(
+                                &mut pack,
+                                &mut seen,
+                                &mut budget_used,
+                                request.budget,
+                                excerpt,
+                            );
+                        }
+                    }
+                    Anchor::File(_) | Anchor::Range(_, _) => {}
+                }
+            }
             for excerpt in anchor_excerpts(workspace_root, anchor)? {
                 push_budgeted_item(
                     &mut pack,
@@ -157,6 +191,9 @@ impl<'a> ContextCompiler<'a> {
         pack.budget_used = budget_used;
         pack.handles
             .sort_by(|left, right| left.label.cmp(&right.label));
+        if let Some(index_reader) = index_reader.as_ref() {
+            index_reader.record_context_pack(&pack.pack_id, &pack.items)?;
+        }
         Ok(pack)
     }
 }
@@ -481,6 +518,8 @@ fn anchor_excerpts(workspace_root: &Path, anchor: &Anchor) -> Result<Vec<Context
             trust: Trust::Source,
             cost_tokens: cost,
             source: Source::File,
+            source_hash: Some(stable_text_hash(text.as_bytes())),
+            selection_reason: Some("anchored file excerpt".to_string()),
         },
     }])
 }
@@ -506,6 +545,7 @@ fn lexical_excerpts(workspace_root: &Path, anchor: &Anchor) -> Result<Vec<Contex
         .into_iter()
         .take(4)
         .map(|hit| {
+            let source_hash = stable_text_hash(hit.text.as_bytes());
             let cost = estimate_tokens(&hit.text);
             ContextItem::Excerpt {
                 chunk: ChunkId::new(format!(
@@ -523,6 +563,8 @@ fn lexical_excerpts(workspace_root: &Path, anchor: &Anchor) -> Result<Vec<Contex
                     trust: Trust::Source,
                     cost_tokens: cost,
                     source: Source::Lexical,
+                    source_hash: Some(source_hash),
+                    selection_reason: Some(format!("lexical fallback hit for query `{query}`")),
                 },
             }
         })
@@ -648,6 +690,7 @@ fn slice_lines(text: &str, range: LineRange) -> String {
 }
 
 fn contract_item(source: Source, title: String, body: String, relevance: f32) -> ContextItem {
+    let source_hash = stable_text_hash(body.as_bytes());
     let cost = estimate_tokens(&body);
     ContextItem::AgentContract {
         chunk: ChunkId::new(format!("{source:?}:{title}")),
@@ -659,8 +702,18 @@ fn contract_item(source: Source, title: String, body: String, relevance: f32) ->
             trust: Trust::Derived,
             cost_tokens: cost,
             source,
+            source_hash: Some(source_hash),
+            selection_reason: Some("agent contract".to_string()),
         },
     }
+}
+
+fn stable_text_hash(bytes: &[u8]) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
 }
 
 fn proof_lane_relevance(id: &str) -> f32 {

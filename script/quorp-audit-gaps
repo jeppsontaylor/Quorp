@@ -1,0 +1,78 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+fail() {
+  echo "[quorp-audit-gaps] $1" >&2
+  exit 1
+}
+
+echo "[quorp-audit-gaps] checking roadmap evidence under tips/upgrade/v2"
+
+[[ -d tips/upgrade/v2 ]] || fail "tips/upgrade/v2 is missing"
+[[ -f tips/upgrade/v2/README.md ]] || fail "tips/upgrade/v2/README.md is missing"
+
+tracked_tip_files="$(git ls-files 'tips/upgrade/v2/*')"
+if ! printf '%s\n' "$tracked_tip_files" | grep -q .; then
+  fail "no tracked tips/upgrade/v2/tip*.txt files were found"
+fi
+while IFS= read -r path; do
+  [[ -z "$path" || -e "$path" ]] && continue
+  fail "tracked roadmap evidence file is missing from the worktree: $path"
+done <<< "$tracked_tip_files"
+
+echo "[quorp-audit-gaps] checking benchmark playbook reachability"
+
+playbook_hits="$(
+  rg -n 'maybe_inject_case0[45]_playbook_patch|controller_injection_for_playbook|benchmark_playbook_allows_extra_compacted_action|BenchmarkPlaybook' crates/quorp_agent_core/src || true
+)"
+
+if [[ -n "$playbook_hits" ]]; then
+  unexpected_hits="$(
+    printf '%s\n' "$playbook_hits" | grep -Ev '^(crates/quorp_agent_core/src/runtime\.rs:|crates/quorp_agent_core/src/runtime/(benchmark_playbooks|normalize|path_intel|turn)\.rs:|crates/quorp_agent_core/src/runtime/tests(_chunk_[0-9]+)?\.rs:)' || true
+  )"
+  if [[ -n "$unexpected_hits" ]]; then
+    printf '%s\n' "$unexpected_hits" >&2
+    fail "benchmark playbook helpers are referenced outside the allowed runtime files"
+  fi
+fi
+rg -n -U 'compact_turn_actions\(\s*\n\s*&mut turn,\s*\n\s*state\.policy\.mode == PolicyMode::BenchmarkAutonomous,\s*\n\s*\)' \
+  crates/quorp_agent_core/src/runtime/turn.rs >/dev/null \
+  || fail "benchmark action compaction must be gated on BenchmarkAutonomous policy mode"
+rg -n -U 'allow_benchmark_playbook_extras\s*\n\s*&& turn\.actions\.iter\(\)' \
+  crates/quorp_agent_core/src/runtime/turn.rs >/dev/null \
+  || fail "benchmark playbook compaction extras must require an explicit benchmark gate"
+
+echo "[quorp-audit-gaps] checking native backend write-handler parity"
+
+if ! cmp -s \
+  crates/quorp/src/quorp/tui/native_backend/actions.rs \
+  crates/quorp_session/src/quorp/tui/native_backend/actions.rs
+then
+  fail "main/session native backend action handlers have diverged"
+fi
+
+echo "[quorp-audit-gaps] checking native backend direct writes"
+
+write_hits="$(
+  rg -n 'write_full_file|std::fs::write|fs::write|OpenOptions::new|remove_file|rename\(' \
+    crates/quorp/src/quorp/tui/native_backend/actions.rs \
+    crates/quorp_session/src/quorp/tui/native_backend/actions.rs || true
+)"
+if [[ -n "$write_hits" ]]; then
+  unexpected_writes="$(
+    printf '%s\n' "$write_hits" | grep -Ev ':.*raw_log_path' || true
+  )"
+  if [[ -n "$unexpected_writes" ]]; then
+    printf '%s\n' "$unexpected_writes" >&2
+    fail "native backend action handlers contain direct write paths outside approved artifact/log sinks"
+  fi
+fi
+
+echo "[quorp-audit-gaps] checking repo-wide write-path enforcement"
+./script/quorp-write-path-audit
+
+echo "[quorp-audit-gaps] ok"

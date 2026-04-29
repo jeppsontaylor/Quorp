@@ -144,6 +144,39 @@ fn repairs_json_like_unquoted_keys_for_remote_models() {
 }
 
 #[test]
+fn parses_replace_range_expected_content_hash_alias() {
+    let parsed = parse_agent_turn_response(
+        r#"{
+            "actions": [{
+                "ReplaceRange": {
+                    "path": "src/lib.rs",
+                    "range": {"start_line": 4, "end_line": 8},
+                    "expected_content_hash": "0123456789abcdef",
+                    "replacement": "fn fixed() {}\n"
+                }
+            }],
+            "assistant_message": ""
+        }"#,
+    )
+    .expect("parse")
+    .expect("turn");
+
+    assert!(matches!(
+        &parsed.actions[0],
+        AgentAction::ReplaceRange {
+            path,
+            range,
+            expected_hash,
+            replacement,
+        } if path == "src/lib.rs"
+            && range.start_line == 4
+            && range.end_line == 8
+            && expected_hash == "0123456789abcdef"
+            && replacement == "fn fixed() {}\n"
+    ));
+}
+
+#[test]
 fn parses_preview_edit_tagged_and_flat_forms() {
     let parsed = parse_agent_turn_response(
         r#"{

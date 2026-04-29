@@ -1,0 +1,139 @@
+# Benchmark Report: Fix duration truncation and rounding behavior near the Unix epoch
+- Issue: `07-rust-swebench-chrono-epoch-truncation`
+- Executor: `native`
+- Model: `qwen/qwen3-coder-480b-a35b-instruct`
+- Safety mode: `nvidia_qwen_benchmark`
+- Scenario label: `QuorpRemoteApi`
+- Routing mode: `remote_api`
+- Requested provider: `nvidia`
+- Requested model: `qwen/qwen3-coder-480b-a35b-instruct`
+- Effective provider: `nvidia`
+- Effective model: `qwen/qwen3-coder-480b-a35b-instruct`
+- Used fallback: `false`
+- Comparable run: `true`
+- Provider request id: `chatcmpl-d684f2c0-b3f5-4ef0-b614-debd8a36e635`
+- Routing status: `completed`
+- Repo capsule injected: `true`
+- Reasoning enabled: `false`
+- Path resolution failures: `0`
+- Recovery turns: `1`
+- Action contract: `strict_json_v1`
+- Action contract selected: `strict_json_v1`
+- Action contract fallback reason: `n/a`
+- Attempt lineage: `strict_json_v1`
+- Preview edits: `0` / `0` successful
+- Intent edits: replace_range=`0` (hash_mismatch=`0`), modify_toml=`0`, previews_created=`0`, apply_preview=`0` (hash_mismatch=`0`)
+- Effective prompt compaction: `benchmark-state-packet`
+- Fast-loop validation status: `green: fast-loop`
+- Success: `true`
+- Attempts run: `1` / `1`
+- Total requests: `4`
+- Wall clock ms: `57832`
+- Total billed tokens: `21853`
+- Input tokens (provider billed): `21503`
+- Completion tokens: `350`
+- Reasoning tokens: `0`
+- Cache read input tokens: `8512`
+- Cache write input tokens: `0`
+- Max prompt estimate seen: `7475`
+- Max completion cap seen: `4096`
+- First request prompt estimate: `2002`
+- First request raw prompt estimate: `2002`
+- First request compacted prompt estimate: `n/a`
+- First request first-token ms: `34802`
+- First model turn started: `true`
+- Bootstrap phase: `first_task_model_request`
+- Bootstrap phase detail: `first benchmark task model request started`
+- First task model request seen: `true`
+- Bootstrap elapsed ms before first task request: `1004`
+- Pre-model bootstrap stalled: `false`
+- Bootstrap stall class: `n/a`
+- First action emitted: `true`
+- Task model call count: `4`
+- Tool call count: `7`
+- Edit count: `1`
+- Read count: `4`
+- Write count: `1`
+- Rolled-back write count: `0`
+- Command execution count: `2`
+- Non-support edit count: `1`
+- Rolled-back non-support edit count: `0`
+- Fast loop command seen: `true`
+- Agent final evaluate command seen: `false`
+- Final evaluate command seen: `false`
+- Evaluation command seen: `true`
+- Host evaluation commands run: `1`
+- Text-only action failure: `false`
+- Watchdog near limit: `true`
+- Watchdog triggered: `false`
+- Widening happened: `false`
+- Lines added: `0`
+- Lines removed: `6`
+- Mistakes corrected: `0`
+- Validation commands run: `1`
+- Evaluation commands run: `1`
+- Deterministic evaluation passed: `true`
+- Run dir: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/07-rust-swebench-chrono-epoch-truncation`
+- Sandbox root: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/07-rust-swebench-chrono-epoch-truncation/sandbox`
+- Exit code: `0`
+- Primary failure: `none`
+- Setup failure class: `none`
+- Last failure class: `success`
+- Judge: passed=true model=qwen/qwen3-coder-480b-a35b-instruct summary=The agent successfully fixed the epoch truncation issue in chrono by modifying src/round.rs
+- Judge rationale: All success criteria were met: the fast loop tests pass, the fix addresses the epoch rounding bug without reverting dataset patches, changes are focused on the owning file src/round.rs, and the final evaluation passes. The agent correctly identified and modified the rounding logic near the Unix epoch.
+- Reset outcome: passed=true exit_code=0 duration_ms=252
+- Candidate models: `qwen/qwen3-coder-480b-a35b-instruct`
+- Challenge: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/cases/07-rust-swebench-chrono-epoch-truncation` condition=`proof-full` workspace=`/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/07-rust-swebench-chrono-epoch-truncation/sandbox/workspace/proof-full`
+- Prompt token series by turn: step1=2002 raw=2002 compacted=n/a cap=4096 | step2=5451 raw=5451 compacted=n/a cap=3072 | step3=4314 raw=4314 compacted=n/a cap=3072 | step3=7475 raw=7475 compacted=n/a cap=1536
+- Read range observations: src/round.rs requested=none honored=none | src/round.rs requested=792-824 honored=792-811 | src/round.rs requested=149-276 honored=149-276
+- Failing tests: round::tests::test_duration_round_close_to_epoch, round::tests::test_duration_round_close_to_min_max, round::tests::test_duration_trunc_close_to_epoch
+- Primary failure test: `round::tests::test_duration_round_close_to_min_max`
+- Primary failure location: `src/round.rs:800`
+- Assertion excerpt: `thread 'round::tests::test_duration_round_close_to_min_max' (36208506) panicked at src/round.rs:800:44:`
+- Repair required: `false`
+- Repair phase terminal: `idle`
+- Diagnostic class: `test_assertion_failure`
+- Implementation target lease: `src/round.rs`
+- Failure-anchor reread: attempted=`false` honored=`false`
+- Implementation reread: allowed=`false` attempted=`false` honored=`false`
+- Patch packet injected: `true`
+- Patch packet honored range: `149-276`
+- Recommended rerun command: `cargo test --quiet --lib round::tests::test_duration_round_close_to_epoch round::tests::test_duration_round_close_to_min_max round::tests::test_duration_trunc_close_to_epoch`
+- Fast-loop rerun match kind: `exact_fast_loop`
+- Agent scorecard: parser_recovery=`1` line_tools=`0` controller_reads=`1` redundant_reads=`0` first_write=`3` repeated_edits=`0` bare_replace_block_retries=`0` validation_rejects=`0` test_edit_rejects=`0` target_redirects=`0` evidence_fixations=`0` anchors=`0` syntax_previews=`0`/`0` prose_recoveries=`0` classification=`success`
+- Repair submode: entered=`true` turns=`3` invalid_streak_max=`0` write_locked=`false` write_refusals=`0` scaffold_offered=`false` scaffold_honored=`false` write_emitted=`true` soft_budget_inefficient=`false`
+- Repair-phase invalid action count: `0`
+- Post-fast-loop patch attempted: `true`
+- Post-fast-loop validation rerun attempted: `true`
+- Full validation requested before fast loop: `false`
+
+## Attempts
+- Attempt 1: executor=native, stop=Success, tokens=21853, requests=4, prompt_est=7475, max_tokens=4096, visible=n/a, collector=n/a, evaluation=true, judge=true
+  - Tokens: input=21503 output=350 reasoning=0 cache_read=8512 cache_write=0
+  - Files changed: src/round.rs
+  - Ignored support-file changes: .quorp/challenge-capsule.json, REFERENCE.md, START_HERE.md, SUCCESS.md, benchmark.json
+  - Validations: custom(1)
+  - Fast-loop validation status: green: fast-loop
+  - Failing tests: round::tests::test_duration_round_close_to_epoch, round::tests::test_duration_round_close_to_min_max, round::tests::test_duration_trunc_close_to_epoch
+  - Primary failure test: round::tests::test_duration_round_close_to_min_max
+  - Primary failure location: src/round.rs:800
+  - Assertion excerpt: thread 'round::tests::test_duration_round_close_to_min_max' (36208506) panicked at src/round.rs:800:44:
+  - Repair required: false
+  - Repair phase terminal: idle
+  - Failure-anchor reread: attempted=false honored=false
+  - Implementation reread: allowed=false attempted=false honored=false
+  - Patch packet injected: true
+  - Patch packet honored range: 149-276
+  - Recommended rerun command: cargo test --quiet --lib round::tests::test_duration_round_close_to_epoch round::tests::test_duration_round_close_to_min_max round::tests::test_duration_trunc_close_to_epoch
+  - Fast-loop rerun match kind: exact_fast_loop
+  - Diagnostic class: test_assertion_failure
+  - Implementation target lease: src/round.rs
+  - Agent scorecard: parser_recovery=1 line_tools=0 controller_reads=1 redundant_reads=0 first_write=3 repeated_edits=0 bare_replace_block_retries=0 validation_rejects=0 test_edit_rejects=0 target_redirects=0 evidence_fixations=0 anchors=0 syntax_previews=0/0 prose_recoveries=0
+  - Repair submode: entered=true turns=3 invalid_streak_max=0 write_locked=false write_refusals=0 scaffold_offered=false scaffold_honored=false write_emitted=true rolled_back_writes=0 rolled_back_non_support=0 soft_budget_inefficient=false
+  - Repair-phase invalid action count: 0
+  - Post-fast-loop patch attempted: true
+  - Post-fast-loop validation rerun attempted: true
+  - Full validation requested before fast loop: false
+  - Prompt token series: step1=2002 | step2=5451 | step3=4314 | step3=7475
+  - Read ranges: src/round.rs [none -> none] | src/round.rs [792-824 -> 792-811] | src/round.rs [149-276 -> 149-276]
+  - Safety: nvidia_qwen_benchmark watchdog_near_limit=true watchdog_triggered=false

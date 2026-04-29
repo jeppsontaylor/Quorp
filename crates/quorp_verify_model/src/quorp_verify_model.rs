@@ -128,9 +128,60 @@ pub struct ProofPacket {
     pub truncated: bool,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum ProofNodeStatus {
+    Pass,
+    Fail,
+    Skipped,
+    Cancelled,
+    Cached,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofArtifactRef {
+    pub role: String,
+    pub path: PathBuf,
+    pub sha256: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProofNode {
+    pub id: String,
+    pub stage_id: String,
+    pub status: ProofNodeStatus,
+    pub summary: String,
+    #[serde(default)]
+    pub artifacts: Vec<ProofArtifactRef>,
+    #[serde(default)]
+    pub cache_key: Option<CacheKey>,
+    #[serde(default)]
+    pub from_cache: bool,
+    #[serde(default)]
+    pub packet: Option<ProofPacket>,
+    #[serde(default)]
+    pub report: Option<StageReport>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ProofEdge {
+    pub from: String,
+    pub to: String,
+    #[serde(default)]
+    pub label: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ProofDag {
+    pub run_id: VerifyRunId,
+    #[serde(default)]
+    pub provenance: serde_json::Value,
+    pub nodes: Vec<ProofNode>,
+    pub edges: Vec<ProofEdge>,
+}
+
 /// Content-addressed cache key components — full key is the blake3 hash
 /// of the concatenation in canonical order.
-#[derive(Debug, Clone, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct CacheKey {
     pub git_sha: String,
     pub changed_files_hash: String,
@@ -233,5 +284,50 @@ mod tests {
         assert_eq!(back.command.exit_code, 1);
         assert_eq!(back.diagnostics[0].code.as_deref(), Some("E0308"));
         assert_eq!(back.raw_log_ref.path, PathBuf::from("logs/check.ndjson"));
+    }
+
+    #[test]
+    fn proof_dag_serialization_preserves_node_and_edge_order() {
+        let dag = ProofDag {
+            run_id: VerifyRunId::new("verify-001"),
+            provenance: serde_json::json!({"source": "test"}),
+            nodes: vec![
+                ProofNode {
+                    id: "node-a".to_string(),
+                    stage_id: "fmt".to_string(),
+                    status: ProofNodeStatus::Pass,
+                    summary: "formatted".to_string(),
+                    artifacts: Vec::new(),
+                    cache_key: None,
+                    from_cache: false,
+                    packet: None,
+                    report: None,
+                },
+                ProofNode {
+                    id: "node-b".to_string(),
+                    stage_id: "test".to_string(),
+                    status: ProofNodeStatus::Fail,
+                    summary: "failed".to_string(),
+                    artifacts: Vec::new(),
+                    cache_key: None,
+                    from_cache: false,
+                    packet: None,
+                    report: None,
+                },
+            ],
+            edges: vec![ProofEdge {
+                from: "node-a".to_string(),
+                to: "node-b".to_string(),
+                label: Some("then".to_string()),
+            }],
+        };
+
+        let json = serde_json::to_string(&dag).unwrap();
+        let back: ProofDag = serde_json::from_str(&json).unwrap();
+
+        assert_eq!(back.nodes[0].id, "node-a");
+        assert_eq!(back.nodes[1].id, "node-b");
+        assert_eq!(back.edges[0].from, "node-a");
+        assert_eq!(back.edges[0].to, "node-b");
     }
 }

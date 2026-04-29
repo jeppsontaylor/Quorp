@@ -17,6 +17,7 @@ quorp_core.workspace = true
 quorp_ids = { workspace = true }
 globset = { workspace = true }
 serde = { workspace = true, features = ["derive"] }
+shlex.workspace = true
 
 [dev-dependencies]
 serde_json.workspace = true

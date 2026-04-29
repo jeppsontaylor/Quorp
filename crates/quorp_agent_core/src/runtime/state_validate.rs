@@ -431,7 +431,7 @@ impl AgentTaskState {
             && !requirement.exact_reread_completed
         {
             return Some(AgentAction::ReadFile {
-                path: requirement.path.clone(),
+                path: canonical_path(&requirement.path),
                 range: if Self::repair_requirement_prefers_full_file(requirement) {
                     None
                 } else {
@@ -450,7 +450,7 @@ impl AgentTaskState {
             | BenchmarkRepairPhase::Idle => return None,
         };
         Some(AgentAction::ReadFile {
-            path: repair_state.owner_path.clone(),
+            path: canonical_path(&repair_state.owner_path),
             range: Some(range),
         })
     }

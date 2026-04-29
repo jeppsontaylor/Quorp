@@ -1,0 +1,721 @@
+version = 1
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/cli.rs"
+pattern = "std::fs::write"
+reason = "CLI run setup writes the per-run objective artifact into the result directory."
+owner = "cli-binary"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/cli_runtime.rs"
+pattern = "std::fs::write"
+reason = "Fullscreen run setup writes the per-run objective artifact into the result directory."
+owner = "cli-binary"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/cli.rs"
+pattern = "std::fs::create_dir_all"
+reason = "CLI run setup prepares the result directory for artifact writes."
+owner = "cli-binary"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/cli_runtime.rs"
+pattern = "std::fs::create_dir_all"
+reason = "Fullscreen run setup prepares the result directory for artifact writes."
+owner = "cli-binary"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/run_support.rs"
+pattern = "fs::write"
+reason = "Run support writes run artifacts, ledgers, receipts, and legacy mirrors."
+owner = "session"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/run_support.rs"
+pattern = "fs::remove_file"
+reason = "Run-support tests remove temporary legacy event files during migration coverage."
+owner = "session"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/agent_runner.rs"
+pattern = "fs::write"
+reason = "Headless runs persist run artifacts and subscriber journals."
+owner = "session"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/agent_runner.rs"
+pattern = "fs::remove_file"
+reason = "Headless runtime rotates per-subscriber event artifacts."
+owner = "session"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/agent_runner.rs"
+pattern = "OpenOptions::new"
+reason = "Headless runtime appends durable subscriber event artifacts."
+owner = "session"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/memory_fingerprint.rs"
+pattern = "OpenOptions::new"
+reason = "Memory fingerprinting appends to the workspace diagnostics artifact."
+owner = "session"
+sink = "log"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/memory_fingerprint.rs"
+pattern = "std::fs::write"
+reason = "Memory-fingerprint tests seed and verify temporary log fixtures."
+owner = "session"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/tui/diagnostics.rs"
+pattern = "OpenOptions::new"
+reason = "TUI diagnostics append to the diagnostics log sink."
+owner = "session"
+sink = "log"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/tui/native_backend.rs"
+pattern = "std::fs::write"
+reason = "Native backend rollback restores the shadow worktree after validation failures."
+owner = "session"
+sink = "workspace_mutation"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap patch-vm rollback refactor"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/tui/native_backend.rs"
+pattern = "std::fs::remove_file"
+reason = "Native backend rollback restores the shadow worktree after validation failures."
+owner = "session"
+sink = "workspace_mutation"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap patch-vm rollback refactor"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/tui/native_backend/actions.rs"
+pattern = "std::fs::write"
+reason = "Native backend writes raw verification logs and patch receipts."
+owner = "session"
+sink = "proof"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/tui/native_backend/process_browser.rs"
+pattern = "std::fs::write"
+reason = "Process-browser helpers write temporary launch scripts for command execution."
+owner = "session"
+sink = "storage"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/tui/native_backend/process_browser.rs"
+pattern = "std::fs::set_permissions"
+reason = "Process-browser helpers mark temporary launch scripts executable."
+owner = "session"
+sink = "storage"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/benchmark/*.rs"
+pattern = "fs::write"
+reason = "Benchmark reporting and state persist run artifacts, scoreboards, and receipts."
+owner = "benchmark"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/benchmark/*.rs"
+pattern = "OpenOptions::new"
+reason = "Benchmark probe logs append to artifact files."
+owner = "benchmark"
+sink = "log"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/benchmark/probe.rs"
+pattern = "fs::remove_file"
+reason = "Benchmark probe rotates and cleans up lock artifacts."
+owner = "benchmark"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/benchmark.rs"
+pattern = "fs::write"
+reason = "Benchmark reporting and state persist run artifacts, scoreboards, and receipts."
+owner = "benchmark"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp/src/quorp/provider_config.rs"
+pattern = "std::fs::write"
+reason = "Provider-config tests write temporary workspace config files."
+owner = "adapter"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_agent_core/src/ledger.rs"
+pattern = "fs::write"
+reason = "The shared run-ledger kernel writes cursor, snapshot, and JSONL ledger artifacts."
+owner = "session"
+sink = "ledger"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap ledger kernel review"
+
+[[allowlist]]
+path = "crates/quorp_agent_core/src/ledger.rs"
+pattern = "OpenOptions::new"
+reason = "The shared run-ledger kernel appends hash-chained JSONL ledger records."
+owner = "session"
+sink = "ledger"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap ledger kernel review"
+
+[[allowlist]]
+path = "crates/quorp_verify/src/quorp_verify.rs"
+pattern = "fs::write"
+reason = "The durable verification store writes raw logs, file-cache entries, and proof DAG artifacts."
+owner = "verify"
+sink = "proof"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap proof engine review"
+
+[[allowlist]]
+path = "crates/quorp_cli/src/quorp/cli.rs"
+pattern = "std::fs::write"
+reason = "CLI run setup writes the per-run objective artifact into the result directory."
+owner = "cli-binary"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_cli/src/quorp/cli_runtime.rs"
+pattern = "std::fs::write"
+reason = "Fullscreen run setup writes the per-run objective artifact into the result directory."
+owner = "cli-binary"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_cli/src/quorp/benchmark/*.rs"
+pattern = "fs::write"
+reason = "Benchmark reporting and state persist run artifacts, scoreboards, and receipts."
+owner = "benchmark"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_cli/src/quorp/benchmark/*.rs"
+pattern = "OpenOptions::new"
+reason = "Benchmark probe logs append to artifact files."
+owner = "benchmark"
+sink = "log"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_cli/src/quorp/benchmark/probe.rs"
+pattern = "fs::remove_file"
+reason = "Benchmark probe rotates and cleans up lock artifacts."
+owner = "benchmark"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_cli/src/quorp/benchmark.rs"
+pattern = "fs::write"
+reason = "Benchmark reporting and state persist run artifacts, scoreboards, and receipts."
+owner = "benchmark"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_cli/src/quorp/provider_config.rs"
+pattern = "std::fs::write"
+reason = "Provider-config tests write temporary workspace config files."
+owner = "adapter"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_session/src/quorp/run_support.rs"
+pattern = "fs::write"
+reason = "Session run support writes ledgers, receipts, and run artifacts."
+owner = "session"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_session/src/quorp/run_support.rs"
+pattern = "fs::remove_file"
+reason = "Run-support tests remove temporary legacy event files during migration coverage."
+owner = "session"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_session/src/quorp/agent_runner.rs"
+pattern = "fs::write"
+reason = "Session durable consumers persist run artifacts and journals."
+owner = "session"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_session/src/quorp/agent_runner.rs"
+pattern = "fs::remove_file"
+reason = "Headless runtime rotates per-subscriber event artifacts."
+owner = "session"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_session/src/quorp/agent_runner.rs"
+pattern = "OpenOptions::new"
+reason = "Headless runtime appends durable subscriber event artifacts."
+owner = "session"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_session/src/quorp/memory_fingerprint.rs"
+pattern = "OpenOptions::new"
+reason = "Memory fingerprinting appends to the workspace diagnostics artifact."
+owner = "session"
+sink = "log"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_session/src/quorp/memory_fingerprint.rs"
+pattern = "std::fs::write"
+reason = "Memory-fingerprint tests seed and verify temporary log fixtures."
+owner = "session"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_session/src/quorp/tui/diagnostics.rs"
+pattern = "OpenOptions::new"
+reason = "TUI diagnostics append to the diagnostics log sink."
+owner = "session"
+sink = "log"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_session/src/quorp/tui/native_backend.rs"
+pattern = "std::fs::write"
+reason = "Native backend rollback restores the shadow worktree after validation failures."
+owner = "session"
+sink = "workspace_mutation"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap patch-vm rollback refactor"
+
+[[allowlist]]
+path = "crates/quorp_session/src/quorp/tui/native_backend.rs"
+pattern = "std::fs::remove_file"
+reason = "Native backend rollback restores the shadow worktree after validation failures."
+owner = "session"
+sink = "workspace_mutation"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap patch-vm rollback refactor"
+
+[[allowlist]]
+path = "crates/quorp_session/src/quorp/tui/native_backend/actions.rs"
+pattern = "std::fs::write"
+reason = "Native backend writes raw verification logs and patch receipts."
+owner = "session"
+sink = "proof"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_session/src/quorp/tui/native_backend/process_browser.rs"
+pattern = "std::fs::write"
+reason = "Process-browser helpers write temporary launch scripts for command execution."
+owner = "session"
+sink = "storage"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_session/src/quorp/tui/native_backend/process_browser.rs"
+pattern = "std::fs::set_permissions"
+reason = "Process-browser helpers mark temporary launch scripts executable."
+owner = "session"
+sink = "storage"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_session/src/quorp/provider_config.rs"
+pattern = "std::fs::write"
+reason = "Provider-config tests write temporary workspace config files."
+owner = "adapter"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_patch_vm/src/quorp_patch_vm.rs"
+pattern = "fs::write"
+reason = "Patch VM is the approved workspace mutation engine."
+owner = "patch-vm"
+sink = "workspace_mutation"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap patch-vm rollout"
+
+[[allowlist]]
+path = "crates/quorp_patch_vm/src/quorp_patch_vm.rs"
+pattern = "fs::remove_file"
+reason = "Patch VM is the approved workspace mutation engine."
+owner = "patch-vm"
+sink = "workspace_mutation"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap patch-vm rollout"
+
+[[allowlist]]
+path = "crates/quorp_config/src/lib.rs"
+pattern = "fs::write"
+reason = "Configuration tests write temporary files for round-trip coverage."
+owner = "config"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_core/src/validation_planner.rs"
+pattern = "fs::write"
+reason = "Validation planner tests write temporary workspace fixtures."
+owner = "core"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_core/src/skills.rs"
+pattern = "fs::write"
+reason = "Skill tests write temporary workspace fixtures."
+owner = "core"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_agent_core/src/agent_context.rs"
+pattern = "std::fs::write"
+reason = "Agent-context tests write temporary workspace and toolchain fixtures."
+owner = "agent-runtime"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_tools/src/edit.rs"
+pattern = "std::fs::write"
+reason = "Patch/edit helpers implement the approved file-write path."
+owner = "tools"
+sink = "workspace_mutation"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap patch-vm rollout"
+
+[[allowlist]]
+path = "crates/quorp_tools/src/edit.rs"
+pattern = "std::fs::rename"
+reason = "Patch/edit helpers implement the approved file-write path."
+owner = "tools"
+sink = "workspace_mutation"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap patch-vm rollout"
+
+[[allowlist]]
+path = "crates/quorp_tools/src/edit.rs"
+pattern = "std::fs::set_permissions"
+reason = "Patch/edit helpers set executable bits as part of the approved write path."
+owner = "tools"
+sink = "workspace_mutation"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap patch-vm rollout"
+
+[[allowlist]]
+path = "crates/quorp_tools/src/path_index.rs"
+pattern = "fs::write"
+reason = "Path-index tests write temporary workspace fixtures."
+owner = "tools"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_tools/src/patch.rs"
+pattern = "std::fs::write"
+reason = "Patch tests write temporary workspace fixtures."
+owner = "tools"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_tools/src/patch.rs"
+pattern = "std::fs::rename"
+reason = "Patch tests exercise the approved rename-based write path."
+owner = "tools"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_sandbox/src/lib.rs"
+pattern = "fs::write"
+reason = "Sandbox tests create temporary workspace fixtures."
+owner = "sandbox"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_context/src/quorp_context.rs"
+pattern = "std::fs::write"
+reason = "Context tests write temporary workspace fixtures and generated files."
+owner = "context"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_context/src/index.rs"
+pattern = "fs::write"
+reason = "Context-index tests write temporary workspace fixtures."
+owner = "context"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_tools/src/preview.rs"
+pattern = "std::fs::write"
+reason = "Preview helpers write scratch files for change simulation."
+owner = "tools"
+sink = "storage"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_tools/src/preview.rs"
+pattern = "std::fs::remove_file"
+reason = "Preview helpers clean up scratch files after change simulation."
+owner = "tools"
+sink = "storage"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_session/src/quorp/tui/chat_service.rs"
+pattern = "std::fs::write"
+reason = "Chat-service tests write temporary agent workspace fixtures."
+owner = "session"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/util/src/test.rs"
+pattern = "fs::write"
+reason = "Utility tests write temporary archive fixtures."
+owner = "util"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_benchmark/src/*.rs"
+pattern = "fs::write"
+reason = "Benchmark harness writes run artifacts and temporary workspace fixtures."
+owner = "benchmark"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_benchmark/src/*.rs"
+pattern = "fs::set_permissions"
+reason = "Benchmark harness marks temporary scripts executable."
+owner = "benchmark"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_storage/src/quorp_storage.rs"
+pattern = "create_dir_all"
+reason = "Workspace storage creates its own database directories."
+owner = "storage"
+sink = "storage"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_repo_scan/src/quorp_repo_scan.rs"
+pattern = "fs::write"
+reason = "Repo-scan tests write temporary workspace fixtures."
+owner = "tools"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_agent_core/src/agent_context.rs"
+pattern = "std::fs::set_permissions"
+reason = "Agent-context tests mark temporary cargo shims executable."
+owner = "agent-runtime"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_lsp/src/quorp_lsp.rs"
+pattern = "std::fs::write"
+reason = "LSP tests write temporary workspace fixtures."
+owner = "tools"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_lsp/src/rust_language_server.rs"
+pattern = "write_all"
+reason = "LSP protocol writes to the language-server transport stream."
+owner = "tools"
+sink = "storage"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/zlog/src/sink.rs"
+pattern = "OpenOptions::new"
+reason = "Log sink appends to its own file target."
+owner = "logging"
+sink = "log"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/zlog/src/sink.rs"
+pattern = "std::fs::write"
+reason = "Log-sink tests write temporary log fixtures."
+owner = "logging"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/util/src/archive.rs"
+pattern = "File::create"
+reason = "Archive utilities create archive members as part of packaging helpers."
+owner = "util"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/util/src/archive.rs"
+pattern = "set_permissions"
+reason = "Archive extraction restores archived executable permissions."
+owner = "util"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/util/src/archive.rs"
+pattern = "std::fs::write"
+reason = "Archive tests write temporary fixture files."
+owner = "util"
+sink = "test_only"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/util/src/fs.rs"
+pattern = "remove_file"
+reason = "Filesystem helpers delete files as part of their utility contract."
+owner = "util"
+sink = "workspace_mutation"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/util/src/fs.rs"
+pattern = "fs::rename"
+reason = "Filesystem helpers move files as part of their utility contract."
+owner = "util"
+sink = "workspace_mutation"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/util/src/fs.rs"
+pattern = "fs::set_permissions"
+reason = "Filesystem helpers mark files executable."
+owner = "util"
+sink = "workspace_mutation"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"

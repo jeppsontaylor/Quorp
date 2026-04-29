@@ -1,0 +1,38 @@
+{
+  "duration_ms": 53242,
+  "error_message": null,
+  "routing": {
+    "auth_mode": "nvidia_api_key",
+    "candidate_models": [
+      "qwen/qwen3-coder-480b-a35b-instruct"
+    ],
+    "comparable": true,
+    "effective_model": "qwen/qwen3-coder-480b-a35b-instruct",
+    "effective_provider": "nvidia",
+    "fallback_reason": null,
+    "provider_base_url": "https://integrate.api.nvidia.com/v1",
+    "provider_request_id": "chatcmpl-d684f2c0-b3f5-4ef0-b614-debd8a36e635",
+    "proxy_visible_remote_egress_expected": true,
+    "requested_model": "qwen/qwen3-coder-480b-a35b-instruct",
+    "requested_provider": "nvidia",
+    "routing_mode": "remote_api",
+    "routing_status": "completed",
+    "scenario_label": "QuorpRemoteApi",
+    "used_fallback": false
+  },
+  "scenario_label": "QuorpRemoteApi",
+  "stop_reason": "success",
+  "total_billed_tokens": 21853,
+  "total_steps": 4,
+  "usage": {
+    "cache_read_input_tokens": 8512,
+    "cache_write_input_tokens": 0,
+    "estimated_billed_tokens": 0,
+    "input_tokens": 21503,
+    "model_requests": 4,
+    "output_tokens": 350,
+    "reasoning_tokens": 0,
+    "reported_billed_tokens": 21853,
+    "total_billed_tokens": 21853
+  }
+}

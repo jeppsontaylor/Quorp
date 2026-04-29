@@ -8,6 +8,8 @@
 use std::path::PathBuf;
 
 pub fn run_doctor_command() -> anyhow::Result<()> {
+    use std::ffi::OsStr;
+
     use quorp_render::caps::RenderProfile;
     use quorp_render::splash::{SplashStatus, SplashStep, render_splash};
 
@@ -18,8 +20,19 @@ pub fn run_doctor_command() -> anyhow::Result<()> {
     let api_key_present =
         crate::quorp::provider_config::env_value(&loaded.settings.provider.api_key_env)
             .is_some_and(|value| !value.trim().is_empty());
-    let project_agent_toml = workspace.join(".quorp").join("agent.toml");
     let color = RenderProfile::detect_from_env().color;
+    let sandbox_runtime = quorp_sandbox::sandbox_runtime_for_path(&workspace)?;
+    let sandbox_viability = quorp_sandbox::build_command_plan(quorp_sandbox::SandboxCommandSpec {
+        program: OsStr::new("true"),
+        args: &[],
+        current_dir: &workspace,
+        runtime: &sandbox_runtime,
+        policy: &quorp_sandbox::default_policy(),
+        extra_environment: &[],
+        additional_mounts: &[],
+        interactive: false,
+    });
+    let index_status = quorp_context::index_status(&workspace)?;
 
     let mut steps: Vec<SplashStep> = Vec::new();
     steps.push(SplashStep {
@@ -59,6 +72,24 @@ pub fn run_doctor_command() -> anyhow::Result<()> {
     });
 
     steps.push(SplashStep {
+        name: "trust".into(),
+        detail: format!(
+            "{} ({})",
+            if loaded.trust.trusted {
+                "trusted"
+            } else {
+                "untrusted"
+            },
+            loaded.trust.project_id
+        ),
+        status: if loaded.trust.trusted {
+            SplashStatus::Done
+        } else {
+            SplashStatus::Warn
+        },
+    });
+
+    steps.push(SplashStep {
         name: "provider".into(),
         detail: format!(
             "{} model={}",
@@ -89,14 +120,113 @@ pub fn run_doctor_command() -> anyhow::Result<()> {
 
     steps.push(SplashStep {
         name: "sandbox".into(),
-        detail: format!("{:?}", loaded.settings.sandbox.mode),
-        status: SplashStatus::Done,
+        detail: format!(
+            "{:?} runtime={:?}",
+            loaded.settings.sandbox.mode, sandbox_runtime.profile
+        ),
+        status: match sandbox_viability {
+            Ok(_) => SplashStatus::Done,
+            Err(_) => SplashStatus::Warn,
+        },
     });
 
     steps.push(SplashStep {
         name: "permissions".into(),
-        detail: format!("{:?}", loaded.settings.permissions.mode),
+        detail: format!(
+            "{:?} network={} mcp={} browser={} process={}",
+            loaded.settings.permissions.mode,
+            if loaded.settings.permissions.allow_network {
+                "on"
+            } else {
+                "off"
+            },
+            if loaded.settings.permissions.allow_mcp {
+                "on"
+            } else {
+                "off"
+            },
+            if loaded.settings.permissions.allow_browser {
+                "on"
+            } else {
+                "off"
+            },
+            if loaded.settings.permissions.allow_process_control {
+                "on"
+            } else {
+                "off"
+            }
+        ),
         status: SplashStatus::Done,
+    });
+
+    steps.push(SplashStep {
+        name: "managed".into(),
+        detail: format!(
+            "trust-gate={} full-auto-sandbox={} full-auto-network-off={}",
+            loaded
+                .settings
+                .managed_policy
+                .require_trust_for_project_elevation,
+            loaded.settings.managed_policy.full_auto_requires_sandbox,
+            loaded
+                .settings
+                .managed_policy
+                .full_auto_requires_network_off
+        ),
+        status: SplashStatus::Done,
+    });
+
+    steps.push(SplashStep {
+        name: "mcp".into(),
+        detail: format!(
+            "enabled={} allow_servers={}",
+            loaded.settings.mcp.enabled,
+            if loaded.settings.mcp.allowed_servers.is_empty() {
+                "(none)".to_string()
+            } else {
+                loaded.settings.mcp.allowed_servers.join(", ")
+            }
+        ),
+        status: if loaded.settings.mcp.enabled {
+            SplashStatus::Done
+        } else {
+            SplashStatus::Warn
+        },
+    });
+
+    steps.push(SplashStep {
+        name: "proof".into(),
+        detail: format!(
+            "lanes={} default={}",
+            loaded.settings.proof_lanes.len(),
+            loaded
+                .settings
+                .proof
+                .default_lane
+                .clone()
+                .unwrap_or_else(|| "(none)".to_string())
+        ),
+        status: SplashStatus::Done,
+    });
+
+    steps.push(SplashStep {
+        name: "context".into(),
+        detail: if index_status.exists {
+            format!(
+                "index={} stale={} symbols={} lexical={}",
+                index_status.database_path.display(),
+                index_status.stale_files,
+                index_status.symbol_count,
+                index_status.lexical_chunk_count
+            )
+        } else {
+            format!("index missing at {}", index_status.database_path.display())
+        },
+        status: if index_status.exists && index_status.stale_files == 0 {
+            SplashStatus::Done
+        } else {
+            SplashStatus::Warn
+        },
     });
 
     let hooks = &loaded.settings.hooks;
@@ -118,12 +248,15 @@ pub fn run_doctor_command() -> anyhow::Result<()> {
 
     steps.push(SplashStep {
         name: "legacy toml".into(),
-        detail: if project_agent_toml.exists() {
-            format!("found at {}", project_agent_toml.display())
+        detail: if loaded.sources.loaded_legacy_agent_toml {
+            format!(
+                "found at {}",
+                loaded.sources.legacy_agent_toml_path.display()
+            )
         } else {
             "(none)".to_string()
         },
-        status: if project_agent_toml.exists() {
+        status: if loaded.sources.loaded_legacy_agent_toml {
             SplashStatus::Warn
         } else {
             SplashStatus::Done
@@ -135,6 +268,14 @@ pub fn run_doctor_command() -> anyhow::Result<()> {
         detail: "/tmp/quorp".into(),
         status: SplashStatus::Done,
     });
+
+    for warning in &loaded.warnings {
+        steps.push(SplashStep {
+            name: "warning".into(),
+            detail: warning.clone(),
+            status: SplashStatus::Warn,
+        });
+    }
 
     print!("{}", render_splash("quorp · doctor", &steps, color));
     Ok(())
@@ -217,6 +358,134 @@ pub fn run_scan_command(workspace: Option<PathBuf>, harvest_symbols: bool) -> an
     }
 
     print!("{}", render_splash("quorp · scan", &steps, color));
+    Ok(())
+}
+
+pub fn run_index_build_command(workspace: Option<PathBuf>) -> anyhow::Result<()> {
+    use quorp_render::caps::RenderProfile;
+    use quorp_render::splash::{SplashStatus, SplashStep, render_splash};
+
+    let workspace = workspace
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| paths::home_dir().clone()));
+    let workspace = std::fs::canonicalize(&workspace).unwrap_or(workspace);
+    let color = RenderProfile::detect_from_env().color;
+    let report = quorp_context::build_index(&workspace)?;
+
+    let steps = vec![
+        SplashStep {
+            name: "workspace".into(),
+            detail: workspace.display().to_string(),
+            status: SplashStatus::Done,
+        },
+        SplashStep {
+            name: "database".into(),
+            detail: report.database_path.display().to_string(),
+            status: SplashStatus::Done,
+        },
+        SplashStep {
+            name: "files".into(),
+            detail: format!(
+                "indexed={} changed={} skipped={}",
+                report.indexed_files, report.changed_files, report.skipped_files
+            ),
+            status: SplashStatus::Done,
+        },
+        SplashStep {
+            name: "facts".into(),
+            detail: format!(
+                "symbols={} lexical_chunks={}",
+                report.symbol_count, report.lexical_chunk_count
+            ),
+            status: SplashStatus::Done,
+        },
+    ];
+
+    print!("{}", render_splash("quorp · index build", &steps, color));
+    Ok(())
+}
+
+pub fn run_index_status_command(workspace: Option<PathBuf>) -> anyhow::Result<()> {
+    use quorp_render::caps::RenderProfile;
+    use quorp_render::splash::{SplashStatus, SplashStep, render_splash};
+
+    let workspace = workspace
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| paths::home_dir().clone()));
+    let workspace = std::fs::canonicalize(&workspace).unwrap_or(workspace);
+    let color = RenderProfile::detect_from_env().color;
+    let status = quorp_context::index_status(&workspace)?;
+
+    let steps = vec![
+        SplashStep {
+            name: "workspace".into(),
+            detail: workspace.display().to_string(),
+            status: SplashStatus::Done,
+        },
+        SplashStep {
+            name: "database".into(),
+            detail: status.database_path.display().to_string(),
+            status: if status.exists {
+                SplashStatus::Done
+            } else {
+                SplashStatus::Warn
+            },
+        },
+        SplashStep {
+            name: "state".into(),
+            detail: if status.exists {
+                format!(
+                    "indexed_files={} stale_files={}",
+                    status.indexed_files, status.stale_files
+                )
+            } else {
+                "missing".to_string()
+            },
+            status: if status.exists && status.stale_files == 0 {
+                SplashStatus::Done
+            } else {
+                SplashStatus::Warn
+            },
+        },
+        SplashStep {
+            name: "facts".into(),
+            detail: format!(
+                "symbols={} lexical_chunks={}",
+                status.symbol_count, status.lexical_chunk_count
+            ),
+            status: SplashStatus::Done,
+        },
+    ];
+
+    print!("{}", render_splash("quorp · index status", &steps, color));
+    Ok(())
+}
+
+pub fn run_index_explain_command(workspace: Option<PathBuf>, symbol: String) -> anyhow::Result<()> {
+    let workspace = workspace
+        .unwrap_or_else(|| std::env::current_dir().unwrap_or_else(|_| paths::home_dir().clone()));
+    let workspace = std::fs::canonicalize(&workspace).unwrap_or(workspace);
+    let explanation = quorp_context::explain_symbol(&workspace, &symbol)?;
+
+    println!("symbol: {}", explanation.symbol);
+    println!("definitions: {}", explanation.definitions.len());
+    for definition in &explanation.definitions {
+        println!(
+            "- {}:{}-{} {} {}",
+            definition.path.display(),
+            definition.range.start,
+            definition.range.end,
+            definition.kind,
+            definition.definition_hash
+        );
+    }
+    println!("references: {}", explanation.references);
+    if explanation.tests.is_empty() {
+        println!("tests: (none)");
+    } else {
+        println!("tests:");
+        for command in &explanation.tests {
+            println!("- {}", command);
+        }
+    }
     Ok(())
 }
 
@@ -327,6 +596,18 @@ pub fn run_permissions_command(
         detail: cap_label,
         status: SplashStatus::Done,
     });
+    if !action.tokens.is_empty() {
+        steps.push(SplashStep {
+            name: "tokens".into(),
+            detail: action
+                .tokens
+                .iter()
+                .map(|token| format!("{token:?}"))
+                .collect::<Vec<_>>()
+                .join(", "),
+            status: SplashStatus::Warn,
+        });
+    }
     if let Some(cmd) = command.as_deref() {
         steps.push(SplashStep {
             name: "command".into(),

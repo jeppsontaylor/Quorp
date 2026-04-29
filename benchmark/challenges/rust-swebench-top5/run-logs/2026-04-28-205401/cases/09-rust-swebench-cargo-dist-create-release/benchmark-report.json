@@ -1,0 +1,1183 @@
+{
+  "benchmark_name": "Add create-release configuration so CI can reuse an existing draft release",
+  "issue_id": "09-rust-swebench-cargo-dist-create-release",
+  "executor": "native",
+  "model_id": "qwen/qwen3-coder-480b-a35b-instruct",
+  "safety_mode_label": "nvidia_qwen_benchmark",
+  "scenario_label": "QuorpRemoteApi",
+  "provider_kind": "nvidia",
+  "provider_base_url": "https://integrate.api.nvidia.com/v1",
+  "auth_mode": "nvidia_api_key",
+  "usage_source": "provider_response",
+  "proxy_visible_remote_egress_expected": true,
+  "routing_mode": "remote_api",
+  "requested_provider": "nvidia",
+  "requested_model": "qwen/qwen3-coder-480b-a35b-instruct",
+  "candidate_models": [
+    "qwen/qwen3-coder-480b-a35b-instruct"
+  ],
+  "effective_provider": "nvidia",
+  "effective_model": "qwen/qwen3-coder-480b-a35b-instruct",
+  "used_fallback": false,
+  "fallback_reason": null,
+  "comparable_run": true,
+  "provider_request_id": "chatcmpl-f51c9790-93b6-404a-8a18-c92edf3ae08b",
+  "routing_status": "completed",
+  "success": true,
+  "attempts_run": 1,
+  "max_attempts": 1,
+  "total_billed_tokens": 24033,
+  "wall_clock_ms": 155654,
+  "max_total_tokens": null,
+  "max_prompt_token_estimate_seen": 5614,
+  "max_completion_token_cap_seen": 4096,
+  "watchdog_near_limit": true,
+  "watchdog_triggered": false,
+  "final_stop_reason": "success",
+  "changed_files": [
+    "book/src/config.md",
+    "cargo-dist/src/backend/ci/github.rs",
+    "cargo-dist/src/config.rs",
+    "cargo-dist/src/init.rs",
+    "cargo-dist/src/tasks.rs",
+    "cargo-dist/templates/ci/github_ci.yml.j2"
+  ],
+  "ignored_changed_files": [
+    ".quorp/challenge-capsule.json",
+    "REFERENCE.md",
+    "START_HERE.md",
+    "SUCCESS.md",
+    "benchmark.json"
+  ],
+  "widening_happened": false,
+  "attempts": [
+    {
+      "attempt": 1,
+      "executor": "native",
+      "model_id": "qwen/qwen3-coder-480b-a35b-instruct",
+      "safety_mode_label": "nvidia_qwen_benchmark",
+      "scenario_label": "QuorpRemoteApi",
+      "agent_stop_reason": "success",
+      "agent_error_message": null,
+      "total_steps": 3,
+      "duration_ms": 153263,
+      "total_billed_tokens": 24033,
+      "max_prompt_token_estimate": 5614,
+      "max_completion_token_cap": 4096,
+      "watchdog_near_limit": true,
+      "watchdog_triggered": false,
+      "visible_evaluation": null,
+      "collector_evaluation": null,
+      "evaluation": {
+        "name": "evaluation",
+        "script": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/evaluate.sh",
+        "command": "./evaluate.sh proof-full",
+        "duration_ms": 2026,
+        "exit_code": 0,
+        "passed": true,
+        "stdout": "\nrunning 1 test\n.\ntest result: ok. 1 passed; 0 failed; 0 ignored; 0 measured; 15 filtered out; finished in 1.47s\n\n",
+        "stderr": ""
+      },
+      "changed_files": [
+        "book/src/config.md",
+        "cargo-dist/src/backend/ci/github.rs",
+        "cargo-dist/src/config.rs",
+        "cargo-dist/src/init.rs",
+        "cargo-dist/src/tasks.rs",
+        "cargo-dist/templates/ci/github_ci.yml.j2"
+      ],
+      "ignored_changed_files": [
+        ".quorp/challenge-capsule.json",
+        "REFERENCE.md",
+        "START_HERE.md",
+        "SUCCESS.md",
+        "benchmark.json"
+      ],
+      "validations": [
+        "custom(1)"
+      ],
+      "widening_happened": false,
+      "attempt_dir": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/attempt-001",
+      "workspace_dir": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full",
+      "agent_result_dir": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/attempt-001/agent",
+      "input_tokens": 23791,
+      "output_tokens": 242,
+      "reasoning_tokens": 0,
+      "cache_read_input_tokens": 10304,
+      "cache_write_input_tokens": 0,
+      "model_requests": 3,
+      "first_request_prompt_token_estimate": 2577,
+      "first_request_raw_prompt_token_estimate": 2577,
+      "first_request_compacted_prompt_token_estimate": null,
+      "first_request_first_token_latency_ms": 30776,
+      "first_model_turn_started": true,
+      "first_action_emitted": true,
+      "prompt_token_series_by_turn": [
+        {
+          "step": 1,
+          "prompt_token_estimate": 2577,
+          "raw_prompt_token_estimate": 2577,
+          "compacted_prompt_token_estimate": null,
+          "completion_token_cap": 4096
+        },
+        {
+          "step": 2,
+          "prompt_token_estimate": 3871,
+          "raw_prompt_token_estimate": 3871,
+          "compacted_prompt_token_estimate": null,
+          "completion_token_cap": 4096
+        },
+        {
+          "step": 3,
+          "prompt_token_estimate": 5614,
+          "raw_prompt_token_estimate": 5614,
+          "compacted_prompt_token_estimate": null,
+          "completion_token_cap": 4096
+        }
+      ],
+      "read_range_observations": [
+        {
+          "path": "START_HERE.md",
+          "requested_range": null,
+          "honored_range": null
+        },
+        {
+          "path": "REFERENCE.md",
+          "requested_range": null,
+          "honored_range": null
+        },
+        {
+          "path": "SUCCESS.md",
+          "requested_range": null,
+          "honored_range": null
+        },
+        {
+          "path": "cargo-dist/src/config.rs",
+          "requested_range": null,
+          "honored_range": null
+        },
+        {
+          "path": "cargo-dist/src/tasks.rs",
+          "requested_range": null,
+          "honored_range": null
+        },
+        {
+          "path": "cargo-dist/src/backend/ci/github.rs",
+          "requested_range": null,
+          "honored_range": null
+        },
+        {
+          "path": "cargo-dist/src/init.rs",
+          "requested_range": null,
+          "honored_range": null
+        }
+      ],
+      "read_count": 8,
+      "write_count": 6,
+      "command_execution_count": 1,
+      "parser_recovery_count": 1,
+      "repair_invalid_action_streak_max": 0,
+      "repair_submode_entered": false,
+      "repair_submode_turns": 0,
+      "repair_write_locked": false,
+      "write_phase_action_refusal_count": 0,
+      "patch_scaffold_offered": false,
+      "patch_scaffold_honored": false,
+      "preview_apply_locked": false,
+      "preview_apply_action_refusal_count": 0,
+      "write_phase_write_emitted": false,
+      "bootstrap_phase": "first_task_model_request",
+      "bootstrap_phase_detail": "first benchmark task model request started",
+      "first_task_model_request_seen": true,
+      "bootstrap_elapsed_ms_before_first_task_request": 1006,
+      "pre_model_bootstrap_stalled": false,
+      "bootstrap_stall_class": null,
+      "rolled_back_write_count": 0,
+      "rolled_back_non_support_edit_count": 0,
+      "soft_budget_inefficient": false,
+      "fast_loop_command_seen": false,
+      "agent_final_evaluate_command_seen": false,
+      "final_evaluate_command_seen": false,
+      "host_evaluation_commands_run": 1,
+      "non_support_edit_count": 6,
+      "repo_capsule_injected": true,
+      "reasoning_enabled": false,
+      "path_resolution_failures": 0,
+      "recovery_turns": 1,
+      "action_contract_mode": "strict_json_v1",
+      "action_contract_selected": "strict_json_v1",
+      "action_contract_fallback_reason": null,
+      "attempt_lineage": [
+        "strict_json_v1"
+      ],
+      "effective_prompt_compaction_policy": "benchmark-state-packet",
+      "fast_loop_validation_status": "green: fast-loop",
+      "last_validation_failure": null,
+      "failing_test_names": [],
+      "primary_failure_test_name": null,
+      "primary_failure_path": null,
+      "primary_failure_line": null,
+      "assertion_excerpt": null,
+      "diagnostic_class": null,
+      "implementation_target_lease": "cargo-dist/src/backend/ci/github.rs",
+      "dependency_candidates": [],
+      "target_dependency_table": null,
+      "repair_required": false,
+      "repair_phase_terminal": "idle",
+      "failure_anchor_reread_attempted": false,
+      "failure_anchor_reread_honored": false,
+      "implementation_reread_allowed": false,
+      "implementation_reread_attempted": false,
+      "implementation_reread_honored": false,
+      "repair_phase_invalid_action_count": 0,
+      "post_fast_loop_patch_attempted": true,
+      "post_fast_loop_validation_rerun_attempted": true,
+      "full_validation_before_fast_loop": false,
+      "prose_only_recovery_count": 0,
+      "bare_replace_block_retry_count": 0,
+      "patch_packet_injected": false,
+      "patch_packet_honored_range": null,
+      "recommended_rerun_command": null,
+      "fast_loop_rerun_match_kind": "exact_fast_loop",
+      "failed_edit_records": [],
+      "agent_repair_memory": {
+        "observed_slices": [
+          {
+            "path": "START_HERE.md",
+            "requested_range": null,
+            "honored_range": null,
+            "purpose": null,
+            "content_fingerprint": "996f00d70deb6a24"
+          },
+          {
+            "path": "REFERENCE.md",
+            "requested_range": null,
+            "honored_range": null,
+            "purpose": null,
+            "content_fingerprint": "dc196793eb874570"
+          },
+          {
+            "path": "SUCCESS.md",
+            "requested_range": null,
+            "honored_range": null,
+            "purpose": null,
+            "content_fingerprint": "16b6606ed8a55021"
+          },
+          {
+            "path": "cargo-dist/src/config.rs",
+            "requested_range": null,
+            "honored_range": null,
+            "purpose": null,
+            "content_fingerprint": "5aaed066559e7da9"
+          },
+          {
+            "path": "cargo-dist/src/tasks.rs",
+            "requested_range": null,
+            "honored_range": null,
+            "purpose": null,
+            "content_fingerprint": "fcc91c03c6875a9d"
+          },
+          {
+            "path": "cargo-dist/src/backend/ci/github.rs",
+            "requested_range": null,
+            "honored_range": null,
+            "purpose": null,
+            "content_fingerprint": "f79d1c9be72bbd06"
+          },
+          {
+            "path": "cargo-dist/src/init.rs",
+            "requested_range": null,
+            "honored_range": null,
+            "purpose": null,
+            "content_fingerprint": "a27a0db3a75f5dcc"
+          }
+        ],
+        "validation_failures": [],
+        "rejected_actions": [],
+        "invalid_turns": [
+          {
+            "step": 3,
+            "error_class": "missing_json_object",
+            "summary": "Structured autonomous turn omitted a JSON object."
+          }
+        ],
+        "current_required_action": null,
+        "canonical_action_history": [
+          {
+            "step": 1,
+            "kind": "ListDirectory",
+            "signature": "ls:",
+            "target_path": "",
+            "validation_like": false
+          },
+          {
+            "step": 1,
+            "kind": "ReadFile",
+            "signature": "read:START_HERE.md:all",
+            "target_path": "START_HERE.md",
+            "validation_like": false
+          },
+          {
+            "step": 1,
+            "kind": "ReadFile",
+            "signature": "read:REFERENCE.md:all",
+            "target_path": "REFERENCE.md",
+            "validation_like": false
+          },
+          {
+            "step": 1,
+            "kind": "ReadFile",
+            "signature": "read:SUCCESS.md:all",
+            "target_path": "SUCCESS.md",
+            "validation_like": false
+          },
+          {
+            "step": 2,
+            "kind": "ReadFile",
+            "signature": "read:cargo-dist/src/config.rs:all",
+            "target_path": "cargo-dist/src/config.rs",
+            "validation_like": false
+          },
+          {
+            "step": 2,
+            "kind": "ReadFile",
+            "signature": "read:cargo-dist/src/tasks.rs:all",
+            "target_path": "cargo-dist/src/tasks.rs",
+            "validation_like": false
+          },
+          {
+            "step": 2,
+            "kind": "ReadFile",
+            "signature": "read:cargo-dist/src/backend/ci/github.rs:all",
+            "target_path": "cargo-dist/src/backend/ci/github.rs",
+            "validation_like": false
+          },
+          {
+            "step": 2,
+            "kind": "ReadFile",
+            "signature": "read:cargo-dist/src/init.rs:all",
+            "target_path": "cargo-dist/src/init.rs",
+            "validation_like": false
+          },
+          {
+            "step": 3,
+            "kind": "WriteFile",
+            "signature": "write:cargo-dist/src/backend/ci/github.rs:82d27b1a",
+            "target_path": "cargo-dist/src/backend/ci/github.rs",
+            "validation_like": false
+          },
+          {
+            "step": 3,
+            "kind": "WriteFile",
+            "signature": "write:cargo-dist/src/config.rs:6439e127",
+            "target_path": "cargo-dist/src/config.rs",
+            "validation_like": false
+          },
+          {
+            "step": 3,
+            "kind": "WriteFile",
+            "signature": "write:cargo-dist/src/init.rs:61f6be79",
+            "target_path": "cargo-dist/src/init.rs",
+            "validation_like": false
+          },
+          {
+            "step": 3,
+            "kind": "WriteFile",
+            "signature": "write:cargo-dist/src/tasks.rs:db96962d",
+            "target_path": "cargo-dist/src/tasks.rs",
+            "validation_like": false
+          },
+          {
+            "step": 3,
+            "kind": "WriteFile",
+            "signature": "write:cargo-dist/templates/ci/github_ci.yml.j2:798e2459",
+            "target_path": "cargo-dist/templates/ci/github_ci.yml.j2",
+            "validation_like": false
+          },
+          {
+            "step": 3,
+            "kind": "WriteFile",
+            "signature": "write:book/src/config.md:8f5ac928",
+            "target_path": "book/src/config.md",
+            "validation_like": false
+          },
+          {
+            "step": 3,
+            "kind": "RunValidation",
+            "signature": "validate:custom(1)",
+            "target_path": null,
+            "validation_like": true
+          }
+        ],
+        "repair_phase": "needs_evidence",
+        "context_sufficient": false,
+        "suggested_edit_anchors": [],
+        "diagnostic_class": null,
+        "implementation_target_lease": "cargo-dist/src/backend/ci/github.rs",
+        "dependency_candidates": [],
+        "target_dependency_table": null,
+        "last_manifest_patch_operations": [],
+        "post_patch_diagnostic_class": null,
+        "post_patch_diagnostic_excerpt": null,
+        "ranked_implementation_targets": [
+          {
+            "path": "cargo-dist/src/backend/ci/github.rs",
+            "reason": "owner_file",
+            "rank": 1
+          },
+          {
+            "path": "cargo-dist/src/config.rs",
+            "reason": "owner_file",
+            "rank": 2
+          },
+          {
+            "path": "cargo-dist/src/tasks.rs",
+            "reason": "owner_file",
+            "rank": 3
+          },
+          {
+            "path": "cargo-dist/tests/",
+            "reason": "owner_file",
+            "rank": 4
+          },
+          {
+            "path": "cargo-dist/src/init.rs",
+            "reason": "owner_file",
+            "rank": 5
+          },
+          {
+            "path": "cargo-dist/templates/ci/github_ci.yml.j2",
+            "reason": "owner_file",
+            "rank": 6
+          },
+          {
+            "path": "book/src/config.md",
+            "reason": "support_surface",
+            "rank": 7
+          }
+        ],
+        "last_preview_result": null,
+        "last_preview_id": null,
+        "last_preview_path": null,
+        "preview_origin": null,
+        "last_rollback_diagnostic": null,
+        "scorecard": {
+          "parser_recovery_count": 1,
+          "line_oriented_parse_count": 0,
+          "controller_injected_read_count": 0,
+          "redundant_read_count": 0,
+          "first_valid_write_step": 3,
+          "repeated_failed_edit_count": 0,
+          "rejected_validation_alias_count": 0,
+          "test_edit_rejection_count": 0,
+          "anchor_suggestion_count": 0,
+          "preview_edit_count": 0,
+          "preview_edit_success_count": 0,
+          "preview_created_count": 0,
+          "replace_range_count": 0,
+          "replace_range_hash_mismatch_count": 0,
+          "modify_toml_count": 0,
+          "apply_preview_count": 0,
+          "apply_preview_hash_mismatch_count": 0,
+          "target_redirect_count": 0,
+          "syntax_preview_count": 0,
+          "syntax_preview_failure_count": 0,
+          "evidence_file_fixation_count": 0,
+          "repair_invalid_action_streak_max": 0,
+          "repair_submode_entered": false,
+          "repair_submode_turns": 0,
+          "repair_write_locked": false,
+          "write_phase_action_refusal_count": 0,
+          "patch_scaffold_offered": false,
+          "patch_scaffold_honored": false,
+          "preview_apply_locked": false,
+          "preview_apply_action_refusal_count": 0,
+          "write_phase_write_emitted": false,
+          "support_write_count": 0,
+          "source_write_count": 0,
+          "rolled_back_write_count": 0,
+          "rolled_back_non_support_edit_count": 0,
+          "final_failure_classification": null,
+          "full_validation_before_fast_loop_count": 0,
+          "prose_only_recovery_count": 0,
+          "bare_replace_block_retry_count": 0
+        }
+      },
+      "agent_repair_scorecard": {
+        "parser_recovery_count": 1,
+        "line_oriented_parse_count": 0,
+        "controller_injected_read_count": 0,
+        "redundant_read_count": 0,
+        "first_valid_write_step": 3,
+        "repeated_failed_edit_count": 0,
+        "rejected_validation_alias_count": 0,
+        "test_edit_rejection_count": 0,
+        "anchor_suggestion_count": 0,
+        "preview_edit_count": 0,
+        "preview_edit_success_count": 0,
+        "preview_created_count": 0,
+        "replace_range_count": 0,
+        "replace_range_hash_mismatch_count": 0,
+        "modify_toml_count": 0,
+        "apply_preview_count": 0,
+        "apply_preview_hash_mismatch_count": 0,
+        "target_redirect_count": 0,
+        "syntax_preview_count": 0,
+        "syntax_preview_failure_count": 0,
+        "evidence_file_fixation_count": 0,
+        "repair_invalid_action_streak_max": 0,
+        "repair_submode_entered": false,
+        "repair_submode_turns": 0,
+        "repair_write_locked": false,
+        "write_phase_action_refusal_count": 0,
+        "patch_scaffold_offered": false,
+        "patch_scaffold_honored": false,
+        "preview_apply_locked": false,
+        "preview_apply_action_refusal_count": 0,
+        "write_phase_write_emitted": false,
+        "support_write_count": 0,
+        "source_write_count": 0,
+        "rolled_back_write_count": 0,
+        "rolled_back_non_support_edit_count": 0,
+        "final_failure_classification": null,
+        "full_validation_before_fast_loop_count": 0,
+        "prose_only_recovery_count": 0,
+        "bare_replace_block_retry_count": 0
+      },
+      "preview_edit_count": 0,
+      "preview_edit_success_count": 0,
+      "preview_created_count": 0,
+      "replace_range_count": 0,
+      "replace_range_hash_mismatch_count": 0,
+      "modify_toml_count": 0,
+      "apply_preview_count": 0,
+      "apply_preview_hash_mismatch_count": 0,
+      "syntax_preview_count": 0,
+      "syntax_preview_failure_count": 0,
+      "target_redirect_count": 0,
+      "evidence_file_fixation_count": 0,
+      "agent_final_failure_classification": null,
+      "planner_model": null,
+      "executor_model": "qwen/qwen3-coder-480b-a35b-instruct",
+      "deterministic_evaluation_passed": null,
+      "judge": {
+        "passed": true,
+        "summary": "The agent successfully implemented the create-release configuration feature",
+        "rationale": "The agent correctly modified all required files (config.rs, tasks.rs, github.rs, init.rs, config.md, and the CI template) to add the create-release configuration option. The evaluation passed, indicating the implementation works as expected. The changes are focused on the core functionality without unnecessary modifications, and the integration test axolotlsay_edit_existing passed, confirming the fix is correct.",
+        "model_id": "qwen/qwen3-coder-480b-a35b-instruct",
+        "raw_response": {
+          "passed": true,
+          "rationale": "The agent correctly modified all required files (config.rs, tasks.rs, github.rs, init.rs, config.md, and the CI template) to add the create-release configuration option. The evaluation passed, indicating the implementation works as expected. The changes are focused on the core functionality without unnecessary modifications, and the integration test axolotlsay_edit_existing passed, confirming the fix is correct.",
+          "summary": "The agent successfully implemented the create-release configuration feature"
+        },
+        "error": null
+      },
+      "primary_failure": null,
+      "routing": {
+        "scenario_label": "QuorpRemoteApi",
+        "routing_mode": "remote_api",
+        "requested_provider": "nvidia",
+        "requested_model": "qwen/qwen3-coder-480b-a35b-instruct",
+        "candidate_models": [
+          "qwen/qwen3-coder-480b-a35b-instruct"
+        ],
+        "effective_provider": "nvidia",
+        "effective_model": "qwen/qwen3-coder-480b-a35b-instruct",
+        "used_fallback": false,
+        "fallback_reason": null,
+        "comparable": true,
+        "provider_base_url": "https://integrate.api.nvidia.com/v1",
+        "auth_mode": "nvidia_api_key",
+        "proxy_visible_remote_egress_expected": true,
+        "provider_request_id": "chatcmpl-f51c9790-93b6-404a-8a18-c92edf3ae08b",
+        "routing_status": "completed"
+      }
+    }
+  ],
+  "reset_outcome": {
+    "name": "reset",
+    "script": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/reset.sh",
+    "command": "./reset.sh proof-full",
+    "duration_ms": 365,
+    "exit_code": 0,
+    "passed": true,
+    "stdout": "",
+    "stderr": ""
+  },
+  "challenge": {
+    "case_root": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/cases/09-rust-swebench-cargo-dist-create-release",
+    "sandbox_root": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox",
+    "workspace_dir": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full",
+    "condition": "proof-full",
+    "objective_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full/START_HERE.md",
+    "success_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full/SUCCESS.md",
+    "reference_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full/REFERENCE.md",
+    "reset_command": "./reset.sh <condition>",
+    "evaluate_command": "./evaluate.sh <condition>",
+    "expected_files_touched": [
+      "book/src/config.md",
+      "cargo-dist/src/backend/ci/github.rs",
+      "cargo-dist/src/config.rs",
+      "cargo-dist/src/init.rs",
+      "cargo-dist/src/tasks.rs",
+      "cargo-dist/templates/ci/github_ci.yml.j2"
+    ],
+    "allowed_generated_files": [
+      "cargo-dist/tests/snapshots/axolotlsay_edit_existing.snap"
+    ],
+    "primary_metrics": [
+      "evaluate_passed",
+      "changed_files",
+      "widening_happened"
+    ],
+    "tags": [
+      "rust",
+      "rust-swebench",
+      "cargo-dist",
+      "release",
+      "config"
+    ],
+    "capsule_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox/workspace/proof-full/.quorp/challenge-capsule.json",
+    "capsule": {
+      "case_class": "breadth-heavy-companion",
+      "owner_files": [
+        "cargo-dist/src/backend/ci/github.rs",
+        "cargo-dist/src/config.rs",
+        "cargo-dist/src/tasks.rs",
+        "cargo-dist/tests/",
+        "cargo-dist/src/init.rs",
+        "cargo-dist/templates/ci/github_ci.yml.j2"
+      ],
+      "first_reads": [
+        "cargo-dist/src/backend/ci/github.rs",
+        "cargo-dist/src/config.rs",
+        "cargo-dist/src/init.rs",
+        "cargo-dist/src/tasks.rs",
+        "cargo-dist/tests/integration-tests.rs"
+      ],
+      "fast_loop_commands": [
+        "cargo test --quiet -p cargo-dist --test integration-tests axolotlsay_edit_existing -- --exact"
+      ],
+      "expected_touch_targets": [
+        "book/src/config.md",
+        "cargo-dist/src/backend/ci/github.rs",
+        "cargo-dist/src/config.rs",
+        "cargo-dist/src/init.rs",
+        "cargo-dist/src/tasks.rs",
+        "cargo-dist/templates/ci/github_ci.yml.j2"
+      ],
+      "companion_files_required": [
+        "book/src/config.md",
+        "cargo-dist/templates/ci/github_ci.yml.j2"
+      ],
+      "strong_hints": [
+        "The new option belongs on `DistMetadata` as `create-release`; do not invent a separate runtime-only config struct field.",
+        "This is a workspace-global setting. Package-level `package.metadata.dist.create-release` should warn and be ignored, just like other global-only options.",
+        "`DistGraph` and the GitHub CI planner/template need a plain boolean that gates release creation while leaving upload/publish behavior intact.",
+        "`init.rs` and `book/src/config.md` are part of the gold patch because generated config/docs must mention the new option.",
+        "Final evaluator: `./evaluate.sh proof-full`"
+      ],
+      "watch_points": [
+        "The new flag must flow from config parsing into release planning and template generation.",
+        "The snapshot-backed integration test is the quickest source of truth for whether all layers agree.",
+        "Docs and init/config surfaces need to reflect the new option so generated output stays self-consistent.",
+        "The common wrong turn is adding a duplicate field in the wrong config layer; the upstream fix threads `create-release` through existing metadata and graph structs instead."
+      ],
+      "named_tests": [
+        "DistGraph",
+        "DistMetadata",
+        "create-release",
+        "package.metadata.dist.create-release"
+      ]
+    }
+  },
+  "run_dir": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release",
+  "sandbox_root": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/09-rust-swebench-cargo-dist-create-release/sandbox",
+  "exit_code": 0,
+  "lines_added": 58,
+  "lines_removed": 0,
+  "mistakes_corrected": 0,
+  "validation_commands_run": 1,
+  "evaluation_commands_run": 1,
+  "prompt_tokens": 23791,
+  "completion_tokens": 242,
+  "reasoning_tokens": 0,
+  "cache_read_input_tokens": 10304,
+  "cache_write_input_tokens": 0,
+  "run_error": null,
+  "setup_failure_class": null,
+  "total_requests": 3,
+  "task_model_call_count": 3,
+  "tool_call_count": 16,
+  "edit_count": 6,
+  "read_count": 8,
+  "write_count": 6,
+  "command_execution_count": 2,
+  "parser_recovery_count": 1,
+  "repair_invalid_action_streak_max": 0,
+  "repair_submode_entered": false,
+  "repair_submode_turns": 0,
+  "repair_write_locked": false,
+  "write_phase_action_refusal_count": 0,
+  "patch_scaffold_offered": false,
+  "patch_scaffold_honored": false,
+  "preview_apply_locked": false,
+  "preview_apply_action_refusal_count": 0,
+  "write_phase_write_emitted": false,
+  "bootstrap_phase": "first_task_model_request",
+  "bootstrap_phase_detail": "first benchmark task model request started",
+  "first_task_model_request_seen": true,
+  "bootstrap_elapsed_ms_before_first_task_request": 1006,
+  "pre_model_bootstrap_stalled": false,
+  "bootstrap_stall_class": null,
+  "rolled_back_write_count": 0,
+  "rolled_back_non_support_edit_count": 0,
+  "soft_budget_inefficient": false,
+  "fast_loop_command_seen": false,
+  "agent_final_evaluate_command_seen": false,
+  "final_evaluate_command_seen": false,
+  "host_evaluation_commands_run": 1,
+  "non_support_edit_count": 6,
+  "last_failure_class": "success",
+  "evaluation_command_seen": true,
+  "text_only_action_failure": false,
+  "first_request_prompt_token_estimate": 2577,
+  "first_request_raw_prompt_token_estimate": 2577,
+  "first_request_compacted_prompt_token_estimate": null,
+  "first_request_first_token_latency_ms": 30776,
+  "first_model_turn_started": true,
+  "first_action_emitted": true,
+  "prompt_token_series_by_turn": [
+    {
+      "step": 1,
+      "prompt_token_estimate": 2577,
+      "raw_prompt_token_estimate": 2577,
+      "compacted_prompt_token_estimate": null,
+      "completion_token_cap": 4096
+    },
+    {
+      "step": 2,
+      "prompt_token_estimate": 3871,
+      "raw_prompt_token_estimate": 3871,
+      "compacted_prompt_token_estimate": null,
+      "completion_token_cap": 4096
+    },
+    {
+      "step": 3,
+      "prompt_token_estimate": 5614,
+      "raw_prompt_token_estimate": 5614,
+      "compacted_prompt_token_estimate": null,
+      "completion_token_cap": 4096
+    }
+  ],
+  "read_range_observations": [
+    {
+      "path": "START_HERE.md",
+      "requested_range": null,
+      "honored_range": null
+    },
+    {
+      "path": "REFERENCE.md",
+      "requested_range": null,
+      "honored_range": null
+    },
+    {
+      "path": "SUCCESS.md",
+      "requested_range": null,
+      "honored_range": null
+    },
+    {
+      "path": "cargo-dist/src/config.rs",
+      "requested_range": null,
+      "honored_range": null
+    },
+    {
+      "path": "cargo-dist/src/tasks.rs",
+      "requested_range": null,
+      "honored_range": null
+    },
+    {
+      "path": "cargo-dist/src/backend/ci/github.rs",
+      "requested_range": null,
+      "honored_range": null
+    },
+    {
+      "path": "cargo-dist/src/init.rs",
+      "requested_range": null,
+      "honored_range": null
+    }
+  ],
+  "repo_capsule_injected": true,
+  "reasoning_enabled": false,
+  "path_resolution_failures": 0,
+  "recovery_turns": 1,
+  "action_contract_mode": "strict_json_v1",
+  "action_contract_selected": "strict_json_v1",
+  "action_contract_fallback_reason": null,
+  "attempt_lineage": [
+    "strict_json_v1"
+  ],
+  "effective_prompt_compaction_policy": "benchmark-state-packet",
+  "fast_loop_validation_status": "green: fast-loop",
+  "last_validation_failure": null,
+  "failing_test_names": [],
+  "primary_failure_test_name": null,
+  "primary_failure_path": null,
+  "primary_failure_line": null,
+  "assertion_excerpt": null,
+  "diagnostic_class": null,
+  "implementation_target_lease": "cargo-dist/src/backend/ci/github.rs",
+  "dependency_candidates": [],
+  "target_dependency_table": null,
+  "repair_required": false,
+  "repair_phase_terminal": "idle",
+  "failure_anchor_reread_attempted": false,
+  "failure_anchor_reread_honored": false,
+  "implementation_reread_allowed": false,
+  "implementation_reread_attempted": false,
+  "implementation_reread_honored": false,
+  "repair_phase_invalid_action_count": 0,
+  "post_fast_loop_patch_attempted": true,
+  "post_fast_loop_validation_rerun_attempted": true,
+  "full_validation_before_fast_loop": false,
+  "prose_only_recovery_count": 0,
+  "bare_replace_block_retry_count": 0,
+  "patch_packet_injected": false,
+  "patch_packet_honored_range": null,
+  "recommended_rerun_command": null,
+  "fast_loop_rerun_match_kind": "exact_fast_loop",
+  "failed_edit_records": [],
+  "agent_repair_memory": {
+    "observed_slices": [
+      {
+        "path": "START_HERE.md",
+        "requested_range": null,
+        "honored_range": null,
+        "purpose": null,
+        "content_fingerprint": "996f00d70deb6a24"
+      },
+      {
+        "path": "REFERENCE.md",
+        "requested_range": null,
+        "honored_range": null,
+        "purpose": null,
+        "content_fingerprint": "dc196793eb874570"
+      },
+      {
+        "path": "SUCCESS.md",
+        "requested_range": null,
+        "honored_range": null,
+        "purpose": null,
+        "content_fingerprint": "16b6606ed8a55021"
+      },
+      {
+        "path": "cargo-dist/src/config.rs",
+        "requested_range": null,
+        "honored_range": null,
+        "purpose": null,
+        "content_fingerprint": "5aaed066559e7da9"
+      },
+      {
+        "path": "cargo-dist/src/tasks.rs",
+        "requested_range": null,
+        "honored_range": null,
+        "purpose": null,
+        "content_fingerprint": "fcc91c03c6875a9d"
+      },
+      {
+        "path": "cargo-dist/src/backend/ci/github.rs",
+        "requested_range": null,
+        "honored_range": null,
+        "purpose": null,
+        "content_fingerprint": "f79d1c9be72bbd06"
+      },
+      {
+        "path": "cargo-dist/src/init.rs",
+        "requested_range": null,
+        "honored_range": null,
+        "purpose": null,
+        "content_fingerprint": "a27a0db3a75f5dcc"
+      }
+    ],
+    "validation_failures": [],
+    "rejected_actions": [],
+    "invalid_turns": [
+      {
+        "step": 3,
+        "error_class": "missing_json_object",
+        "summary": "Structured autonomous turn omitted a JSON object."
+      }
+    ],
+    "current_required_action": null,
+    "canonical_action_history": [
+      {
+        "step": 1,
+        "kind": "ListDirectory",
+        "signature": "ls:",
+        "target_path": "",
+        "validation_like": false
+      },
+      {
+        "step": 1,
+        "kind": "ReadFile",
+        "signature": "read:START_HERE.md:all",
+        "target_path": "START_HERE.md",
+        "validation_like": false
+      },
+      {
+        "step": 1,
+        "kind": "ReadFile",
+        "signature": "read:REFERENCE.md:all",
+        "target_path": "REFERENCE.md",
+        "validation_like": false
+      },
+      {
+        "step": 1,
+        "kind": "ReadFile",
+        "signature": "read:SUCCESS.md:all",
+        "target_path": "SUCCESS.md",
+        "validation_like": false
+      },
+      {
+        "step": 2,
+        "kind": "ReadFile",
+        "signature": "read:cargo-dist/src/config.rs:all",
+        "target_path": "cargo-dist/src/config.rs",
+        "validation_like": false
+      },
+      {
+        "step": 2,
+        "kind": "ReadFile",
+        "signature": "read:cargo-dist/src/tasks.rs:all",
+        "target_path": "cargo-dist/src/tasks.rs",
+        "validation_like": false
+      },
+      {
+        "step": 2,
+        "kind": "ReadFile",
+        "signature": "read:cargo-dist/src/backend/ci/github.rs:all",
+        "target_path": "cargo-dist/src/backend/ci/github.rs",
+        "validation_like": false
+      },
+      {
+        "step": 2,
+        "kind": "ReadFile",
+        "signature": "read:cargo-dist/src/init.rs:all",
+        "target_path": "cargo-dist/src/init.rs",
+        "validation_like": false
+      },
+      {
+        "step": 3,
+        "kind": "WriteFile",
+        "signature": "write:cargo-dist/src/backend/ci/github.rs:82d27b1a",
+        "target_path": "cargo-dist/src/backend/ci/github.rs",
+        "validation_like": false
+      },
+      {
+        "step": 3,
+        "kind": "WriteFile",
+        "signature": "write:cargo-dist/src/config.rs:6439e127",
+        "target_path": "cargo-dist/src/config.rs",
+        "validation_like": false
+      },
+      {
+        "step": 3,
+        "kind": "WriteFile",
+        "signature": "write:cargo-dist/src/init.rs:61f6be79",
+        "target_path": "cargo-dist/src/init.rs",
+        "validation_like": false
+      },
+      {
+        "step": 3,
+        "kind": "WriteFile",
+        "signature": "write:cargo-dist/src/tasks.rs:db96962d",
+        "target_path": "cargo-dist/src/tasks.rs",
+        "validation_like": false
+      },
+      {
+        "step": 3,
+        "kind": "WriteFile",
+        "signature": "write:cargo-dist/templates/ci/github_ci.yml.j2:798e2459",
+        "target_path": "cargo-dist/templates/ci/github_ci.yml.j2",
+        "validation_like": false
+      },
+      {
+        "step": 3,
+        "kind": "WriteFile",
+        "signature": "write:book/src/config.md:8f5ac928",
+        "target_path": "book/src/config.md",
+        "validation_like": false
+      },
+      {
+        "step": 3,
+        "kind": "RunValidation",
+        "signature": "validate:custom(1)",
+        "target_path": null,
+        "validation_like": true
+      }
+    ],
+    "repair_phase": "needs_evidence",
+    "context_sufficient": false,
+    "suggested_edit_anchors": [],
+    "diagnostic_class": null,
+    "implementation_target_lease": "cargo-dist/src/backend/ci/github.rs",
+    "dependency_candidates": [],
+    "target_dependency_table": null,
+    "last_manifest_patch_operations": [],
+    "post_patch_diagnostic_class": null,
+    "post_patch_diagnostic_excerpt": null,
+    "ranked_implementation_targets": [
+      {
+        "path": "cargo-dist/src/backend/ci/github.rs",
+        "reason": "owner_file",
+        "rank": 1
+      },
+      {
+        "path": "cargo-dist/src/config.rs",
+        "reason": "owner_file",
+        "rank": 2
+      },
+      {
+        "path": "cargo-dist/src/tasks.rs",
+        "reason": "owner_file",
+        "rank": 3
+      },
+      {
+        "path": "cargo-dist/tests/",
+        "reason": "owner_file",
+        "rank": 4
+      },
+      {
+        "path": "cargo-dist/src/init.rs",
+        "reason": "owner_file",
+        "rank": 5
+      },
+      {
+        "path": "cargo-dist/templates/ci/github_ci.yml.j2",
+        "reason": "owner_file",
+        "rank": 6
+      },
+      {
+        "path": "book/src/config.md",
+        "reason": "support_surface",
+        "rank": 7
+      }
+    ],
+    "last_preview_result": null,
+    "last_preview_id": null,
+    "last_preview_path": null,
+    "preview_origin": null,
+    "last_rollback_diagnostic": null,
+    "scorecard": {
+      "parser_recovery_count": 1,
+      "line_oriented_parse_count": 0,
+      "controller_injected_read_count": 0,
+      "redundant_read_count": 0,
+      "first_valid_write_step": 3,
+      "repeated_failed_edit_count": 0,
+      "rejected_validation_alias_count": 0,
+      "test_edit_rejection_count": 0,
+      "anchor_suggestion_count": 0,
+      "preview_edit_count": 0,
+      "preview_edit_success_count": 0,
+      "preview_created_count": 0,
+      "replace_range_count": 0,
+      "replace_range_hash_mismatch_count": 0,
+      "modify_toml_count": 0,
+      "apply_preview_count": 0,
+      "apply_preview_hash_mismatch_count": 0,
+      "target_redirect_count": 0,
+      "syntax_preview_count": 0,
+      "syntax_preview_failure_count": 0,
+      "evidence_file_fixation_count": 0,
+      "repair_invalid_action_streak_max": 0,
+      "repair_submode_entered": false,
+      "repair_submode_turns": 0,
+      "repair_write_locked": false,
+      "write_phase_action_refusal_count": 0,
+      "patch_scaffold_offered": false,
+      "patch_scaffold_honored": false,
+      "preview_apply_locked": false,
+      "preview_apply_action_refusal_count": 0,
+      "write_phase_write_emitted": false,
+      "support_write_count": 0,
+      "source_write_count": 0,
+      "rolled_back_write_count": 0,
+      "rolled_back_non_support_edit_count": 0,
+      "final_failure_classification": null,
+      "full_validation_before_fast_loop_count": 0,
+      "prose_only_recovery_count": 0,
+      "bare_replace_block_retry_count": 0
+    }
+  },
+  "agent_repair_scorecard": {
+    "parser_recovery_count": 1,
+    "line_oriented_parse_count": 0,
+    "controller_injected_read_count": 0,
+    "redundant_read_count": 0,
+    "first_valid_write_step": 3,
+    "repeated_failed_edit_count": 0,
+    "rejected_validation_alias_count": 0,
+    "test_edit_rejection_count": 0,
+    "anchor_suggestion_count": 0,
+    "preview_edit_count": 0,
+    "preview_edit_success_count": 0,
+    "preview_created_count": 0,
+    "replace_range_count": 0,
+    "replace_range_hash_mismatch_count": 0,
+    "modify_toml_count": 0,
+    "apply_preview_count": 0,
+    "apply_preview_hash_mismatch_count": 0,
+    "target_redirect_count": 0,
+    "syntax_preview_count": 0,
+    "syntax_preview_failure_count": 0,
+    "evidence_file_fixation_count": 0,
+    "repair_invalid_action_streak_max": 0,
+    "repair_submode_entered": false,
+    "repair_submode_turns": 0,
+    "repair_write_locked": false,
+    "write_phase_action_refusal_count": 0,
+    "patch_scaffold_offered": false,
+    "patch_scaffold_honored": false,
+    "preview_apply_locked": false,
+    "preview_apply_action_refusal_count": 0,
+    "write_phase_write_emitted": false,
+    "support_write_count": 0,
+    "source_write_count": 0,
+    "rolled_back_write_count": 0,
+    "rolled_back_non_support_edit_count": 0,
+    "final_failure_classification": null,
+    "full_validation_before_fast_loop_count": 0,
+    "prose_only_recovery_count": 0,
+    "bare_replace_block_retry_count": 0
+  },
+  "preview_edit_count": 0,
+  "preview_edit_success_count": 0,
+  "preview_created_count": 0,
+  "replace_range_count": 0,
+  "replace_range_hash_mismatch_count": 0,
+  "modify_toml_count": 0,
+  "apply_preview_count": 0,
+  "apply_preview_hash_mismatch_count": 0,
+  "syntax_preview_count": 0,
+  "syntax_preview_failure_count": 0,
+  "target_redirect_count": 0,
+  "evidence_file_fixation_count": 0,
+  "agent_final_failure_classification": "success",
+  "planner_model": null,
+  "executor_model": "qwen/qwen3-coder-480b-a35b-instruct",
+  "deterministic_evaluation_passed": true,
+  "judge": {
+    "passed": true,
+    "summary": "The agent successfully implemented the create-release configuration feature",
+    "rationale": "The agent correctly modified all required files (config.rs, tasks.rs, github.rs, init.rs, config.md, and the CI template) to add the create-release configuration option. The evaluation passed, indicating the implementation works as expected. The changes are focused on the core functionality without unnecessary modifications, and the integration test axolotlsay_edit_existing passed, confirming the fix is correct.",
+    "model_id": "qwen/qwen3-coder-480b-a35b-instruct",
+    "raw_response": {
+      "passed": true,
+      "rationale": "The agent correctly modified all required files (config.rs, tasks.rs, github.rs, init.rs, config.md, and the CI template) to add the create-release configuration option. The evaluation passed, indicating the implementation works as expected. The changes are focused on the core functionality without unnecessary modifications, and the integration test axolotlsay_edit_existing passed, confirming the fix is correct.",
+      "summary": "The agent successfully implemented the create-release configuration feature"
+    },
+    "error": null
+  },
+  "primary_failure": null
+}

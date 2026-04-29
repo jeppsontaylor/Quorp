@@ -11,7 +11,7 @@ use crossterm::terminal::{
     size as terminal_size,
 };
 use sha2::{Digest, Sha256};
-use std::collections::VecDeque;
+use std::collections::{BTreeMap, VecDeque};
 use std::path::{Path, PathBuf};
 use std::thread;
 use std::time::{Duration, Instant};
@@ -64,6 +64,8 @@ fn run(args: CliArgs) -> anyhow::Result<()> {
         Some(Command::MemLogPath) => run_mem_log_path(),
         Some(Command::Session(args)) => run_session(args, tui_mode),
         Some(Command::Run(args)) => run_autonomous_command(args),
+        Some(Command::Replay(args)) => run_replay_command(args),
+        Some(Command::Proof { command }) => run_proof_command(command),
         Some(Command::Diagnostics { command }) => run_diagnostics_command(command),
         Some(Command::Agent { command }) => run_agent_command(command),
         Some(Command::Benchmark { command }) => run_benchmark_command(command),
@@ -72,6 +74,17 @@ fn run(args: CliArgs) -> anyhow::Result<()> {
         Some(Command::Scan { workspace, symbols }) => {
             crate::quorp::cli_demos::run_scan_command(workspace, symbols)
         }
+        Some(Command::Index { command }) => match command {
+            IndexCommand::Build { workspace } => {
+                crate::quorp::cli_demos::run_index_build_command(workspace)
+            }
+            IndexCommand::Status { workspace } => {
+                crate::quorp::cli_demos::run_index_status_command(workspace)
+            }
+            IndexCommand::Explain { workspace, symbol } => {
+                crate::quorp::cli_demos::run_index_explain_command(workspace, symbol)
+            }
+        },
         Some(Command::Permissions {
             mode,
             tool,
@@ -280,6 +293,7 @@ fn write_run_proof_receipt(input: RunProofReceiptInput<'_>) -> anyhow::Result<()
         ("metadata", input.result_dir.join("metadata.json")),
         ("summary", input.result_dir.join("summary.json")),
         ("events", input.result_dir.join("events.jsonl")),
+        ("run-ledger", input.result_dir.join("run-ledger.jsonl")),
     ] {
         if path.exists() {
             receipt.raw_artifacts.insert(
@@ -291,6 +305,7 @@ fn write_run_proof_receipt(input: RunProofReceiptInput<'_>) -> anyhow::Result<()
             );
         }
     }
+    extend_receipt_with_verify_artifacts(&mut receipt, input.active_workspace)?;
     if input.source_workspace != input.active_workspace {
         receipt.residual_risks.push(
             "run used a copied workspace; inspect sandbox path or result artifacts for final edits"
@@ -338,6 +353,379 @@ fn sha256_file_if_exists(path: &Path) -> anyhow::Result<Option<String>> {
         }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
         Err(error) => Err(error).with_context(|| format!("failed to read {}", path.display())),
+    }
+}
+
+fn sha256_file_required(path: &Path) -> anyhow::Result<String> {
+    sha256_file_if_exists(path)?.ok_or_else(|| anyhow::anyhow!("{} does not exist", path.display()))
+}
+
+fn insert_artifact_if_exists(
+    artifacts: &mut BTreeMap<String, quorp_core::RawArtifact>,
+    name: impl Into<String>,
+    path: PathBuf,
+) -> anyhow::Result<()> {
+    if path.exists() {
+        artifacts.insert(
+            name.into(),
+            quorp_core::RawArtifact {
+                sha256: Some(sha256_file_required(&path)?),
+                path,
+            },
+        );
+    }
+    Ok(())
+}
+
+fn collect_verify_dag_artifacts(
+    workspace: &Path,
+) -> anyhow::Result<Vec<(String, PathBuf, quorp_verify::ProofDag)>> {
+    let runs_dir = workspace.join(".quorp").join("verify").join("runs");
+    if !runs_dir.exists() {
+        return Ok(Vec::new());
+    }
+    let mut dag_paths = Vec::new();
+    for entry in std::fs::read_dir(&runs_dir)? {
+        let entry = entry?;
+        let path = entry.path().join("proof-dag.json");
+        if path.exists() {
+            dag_paths.push(path);
+        }
+    }
+    dag_paths.sort();
+    let mut dags = Vec::new();
+    for path in dag_paths {
+        let text = std::fs::read_to_string(&path)
+            .with_context(|| format!("failed to read {}", path.display()))?;
+        let dag: quorp_verify::ProofDag = serde_json::from_str(&text)
+            .with_context(|| format!("failed to parse {}", path.display()))?;
+        let label = dag.run_id.as_str().to_string();
+        dags.push((label, path, dag));
+    }
+    Ok(dags)
+}
+
+fn extend_receipt_with_verify_artifacts(
+    receipt: &mut quorp_core::ProofReceipt,
+    workspace: &Path,
+) -> anyhow::Result<()> {
+    let dags = collect_verify_dag_artifacts(workspace)?;
+    for (index, (run_id, dag_path, dag)) in dags.into_iter().enumerate() {
+        let dag_name = if index == 0 {
+            "proof-dag".to_string()
+        } else {
+            format!("proof-dag-{run_id}")
+        };
+        insert_artifact_if_exists(&mut receipt.raw_artifacts, dag_name, dag_path)?;
+        for node in dag.nodes {
+            for artifact in node.artifacts {
+                if artifact.role == "raw_log" {
+                    let name = format!(
+                        "verify-log-{}-{}",
+                        node.stage_id,
+                        receipt.raw_artifacts.len()
+                    );
+                    receipt.raw_artifacts.insert(
+                        name,
+                        quorp_core::RawArtifact {
+                            sha256: Some(
+                                sha256_file_if_exists(&artifact.path)?.unwrap_or(artifact.sha256),
+                            ),
+                            path: artifact.path,
+                        },
+                    );
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+fn run_replay_command(args: ReplayArgs) -> anyhow::Result<()> {
+    println!("{}", render_replay_summary(&args.run_dir)?);
+    Ok(())
+}
+
+fn render_replay_summary(run_dir: &Path) -> anyhow::Result<String> {
+    let ledger_path = run_dir.join("run-ledger.jsonl");
+    if !ledger_path.exists() {
+        anyhow::bail!("{} is required for replay", ledger_path.display());
+    }
+    let reader = crate::quorp::run_support::RunLedgerReader::open(&ledger_path);
+    let report = reader.validate_hash_chain()?;
+    let events = reader.read_all()?;
+    let mut lines = vec![
+        format!("run_dir: {}", run_dir.display()),
+        format!("run_id: {}", report.run_id.as_deref().unwrap_or("unknown")),
+        format!("events: {}", report.event_count),
+        format!(
+            "first_seq: {}",
+            report
+                .first_seq
+                .map(|seq| seq.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        ),
+        format!(
+            "last_seq: {}",
+            report
+                .last_seq
+                .map(|seq| seq.to_string())
+                .unwrap_or_else(|| "none".to_string())
+        ),
+        "kind_counts:".to_string(),
+    ];
+    for (kind, count) in report.kind_counts {
+        lines.push(format!("- {kind}: {count}"));
+    }
+    lines.push(format!(
+        "run_started: {}",
+        replay_fact(&events, &["RunStarted", "run.started"]).unwrap_or_else(|| "none".to_string())
+    ));
+    lines.push(format!(
+        "run_finished: {}",
+        replay_fact(&events, &["RunFinished", "run.finished", "run.stop_cause"])
+            .unwrap_or_else(|| "none".to_string())
+    ));
+    Ok(lines.join("\n"))
+}
+
+fn replay_fact(
+    events: &[crate::quorp::run_support::RunLedgerEvent],
+    names: &[&str],
+) -> Option<String> {
+    events.iter().find_map(|event| {
+        if names.iter().any(|name| event.kind == *name) {
+            return Some(compact_json(&event.payload));
+        }
+        for name in names {
+            if let Some(value) = event.payload.get(*name) {
+                return Some(compact_json(value));
+            }
+            if event
+                .payload
+                .get("event")
+                .and_then(serde_json::Value::as_str)
+                == Some(*name)
+            {
+                return Some(compact_json(&event.payload));
+            }
+        }
+        None
+    })
+}
+
+fn compact_json(value: &serde_json::Value) -> String {
+    serde_json::to_string(value).unwrap_or_else(|_| "unprintable".to_string())
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct ProofBundle {
+    bundle_version: u32,
+    receipt: quorp_core::ProofReceipt,
+    ledger_path: Option<PathBuf>,
+    ledger_hash: Option<String>,
+    proof_dag_path: Option<PathBuf>,
+    proof_dag_hash: Option<String>,
+    proof_dag: Option<quorp_verify::ProofDag>,
+    raw_artifacts: BTreeMap<String, quorp_core::RawArtifact>,
+}
+
+fn run_proof_command(command: ProofCommand) -> anyhow::Result<()> {
+    match command {
+        ProofCommand::Show(args) => {
+            println!("{}", render_proof_show(&args.run_dir)?);
+            Ok(())
+        }
+        ProofCommand::Export(args) => {
+            let bundle = proof_bundle_for_run(&args.run_dir)?;
+            if let Some(parent) = args.output.parent() {
+                std::fs::create_dir_all(parent)?;
+            }
+            std::fs::write(&args.output, serde_json::to_vec_pretty(&bundle)?)?;
+            println!("{}", args.output.display());
+            Ok(())
+        }
+        ProofCommand::Verify(args) => {
+            verify_proof_input(&args.input)?;
+            println!("proof verified: {}", args.input.display());
+            Ok(())
+        }
+    }
+}
+
+fn render_proof_show(run_dir: &Path) -> anyhow::Result<String> {
+    let bundle = proof_bundle_for_run(run_dir)?;
+    let verdict = bundle
+        .proof_dag
+        .as_ref()
+        .map(proof_dag_verdict)
+        .unwrap_or_else(|| "unknown".to_string());
+    let mut lines = vec![
+        format!("receipt: {}", run_dir.join("proof-receipt.json").display()),
+        format!("run_id: {}", bundle.receipt.run_id),
+        format!(
+            "ledger: {}",
+            bundle
+                .ledger_hash
+                .as_deref()
+                .map(|hash| format!("sha256={hash}"))
+                .unwrap_or_else(|| "missing".to_string())
+        ),
+        format!(
+            "proof_dag: {}",
+            bundle
+                .proof_dag_hash
+                .as_deref()
+                .map(|hash| format!("sha256={hash}"))
+                .unwrap_or_else(|| "missing".to_string())
+        ),
+        format!("verdict: {verdict}"),
+        format!("artifacts: {}", bundle.raw_artifacts.len()),
+    ];
+    for (name, artifact) in &bundle.raw_artifacts {
+        lines.push(format!(
+            "- {name}: {} {}",
+            artifact.path.display(),
+            artifact.sha256.as_deref().unwrap_or("no-hash")
+        ));
+    }
+    Ok(lines.join("\n"))
+}
+
+fn proof_bundle_for_run(run_dir: &Path) -> anyhow::Result<ProofBundle> {
+    let receipt_path = run_dir.join("proof-receipt.json");
+    let receipt_text = std::fs::read_to_string(&receipt_path)
+        .with_context(|| format!("failed to read {}", receipt_path.display()))?;
+    let receipt: quorp_core::ProofReceipt = serde_json::from_str(&receipt_text)
+        .with_context(|| format!("failed to parse {}", receipt_path.display()))?;
+    let ledger_path = run_dir.join("run-ledger.jsonl");
+    let ledger_hash = sha256_file_if_exists(&ledger_path)?;
+    let ledger_path = ledger_hash.as_ref().map(|_| ledger_path);
+    let proof_dag_path = receipt
+        .raw_artifacts
+        .iter()
+        .find(|(name, _)| name.starts_with("proof-dag"))
+        .map(|(_, artifact)| resolve_artifact_path(run_dir, &artifact.path));
+    let proof_dag = proof_dag_path
+        .as_ref()
+        .map(|path| {
+            let text = std::fs::read_to_string(path)
+                .with_context(|| format!("failed to read {}", path.display()))?;
+            serde_json::from_str(&text)
+                .with_context(|| format!("failed to parse {}", path.display()))
+        })
+        .transpose()?;
+    let proof_dag_hash = proof_dag_path
+        .as_ref()
+        .map(|path| sha256_file_required(path))
+        .transpose()?;
+    Ok(ProofBundle {
+        bundle_version: 1,
+        raw_artifacts: receipt.raw_artifacts.clone(),
+        receipt,
+        ledger_path,
+        ledger_hash,
+        proof_dag_path,
+        proof_dag_hash,
+        proof_dag,
+    })
+}
+
+fn verify_proof_input(input: &Path) -> anyhow::Result<()> {
+    if input.is_dir() {
+        verify_proof_run_dir(input)
+    } else {
+        verify_proof_bundle_file(input)
+    }
+}
+
+fn verify_proof_run_dir(run_dir: &Path) -> anyhow::Result<()> {
+    let bundle = proof_bundle_for_run(run_dir)?;
+    verify_bundle_hashes(&bundle, run_dir)?;
+    if let Some(ledger_path) = bundle.ledger_path.as_ref() {
+        crate::quorp::run_support::RunLedgerReader::open(ledger_path).validate_hash_chain()?;
+    }
+    Ok(())
+}
+
+fn verify_proof_bundle_file(path: &Path) -> anyhow::Result<()> {
+    let text = std::fs::read_to_string(path)
+        .with_context(|| format!("failed to read {}", path.display()))?;
+    let bundle: ProofBundle = serde_json::from_str(&text)
+        .with_context(|| format!("failed to parse {}", path.display()))?;
+    let base = path.parent().unwrap_or_else(|| Path::new("."));
+    verify_bundle_hashes(&bundle, base)
+}
+
+fn verify_bundle_hashes(bundle: &ProofBundle, base: &Path) -> anyhow::Result<()> {
+    for (name, artifact) in &bundle.raw_artifacts {
+        if let Some(expected) = artifact.sha256.as_deref() {
+            let path = resolve_artifact_path(base, &artifact.path);
+            let actual = sha256_file_required(&path)
+                .with_context(|| format!("failed to verify artifact `{name}`"))?;
+            if actual != expected {
+                anyhow::bail!("artifact `{name}` hash mismatch: expected {expected}, got {actual}");
+            }
+        }
+    }
+    if let (Some(path), Some(expected)) = (&bundle.ledger_path, &bundle.ledger_hash) {
+        let path = resolve_artifact_path(base, path);
+        let actual = sha256_file_required(&path)?;
+        if &actual != expected {
+            anyhow::bail!("ledger hash mismatch: expected {expected}, got {actual}");
+        }
+    }
+    if let Some(dag) = bundle.proof_dag.as_ref() {
+        verify_dag_artifacts(dag, base)?;
+    }
+    Ok(())
+}
+
+fn verify_dag_artifacts(dag: &quorp_verify::ProofDag, base: &Path) -> anyhow::Result<()> {
+    for node in &dag.nodes {
+        for artifact in &node.artifacts {
+            let path = resolve_artifact_path(base, &artifact.path);
+            let actual = sha256_file_required(&path)?;
+            if actual != artifact.sha256 {
+                anyhow::bail!(
+                    "proof DAG artifact {} hash mismatch: expected {}, got {}",
+                    path.display(),
+                    artifact.sha256,
+                    actual
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+fn proof_dag_verdict(dag: &quorp_verify::ProofDag) -> String {
+    if dag.nodes.is_empty() {
+        return "empty".to_string();
+    }
+    if dag.nodes.iter().all(|node| {
+        matches!(
+            node.status,
+            quorp_verify::ProofNodeStatus::Pass | quorp_verify::ProofNodeStatus::Cached
+        )
+    }) {
+        "pass".to_string()
+    } else if dag
+        .nodes
+        .iter()
+        .any(|node| matches!(node.status, quorp_verify::ProofNodeStatus::Fail))
+    {
+        "fail".to_string()
+    } else {
+        "partial".to_string()
+    }
+}
+
+fn resolve_artifact_path(base: &Path, path: &Path) -> PathBuf {
+    if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        base.join(path)
     }
 }
 
@@ -1154,6 +1542,11 @@ enum Command {
     MemLogPath,
     Session(SessionArgs),
     Run(RunCliArgs),
+    Replay(ReplayArgs),
+    Proof {
+        #[command(subcommand)]
+        command: ProofCommand,
+    },
     Diagnostics {
         #[command(subcommand)]
         command: DiagnosticsCommand,
@@ -1188,6 +1581,10 @@ enum Command {
         /// Also harvest top-level Rust symbols and report the count.
         #[arg(long)]
         symbols: bool,
+    },
+    Index {
+        #[command(subcommand)]
+        command: IndexCommand,
     },
     /// Exercise `quorp_permissions::Permissions::check` against a
     /// proposed tool action. Useful for previewing the approval modal
@@ -1320,8 +1717,32 @@ pub enum AgentCommand {
 }
 
 #[derive(Subcommand, Debug)]
+pub enum IndexCommand {
+    Build {
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<PathBuf>,
+    },
+    Status {
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<PathBuf>,
+    },
+    Explain {
+        #[arg(long, value_name = "PATH")]
+        workspace: Option<PathBuf>,
+        symbol: String,
+    },
+}
+
+#[derive(Subcommand, Debug)]
 pub enum RunSubcommand {
     Resume(RunResumeArgs),
+}
+
+#[derive(Subcommand, Debug)]
+pub enum ProofCommand {
+    Show(ProofShowArgs),
+    Export(ProofExportArgs),
+    Verify(ProofVerifyArgs),
 }
 
 #[derive(Subcommand, Debug)]
@@ -1408,6 +1829,32 @@ pub struct RunCliArgs {
 pub struct RunResumeArgs {
     #[arg(long)]
     result_dir: PathBuf,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ReplayArgs {
+    #[arg(value_name = "RUN_DIR")]
+    run_dir: PathBuf,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ProofShowArgs {
+    #[arg(value_name = "RUN_DIR")]
+    run_dir: PathBuf,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ProofExportArgs {
+    #[arg(value_name = "RUN_DIR")]
+    run_dir: PathBuf,
+    #[arg(long)]
+    output: PathBuf,
+}
+
+#[derive(ClapArgs, Debug)]
+pub struct ProofVerifyArgs {
+    #[arg(value_name = "PROOF_FILE_OR_RUN_DIR")]
+    input: PathBuf,
 }
 
 #[derive(ClapArgs, Debug)]

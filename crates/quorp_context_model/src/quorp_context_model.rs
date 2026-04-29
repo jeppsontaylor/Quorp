@@ -51,6 +51,10 @@ pub struct ItemMeta {
     pub trust: Trust,
     pub cost_tokens: u32,
     pub source: Source,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_hash: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub selection_reason: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

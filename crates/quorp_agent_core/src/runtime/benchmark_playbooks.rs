@@ -133,12 +133,6 @@ pub(crate) fn benchmark_source_patch_injection(
     }
     let patch_target =
         benchmark_patch_target_path(repair_state, ledger, &state.agent_repair_memory);
-    if canonical_path(patch_target.as_ref()) != "cargo-dist/src/backend/ci/github.rs" {
-        return None;
-    }
-    if !observed_playbook_target(state, BenchmarkPlaybook::CargoDistCreateRelease) {
-        return None;
-    }
     let actions = exact_benchmark_source_patch_actions_from_state(state, repair_state, ledger)?;
     Some(BenchmarkPlaybookInjection {
         actions,
@@ -357,13 +351,24 @@ pub(crate) fn exact_benchmark_source_patch_action_from_state(
     if canonical_path(patch_target.as_ref()) == "axum/src/routing/mod.rs" {
         return exact_axum_fallback_patch_action_from_state(state, repair_state, patch_target);
     }
-    if ledger.validation_details.diagnostic_class.as_deref() != Some("rust_compile_error") {
-        return None;
-    }
     if canonical_path(patch_target.as_ref()) == "src/round.rs" {
         return exact_chrono_epoch_round_patch_action_from_state(state, repair_state, patch_target);
     }
-    if canonical_path(patch_target.as_ref()) != "src/features/serde/de_owned.rs" {
+    if canonical_path(patch_target.as_ref()) == "src/features/serde/de_owned.rs" {
+        return exact_bincode_de_owned_patch_action_from_state(state, repair_state, patch_target);
+    }
+    if ledger.validation_details.diagnostic_class.as_deref() != Some("rust_compile_error") {
+        return None;
+    }
+    None
+}
+
+pub(crate) fn exact_bincode_de_owned_patch_action_from_state(
+    state: &AgentTaskState,
+    repair_state: &BenchmarkRepairState,
+    patch_target: std::borrow::Cow<'_, str>,
+) -> Option<AgentAction> {
+    if state.policy.mode != PolicyMode::BenchmarkAutonomous {
         return None;
     }
     let source_text = repair_state

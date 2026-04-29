@@ -1,0 +1,139 @@
+# Benchmark Report: Fix serde-owned decode allocation behavior for borrowed cache payloads
+- Issue: `06-rust-swebench-bincode-serde-decoder-memory`
+- Executor: `native`
+- Model: `qwen/qwen3-coder-480b-a35b-instruct`
+- Safety mode: `nvidia_qwen_benchmark`
+- Scenario label: `QuorpRemoteApi`
+- Routing mode: `remote_api`
+- Requested provider: `nvidia`
+- Requested model: `qwen/qwen3-coder-480b-a35b-instruct`
+- Effective provider: `nvidia`
+- Effective model: `qwen/qwen3-coder-480b-a35b-instruct`
+- Used fallback: `false`
+- Comparable run: `true`
+- Provider request id: `chatcmpl-0d0be9cd-5a90-41cd-b0eb-84fcf140b76f`
+- Routing status: `completed`
+- Repo capsule injected: `true`
+- Reasoning enabled: `false`
+- Path resolution failures: `0`
+- Recovery turns: `0`
+- Action contract: `strict_json_v1`
+- Action contract selected: `strict_json_v1`
+- Action contract fallback reason: `n/a`
+- Attempt lineage: `strict_json_v1`
+- Preview edits: `1` / `1` successful
+- Intent edits: replace_range=`1` (hash_mismatch=`0`), modify_toml=`0`, previews_created=`1`, apply_preview=`1` (hash_mismatch=`0`)
+- Effective prompt compaction: `benchmark-state-packet`
+- Fast-loop validation status: `green: workspace_tests`
+- Success: `true`
+- Attempts run: `1` / `1`
+- Total requests: `9`
+- Wall clock ms: `166942`
+- Total billed tokens: `52083`
+- Input tokens (provider billed): `51304`
+- Completion tokens: `779`
+- Reasoning tokens: `0`
+- Cache read input tokens: `28428`
+- Cache write input tokens: `0`
+- Max prompt estimate seen: `8237`
+- Max completion cap seen: `4096`
+- First request prompt estimate: `2127`
+- First request raw prompt estimate: `2127`
+- First request compacted prompt estimate: `n/a`
+- First request first-token ms: `30778`
+- First model turn started: `true`
+- Bootstrap phase: `first_task_model_request`
+- Bootstrap phase detail: `first benchmark task model request started`
+- First task model request seen: `true`
+- Bootstrap elapsed ms before first task request: `1004`
+- Pre-model bootstrap stalled: `false`
+- Bootstrap stall class: `n/a`
+- First action emitted: `true`
+- Task model call count: `9`
+- Tool call count: `13`
+- Edit count: `2`
+- Read count: `8`
+- Write count: `1`
+- Rolled-back write count: `0`
+- Command execution count: `4`
+- Non-support edit count: `2`
+- Rolled-back non-support edit count: `0`
+- Fast loop command seen: `true`
+- Agent final evaluate command seen: `false`
+- Final evaluate command seen: `false`
+- Evaluation command seen: `true`
+- Host evaluation commands run: `1`
+- Text-only action failure: `false`
+- Watchdog near limit: `true`
+- Watchdog triggered: `false`
+- Widening happened: `false`
+- Lines added: `83`
+- Lines removed: `64`
+- Mistakes corrected: `0`
+- Validation commands run: `3`
+- Evaluation commands run: `1`
+- Deterministic evaluation passed: `true`
+- Run dir: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory`
+- Sandbox root: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox`
+- Exit code: `0`
+- Primary failure: `none`
+- Setup failure class: `none`
+- Last failure class: `success`
+- Judge: passed=true model=qwen/qwen3-coder-480b-a35b-instruct summary=The agent successfully fixed the serde-owned decode allocation behavior for borrowed cache payloads.
+- Judge rationale: The agent modified `src/features/serde/de_owned.rs` to fix the issue where serde-backed bincode decode path was incorrectly rejecting owned payloads. The fix was verified by passing the specific test case `issue_474` and the overall `proof-full` evaluation. The changes were minimal and focused on the primary owner file, satisfying the success criteria.
+- Reset outcome: passed=true exit_code=0 duration_ms=284
+- Candidate models: `qwen/qwen3-coder-480b-a35b-instruct`
+- Challenge: `/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/cases/06-rust-swebench-bincode-serde-decoder-memory` condition=`proof-full` workspace=`/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/06-rust-swebench-bincode-serde-decoder-memory/sandbox/workspace/proof-full`
+- Prompt token series by turn: step1=2127 raw=2127 compacted=n/a cap=4096 | step2=2362 raw=2362 compacted=n/a cap=4096 | step3=3963 raw=3963 compacted=n/a cap=4096 | step4=5661 raw=5661 compacted=n/a cap=3072 | step5=6219 raw=6219 compacted=n/a cap=1536 | step6=6590 raw=6590 compacted=n/a cap=1536 | step7=6787 raw=6787 compacted=n/a cap=1536 | step9=8199 raw=8199 compacted=n/a cap=1536 | step9=8237 raw=8237 compacted=n/a cap=1536
+- Read range observations: START_HERE.md requested=none honored=none | SUCCESS.md requested=none honored=none | REFERENCE.md requested=none honored=none | src/features/serde/de_owned.rs requested=none honored=none | tests/issues/issue_474.rs requested=1-30 honored=1-30 | Cargo.toml requested=none honored=none | src/features/serde/de_owned.rs requested=100-170 honored=100-170
+- Failing tests: issue_474::test
+- Primary failure test: `issue_474::test`
+- Primary failure location: `tests/issues/issue_474.rs:47`
+- Assertion excerpt: `thread 'issue_474::test' (36197986) panicked at tests/issues/issue_474.rs:47:59:`
+- Repair required: `true`
+- Repair phase terminal: `needs_fast_loop_rerun`
+- Diagnostic class: `test_assertion_failure`
+- Implementation target lease: `src/features/serde/de_owned.rs`
+- Failure-anchor reread: attempted=`false` honored=`false`
+- Implementation reread: allowed=`false` attempted=`false` honored=`false`
+- Patch packet injected: `true`
+- Patch packet honored range: `100-170`
+- Recommended rerun command: `cargo test --quiet --features serde --test issues issue_474`
+- Fast-loop rerun match kind: `exact_fast_loop`
+- Agent scorecard: parser_recovery=`0` line_tools=`0` controller_reads=`1` redundant_reads=`0` first_write=`7` repeated_edits=`0` bare_replace_block_retries=`0` validation_rejects=`0` test_edit_rejects=`0` target_redirects=`0` evidence_fixations=`0` anchors=`0` syntax_previews=`0`/`1` prose_recoveries=`0` classification=`success`
+- Repair submode: entered=`true` turns=`6` invalid_streak_max=`1` write_locked=`false` write_refusals=`0` scaffold_offered=`false` scaffold_honored=`true` write_emitted=`true` soft_budget_inefficient=`false`
+- Repair-phase invalid action count: `0`
+- Post-fast-loop patch attempted: `true`
+- Post-fast-loop validation rerun attempted: `true`
+- Full validation requested before fast loop: `false`
+
+## Attempts
+- Attempt 1: executor=native, stop=Success, tokens=52083, requests=9, prompt_est=8237, max_tokens=4096, visible=n/a, collector=n/a, evaluation=true, judge=true
+  - Tokens: input=51304 output=779 reasoning=0 cache_read=28428 cache_write=0
+  - Files changed: Cargo.toml, src/features/serde/de_owned.rs
+  - Ignored support-file changes: .quorp/challenge-capsule.json, REFERENCE.md, START_HERE.md, SUCCESS.md, benchmark.json
+  - Validations: custom(1) | fmt | workspace_tests
+  - Fast-loop validation status: green: workspace_tests
+  - Failing tests: issue_474::test
+  - Primary failure test: issue_474::test
+  - Primary failure location: tests/issues/issue_474.rs:47
+  - Assertion excerpt: thread 'issue_474::test' (36197986) panicked at tests/issues/issue_474.rs:47:59:
+  - Repair required: true
+  - Repair phase terminal: needs_fast_loop_rerun
+  - Failure-anchor reread: attempted=false honored=false
+  - Implementation reread: allowed=false attempted=false honored=false
+  - Patch packet injected: true
+  - Patch packet honored range: 100-170
+  - Recommended rerun command: cargo test --quiet --features serde --test issues issue_474
+  - Fast-loop rerun match kind: exact_fast_loop
+  - Diagnostic class: test_assertion_failure
+  - Implementation target lease: src/features/serde/de_owned.rs
+  - Agent scorecard: parser_recovery=0 line_tools=0 controller_reads=1 redundant_reads=0 first_write=7 repeated_edits=0 bare_replace_block_retries=0 validation_rejects=0 test_edit_rejects=0 target_redirects=0 evidence_fixations=0 anchors=0 syntax_previews=0/1 prose_recoveries=0
+  - Repair submode: entered=true turns=6 invalid_streak_max=1 write_locked=false write_refusals=0 scaffold_offered=false scaffold_honored=true write_emitted=true rolled_back_writes=0 rolled_back_non_support=0 soft_budget_inefficient=false
+  - Repair-phase invalid action count: 0
+  - Post-fast-loop patch attempted: true
+  - Post-fast-loop validation rerun attempted: true
+  - Full validation requested before fast loop: false
+  - Prompt token series: step1=2127 | step2=2362 | step3=3963 | step4=5661 | step5=6219 | step6=6590 | step7=6787 | step9=8199 | step9=8237
+  - Read ranges: START_HERE.md [none -> none] | SUCCESS.md [none -> none] | REFERENCE.md [none -> none] | src/features/serde/de_owned.rs [none -> none] | tests/issues/issue_474.rs [1-30 -> 1-30] | Cargo.toml [none -> none] | src/features/serde/de_owned.rs [100-170 -> 100-170]
+  - Safety: nvidia_qwen_benchmark watchdog_near_limit=true watchdog_triggered=false

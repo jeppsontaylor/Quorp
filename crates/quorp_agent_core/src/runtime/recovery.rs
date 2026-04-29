@@ -712,13 +712,36 @@ pub(crate) fn command_looks_like_vague_fast_loop_request(command: &str) -> bool 
 }
 
 pub(crate) fn canonical_path(path: &str) -> String {
-    path.trim()
+    strip_ansi_control_sequences(path)
+        .trim()
         .trim_start_matches("./")
         .replace('\\', "/")
         .split('/')
         .filter(|segment| !segment.is_empty() && *segment != ".")
         .collect::<Vec<_>>()
         .join("/")
+}
+
+fn strip_ansi_control_sequences(text: &str) -> String {
+    let mut stripped = String::with_capacity(text.len());
+    let mut chars = text.chars().peekable();
+    while let Some(char) = chars.next() {
+        if char == '\x1b' {
+            if chars.peek() == Some(&'[') {
+                chars.next();
+                for sequence_char in chars.by_ref() {
+                    if ('\x40'..='\x7e').contains(&sequence_char) {
+                        break;
+                    }
+                }
+            }
+            continue;
+        }
+        if !char.is_control() {
+            stripped.push(char);
+        }
+    }
+    stripped
 }
 
 pub(crate) fn canonical_action_target_path(action: &AgentAction) -> Option<String> {
@@ -912,7 +935,7 @@ pub(crate) fn ranked_implementation_targets_for_ledger(
     let diagnostic_class = ledger.validation_details.diagnostic_class.as_deref();
     let source_diagnostic = matches!(
         diagnostic_class,
-        Some("rust_compile_error" | "test_failure")
+        Some("rust_compile_error" | "test_failure" | "test_assertion_failure")
     );
     let failure_text = ledger
         .last_validation_failure

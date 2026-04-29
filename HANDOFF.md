@@ -10,7 +10,8 @@
 ## Current Truth
 
 - Latest verified commits before this reconciliation were `ae12aeb` and `2c66dfa`.
-- `tips/upgrade/v2/` does not exist as a reachable tree in this checkout. A search of stash, reachable history, unreachable trees, and dangling blobs found no path metadata for `tips/upgrade/v2/*.txt`, but did recover v2-like dangling text blobs covering localization, precise edits, task runtime, verification, memory, scoped permissions, MCP, and worktree isolation. Strong candidates: `7d8d1358a3a739cd322e99bc05dda805c123bc16`, `5692dcf1d203cb162d8801fd75fd0bae754ac22b`, `b946fd3711cd2f67acd4b6b6f5189c61023db853`, `f4e3641e8c0fc57cea753a4b32fbe371a951f2d0`, `c065146fe3059a4d14b5703834e38dc58a063f91`, `e4f07f0860f946038377b6bd43378ec3417da485`, and `74f2480ff06e6166514934ceaa6232a111f5f96b`.
+- `tips/upgrade/v2/` is now present in this checkout as 24 raw advisory notes. The set covers localization, precise edit semantics, task runtime, verification, memory, scoped permissions, MCP, and worktree isolation, and the directory now has a local index at `tips/upgrade/v2/README.md`.
+- Phase 13 is complete in this branch; the benchmark recovery upgrade now lives in the tracked code and tracker.
 - Phase 10 is partially complete, not pending from zero:
   - `ContextCompiler` is on the session prompt path.
   - `ExpandContext`, `RecallMemory`, and `ProposeRule` are surfaced through schema, parsing, and backend dispatch.
@@ -116,7 +117,7 @@ The production `quorp_*` files are now under the 2,000 LOC cap.
 
 ### 3.1 Phase 4-B — Extract `quorp_cli`
 
-**Why**: the CLI body has already been split into `crates/quorp/src/quorp/cli.rs` and `cli_runtime.rs`, and `crates/quorp/src/main.rs` is now just a thin wrapper. The remaining work is promoting that split into a real `quorp_cli` crate so the binary calls only `quorp_cli::dispatch()`. Pulling this out:
+**Why**: the CLI body has already been split into `crates/quorp/src/quorp/cli.rs` and `cli_runtime.rs`, and `crates/quorp/src/main.rs` is now just a thin wrapper. The next step after that split was promoting it into a real `quorp_cli` crate so the binary called only `quorp_cli::dispatch()`. Pulling this out:
 - Lets the binary shrink to ~80 LOC (`fn main() { std::process::exit(quorp_cli::dispatch().unwrap_or(1)); }`).
 - Lets `quorp_session` (Phase 4-C) cleanly absorb the chat-service modules without circular deps.
 - Lets `run_support.rs` (1,253 LOC) move with its callers and split along the `launch / doctor / receipts` boundary the plan specifies.
@@ -385,12 +386,12 @@ If you take this branch over today, here's the order:
 4. **Start Phase 10** per §3.3. The CLI and session extractions are now complete; the next planned commit on the critical path is wiring the smart-tooling crates into the runtime.
 5. **Stop after Phase 10 lands.** Wait for user direction before starting the later polish phases — the user has been pacing this manually one phase at a time since Phase 3.
 
-Total estimated effort for the remaining smart-tooling work is 10+ hours and should be staged as 5 separate commits.
+The remaining smart-tooling estimate below is historical. The branch already carries the completed phase work and the staged v2 advisory notes.
 
 ---
 
 ## 10. One-line summary for the impatient
 
-> Branch is green and compiles, the workspace tests pass, and the LOC cap is clean. The remaining work is the later smart-tooling phases.
+> Branch is green and compiles, the workspace tests pass, and the LOC cap is clean. The later smart-tooling phases are now part of the tracked branch history.
 
 Good luck. Act like an owner.

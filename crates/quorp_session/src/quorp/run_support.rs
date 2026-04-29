@@ -10,6 +10,11 @@ use async_zip::ZipEntryBuilder;
 use async_zip::base::write::ZipFileWriter;
 use futures::AsyncWriteExt as _;
 use futures::io::Cursor;
+use quorp_agent_core::ledger;
+pub use quorp_agent_core::ledger::{
+    LedgerValidationReport, RunLedger, RunLedgerCursor, RunLedgerEvent, RunLedgerReader,
+    RunLedgerWriter, RunSnapshot, SubscriberCursor,
+};
 use quorp_sandbox::{build_command_plan, default_policy, sandbox_runtime_for_path};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -92,6 +97,71 @@ pub fn diagnostics_paths() -> DiagnosticsPaths {
         memory_log: ::paths::memory_log_file().to_path_buf(),
         tui_diagnostics_log: crate::quorp::tui::diagnostics::diagnostics_log_file(),
     }
+}
+
+pub fn run_ledger_path(event_path: &Path) -> PathBuf {
+    ledger::run_ledger_path(event_path)
+}
+
+pub fn run_event_kind_from_payload(payload: &Value) -> Option<String> {
+    ledger::run_event_kind_from_payload(payload)
+}
+
+pub fn read_run_ledger(path: &Path) -> anyhow::Result<Vec<RunLedgerEvent>> {
+    ledger::read_run_ledger(path)
+}
+
+pub fn read_run_event_payloads(run_dir: &Path) -> anyhow::Result<Vec<Value>> {
+    let ledger_path = run_dir.join("run-ledger.jsonl");
+    if ledger_path.exists() {
+        return Ok(read_run_ledger(&ledger_path)?
+            .into_iter()
+            .map(|event| {
+                serde_json::json!({
+                    "ts_ms": event.timestamp_ms,
+                    "payload": event.payload,
+                })
+            })
+            .collect());
+    }
+    read_legacy_event_payloads(&run_dir.join("events.jsonl"))
+}
+
+fn append_run_ledger_record(
+    event_path: &Path,
+    actor: &str,
+    kind: &str,
+    payload: Value,
+    timestamp_ms: u128,
+) -> anyhow::Result<RunLedgerEvent> {
+    let ledger_path = run_ledger_path(event_path);
+    let run_id = ledger::run_id_from_event_path(event_path);
+    RunLedgerWriter::open(ledger_path, run_id)?.append(actor, kind, payload, timestamp_ms)
+}
+
+fn append_run_ledger_from_existing_event(
+    destination_event_path: &Path,
+    event: &RunLedgerEvent,
+) -> anyhow::Result<()> {
+    let ledger_path = run_ledger_path(destination_event_path);
+    let run_id = ledger::run_id_from_event_path(destination_event_path);
+    RunLedgerWriter::open(ledger_path, run_id)?.append_existing_event(event)?;
+    Ok(())
+}
+
+fn read_legacy_event_payloads(path: &Path) -> anyhow::Result<Vec<Value>> {
+    if !path.exists() {
+        return Ok(Vec::new());
+    }
+    let text =
+        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
+    let mut events = Vec::new();
+    for line in text.lines().filter(|line| !line.trim().is_empty()) {
+        let value: Value = serde_json::from_str(line)
+            .with_context(|| format!("failed to parse event line in {}", path.display()))?;
+        events.push(value);
+    }
+    Ok(events)
 }
 
 pub fn resolve_workspace_objective(
@@ -314,7 +384,7 @@ pub fn summarize_run_dir(run_dir: &Path) -> anyhow::Result<String> {
     let request = read_json_value(&run_dir.join("request.json")).unwrap_or(Value::Null);
     let metadata = read_json_value(&run_dir.join("metadata.json")).unwrap_or(Value::Null);
     let summary = read_json_value(&run_dir.join("summary.json")).unwrap_or(Value::Null);
-    let events = read_events(&run_dir.join("events.jsonl"))?;
+    let events = read_run_event_payloads(run_dir)?;
 
     let objective_file = metadata
         .get("objective_file")
@@ -572,14 +642,17 @@ pub fn write_json(path: &Path, value: &impl Serialize) -> anyhow::Result<()> {
 
 pub fn append_event_record(path: &Path, payload: Value) -> anyhow::Result<()> {
     let mut existing = String::new();
+    let timestamp_ms = timestamp_ms();
     if path.exists() {
         existing = fs::read_to_string(path)
             .with_context(|| format!("failed to read {}", path.display()))?;
     } else if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let kind = run_event_kind_from_payload(&payload).unwrap_or_else(|| "event".to_string());
+    append_run_ledger_record(path, "runtime", &kind, payload.clone(), timestamp_ms)?;
     let record = serde_json::json!({
-        "ts_ms": timestamp_ms(),
+        "ts_ms": timestamp_ms,
         "payload": payload,
     });
     existing.push_str(&record.to_string());
@@ -719,6 +792,26 @@ pub fn append_event_log(destination_path: &Path, source_path: &Path) -> anyhow::
     }
     if let Some(parent) = destination_path.parent() {
         fs::create_dir_all(parent)?;
+    }
+    let source_ledger_path = run_ledger_path(source_path);
+    if source_ledger_path.exists() {
+        for event in read_run_ledger(&source_ledger_path)? {
+            append_run_ledger_from_existing_event(destination_path, &event)?;
+        }
+    } else {
+        for line in content.lines().filter(|line| !line.trim().is_empty()) {
+            let value: Value = serde_json::from_str(line).with_context(|| {
+                format!("failed to parse event line in {}", source_path.display())
+            })?;
+            let timestamp_ms = value
+                .get("ts_ms")
+                .and_then(Value::as_u64)
+                .map(u128::from)
+                .unwrap_or_else(timestamp_ms);
+            let payload = value.get("payload").cloned().unwrap_or(value);
+            let kind = run_event_kind_from_payload(&payload).unwrap_or_else(|| "event".to_string());
+            append_run_ledger_record(destination_path, "runtime", &kind, payload, timestamp_ms)?;
+        }
     }
     let mut existing = String::new();
     if destination_path.exists() {
@@ -954,21 +1047,6 @@ fn read_json_value(path: &Path) -> anyhow::Result<Value> {
     let text =
         fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
     serde_json::from_str(&text).with_context(|| format!("failed to parse {}", path.display()))
-}
-
-fn read_events(path: &Path) -> anyhow::Result<Vec<Value>> {
-    if !path.exists() {
-        return Ok(Vec::new());
-    }
-    let text =
-        fs::read_to_string(path).with_context(|| format!("failed to read {}", path.display()))?;
-    let mut events = Vec::new();
-    for line in text.lines().filter(|line| !line.trim().is_empty()) {
-        let value: Value = serde_json::from_str(line)
-            .with_context(|| format!("failed to parse event line in {}", path.display()))?;
-        events.push(value);
-    }
-    Ok(events)
 }
 
 fn event_payload(event: &Value) -> Option<&Value> {
@@ -1282,5 +1360,71 @@ mod tests {
 
         assert_eq!(bundle_path, output_path);
         assert!(bundle_path.exists());
+    }
+
+    #[test]
+    fn append_event_record_writes_ledger_sidecar_and_prefers_it_for_readback() {
+        let temp_dir = tempfile::tempdir().expect("tempdir");
+        let events_path = temp_dir.path().join("events.jsonl");
+
+        append_named_event(
+            &events_path,
+            "run.phase_changed",
+            serde_json::json!({ "phase": "planning" }),
+        )
+        .expect("event one");
+        append_named_event(
+            &events_path,
+            "run.phase_changed",
+            serde_json::json!({ "phase": "executing" }),
+        )
+        .expect("event two");
+
+        let ledger_path = run_ledger_path(&events_path);
+        let ledger = read_run_ledger(&ledger_path).expect("ledger");
+        assert_eq!(ledger.len(), 2);
+        assert_eq!(ledger[0].seq, 1);
+        assert_eq!(ledger[1].seq, 2);
+        assert_eq!(ledger[1].prev_hash, ledger[0].hash);
+        assert_ne!(ledger[0].hash, ledger[1].hash);
+
+        fs::remove_file(&events_path).expect("remove legacy events");
+        let readback = read_run_event_payloads(temp_dir.path()).expect("readback");
+        assert_eq!(readback.len(), 2);
+        assert_eq!(event_name(&readback[0]), Some("run.phase_changed"));
+        assert_eq!(
+            event_field(&readback[0], "phase").and_then(Value::as_str),
+            Some("planning")
+        );
+    }
+
+    #[test]
+    fn append_event_log_merges_run_ledger_chain() {
+        let source_dir = tempfile::tempdir().expect("source dir");
+        let destination_dir = tempfile::tempdir().expect("destination dir");
+        let source_events = source_dir.path().join("events.jsonl");
+        let destination_events = destination_dir.path().join("events.jsonl");
+
+        append_named_event(
+            &source_events,
+            "run.phase_changed",
+            serde_json::json!({ "phase": "retrying" }),
+        )
+        .expect("source event one");
+        append_named_event(
+            &source_events,
+            "run.phase_changed",
+            serde_json::json!({ "phase": "evaluating" }),
+        )
+        .expect("source event two");
+
+        append_event_log(&destination_events, &source_events).expect("append log");
+
+        let ledger = read_run_ledger(&run_ledger_path(&destination_events)).expect("dest ledger");
+        assert_eq!(ledger.len(), 2);
+        assert_eq!(ledger[0].seq, 1);
+        assert_eq!(ledger[1].seq, 2);
+        assert_eq!(ledger[1].prev_hash, ledger[0].hash);
+        assert_eq!(ledger[0].kind, "run.phase_changed");
     }
 }

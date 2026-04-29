@@ -1,0 +1,109 @@
+{
+  "autonomy_profile": "autonomous_host",
+  "completion_policy": {
+    "disable_reasoning": true,
+    "first_turn_max_completion_tokens": 4096,
+    "include_repo_capsule": true,
+    "later_turn_max_completion_tokens": 4096,
+    "native_tool_calls": false,
+    "prompt_compaction_policy": "benchmark-state-packet",
+    "safety_mode_label": "nvidia_qwen_benchmark",
+    "watchdog": {
+      "first_token_timeout_ms": 120000,
+      "idle_timeout_ms": 30000,
+      "total_timeout_ms": 360000
+    }
+  },
+  "max_seconds": 3600,
+  "max_steps": 100,
+  "max_total_tokens": null,
+  "model_id": "qwen/qwen3-coder-480b-a35b-instruct",
+  "objective": {
+    "action_contract_mode": "strict_json_v1",
+    "benchmark_case_class": "narrow-owner-first",
+    "benchmark_companion_files_required": [],
+    "benchmark_expected_touch_targets": [
+      "src/lib.rs"
+    ],
+    "benchmark_fast_loop_commands": [
+      "cargo test --quiet compile_intermediates\ncargo test --quiet gnu_smoke\ncargo test --quiet msvc_smoke",
+      "cargo test --quiet compile_intermediates",
+      "cargo test --quiet gnu_smoke",
+      "cargo test --quiet msvc_smoke"
+    ],
+    "benchmark_mode": true,
+    "benchmark_name": "Expose compile_intermediates so callers can reuse object files safely",
+    "benchmark_named_tests": [
+      "cargo test --quiet",
+      "compile()",
+      "gnu_smoke",
+      "msvc_smoke"
+    ],
+    "benchmark_owner_files": [
+      "src/lib.rs",
+      "tests/test.rs"
+    ],
+    "benchmark_transcript_compression": true,
+    "context_files": [
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox/workspace/proof-full/benchmark.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox/workspace/proof-full/START_HERE.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox/workspace/proof-full/SUCCESS.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox/workspace/proof-full/REFERENCE.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox/workspace/proof-full/.quorp/challenge-capsule.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox/workspace/proof-full/AGENTS.md",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox/workspace/proof-full/agent-map.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox/workspace/proof-full/test-map.json",
+      "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox/workspace/proof-full/.witness/witness-graph.json"
+    ],
+    "evaluate_command": "./evaluate.sh <condition>",
+    "executor_model": "qwen/qwen3-coder-480b-a35b-instruct",
+    "issue_id": "10-rust-swebench-cc-rs-compile-intermediates",
+    "objective_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox/QUORP_CHALLENGE_OBJECTIVE.md",
+    "planner_model": null,
+    "prompt_compaction_policy": "benchmark-state-packet",
+    "reasoning_enabled": false,
+    "repair_artifacts": [],
+    "repo_capsule_injected": true,
+    "warpos_capture_call_class": "task_model_call",
+    "warpos_capture_scope": "benchmark_task"
+  },
+  "objective_file": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox/QUORP_CHALLENGE_OBJECTIVE.md",
+  "policy_allow_network": false,
+  "policy_allow_run_command": [
+    "cargo ",
+    "./evaluate.sh",
+    "bash ./evaluate.sh",
+    "sh ./evaluate.sh",
+    "./evaluate_visible.sh",
+    "bash ./evaluate_visible.sh",
+    "sh ./evaluate_visible.sh"
+  ],
+  "policy_max_command_output_bytes": 131072,
+  "policy_max_command_runtime_seconds": 180,
+  "policy_mode": "benchmark_autonomous",
+  "provider": "nvidia",
+  "routing": {
+    "auth_mode": "nvidia_api_key",
+    "candidate_models": [
+      "qwen/qwen3-coder-480b-a35b-instruct"
+    ],
+    "comparable": true,
+    "effective_model": "qwen/qwen3-coder-480b-a35b-instruct",
+    "effective_provider": "nvidia",
+    "fallback_reason": null,
+    "provider_base_url": "https://integrate.api.nvidia.com/v1",
+    "provider_request_id": "chatcmpl-ef49bdb0-5469-4638-bd92-c0456b3accbf",
+    "proxy_visible_remote_egress_expected": true,
+    "requested_model": "qwen/qwen3-coder-480b-a35b-instruct",
+    "requested_provider": "nvidia",
+    "routing_mode": "remote_api",
+    "routing_status": "completed",
+    "scenario_label": "QuorpRemoteApi",
+    "used_fallback": false
+  },
+  "runtime": {
+    "mode": "native"
+  },
+  "scenario_label": "QuorpRemoteApi",
+  "workspace": "/Users/bentaylor/Library/Caches/Quorp/benchmarks/rust-swebench-top5-full-fixed-20260428-205401/run/10-rust-swebench-cc-rs-compile-intermediates/sandbox/workspace/proof-full"
+}
