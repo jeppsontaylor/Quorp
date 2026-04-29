@@ -1947,22 +1947,26 @@ pub(crate) fn parse_usage_payload(
         total_billed_tokens,
         reasoning_tokens: usage_u64(&[
             &["reasoning_tokens"],
+            &["reasoning_output_tokens"],
             &["output_tokens_details", "reasoning_tokens"],
             &["completion_tokens_details", "reasoning_tokens"],
         ]),
         cache_read_input_tokens: usage_u64(&[
             &["cache_read_input_tokens"],
+            &["cached_input_tokens"],
             &["input_tokens_details", "cached_tokens"],
             &["prompt_tokens_details", "cached_tokens"],
         ]),
         cache_write_input_tokens: usage_u64(&[
             &["cache_write_input_tokens"],
+            &["cache_write_tokens"],
             &["input_tokens_details", "cache_write_tokens"],
             &["prompt_tokens_details", "cache_write_tokens"],
         ]),
         provider_request_id: provider_request_id.map(str::to_string).or_else(|| {
             payload
                 .get("provider_request_id")
+                .or_else(|| payload.get("id"))
                 .and_then(serde_json::Value::as_str)
                 .map(str::to_string)
         }),
@@ -1973,5 +1977,5 @@ pub(crate) fn parse_usage_payload(
 }
 
 #[cfg(test)]
-#[path = "turn_parse_tests.rs"]
+#[path = "../../../../../../testing/quorp_session/quorp/tui/chat_service/turn_parse/tests.rs"]
 mod tests;

@@ -362,6 +362,19 @@ impl RuntimeEventSink for RuntimeEventProgressSink {
             } => Some(format!(
                 "step {step}: model request #{request_id} started ({message_count} messages)"
             )),
+            RuntimeEvent::ContextPressureMeasured { step, telemetry } => Some(format!(
+                "step {step}: context pressure {:?} ({:.0}% used)",
+                telemetry.pressure,
+                telemetry.pressure_ratio() * 100.0
+            )),
+            RuntimeEvent::ContextCompacted {
+                step,
+                packet_id,
+                removed_messages,
+                ..
+            } => Some(format!(
+                "step {step}: context compacted into {packet_id} (removed {removed_messages} messages)"
+            )),
             RuntimeEvent::ModelRequestFinished {
                 step,
                 request_id,
@@ -647,6 +660,24 @@ impl HeadlessEventRecorder {
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "default".to_string()),
                 safety_mode.as_deref().unwrap_or("standard")
+            ),
+            RuntimeEvent::ContextPressureMeasured { step, telemetry } => eprintln!(
+                "{}[context]{} step={} pressure={:?} used={:.0}%",
+                ANSI_CYAN,
+                ANSI_RESET,
+                step,
+                telemetry.pressure,
+                telemetry.pressure_ratio() * 100.0
+            ),
+            RuntimeEvent::ContextCompacted {
+                step,
+                packet_id,
+                removed_messages,
+                retained_messages,
+                ..
+            } => eprintln!(
+                "{}[context]{} step={} packet={} removed={} retained={}",
+                ANSI_CYAN, ANSI_RESET, step, packet_id, removed_messages, retained_messages
             ),
             RuntimeEvent::ModelRequestFinished {
                 step,
@@ -1771,6 +1802,29 @@ fn infer_routing_summary_from_request(request: &CompletionRequest) -> RoutingDec
         .to_string();
     let requested_model = request.model_id.clone();
     match provider {
+        InteractiveProviderKind::Local => {
+            let runtime = crate::quorp::provider_config::resolve_local_runtime(
+                request.base_url_override.as_deref(),
+            )
+            .ok();
+            RoutingDecision {
+                routing_mode,
+                requested_provider: provider.label().to_string(),
+                requested_model: requested_model.clone(),
+                candidate_models: vec![requested_model.clone()],
+                effective_provider: provider.label().to_string(),
+                effective_model: requested_model,
+                used_fallback: false,
+                fallback_reason: None,
+                comparable: true,
+                provider_base_url: runtime.as_ref().map(|value| value.base_url.clone()),
+                auth_mode: runtime.as_ref().map(|value| value.auth_mode.clone()),
+                proxy_visible_remote_egress_expected: runtime
+                    .as_ref()
+                    .map(|value| value.proxy_visible_remote_egress_expected)
+                    .unwrap_or(true),
+            }
+        }
         InteractiveProviderKind::Nvidia => {
             let runtime = crate::quorp::provider_config::resolve_nvidia_runtime(
                 request.base_url_override.as_deref(),

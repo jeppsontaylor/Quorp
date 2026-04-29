@@ -26,31 +26,33 @@ done <<< "$tracked_tip_files"
 
 echo "[quorp-audit-gaps] checking benchmark playbook reachability"
 
-playbook_hits="$(
-  rg -n 'maybe_inject_case0[45]_playbook_patch|controller_injection_for_playbook|benchmark_playbook_allows_extra_compacted_action|BenchmarkPlaybook' crates/quorp_agent_core/src || true
-)"
-
-if [[ -n "$playbook_hits" ]]; then
-  unexpected_hits="$(
-    printf '%s\n' "$playbook_hits" | grep -Ev '^(crates/quorp_agent_core/src/runtime\.rs:|crates/quorp_agent_core/src/runtime/(benchmark_playbooks|normalize|path_intel|turn)\.rs:|crates/quorp_agent_core/src/runtime/tests(_chunk_[0-9]+)?\.rs:)' || true
-  )"
-  if [[ -n "$unexpected_hits" ]]; then
-    printf '%s\n' "$unexpected_hits" >&2
-    fail "benchmark playbook helpers are referenced outside the allowed runtime files"
-  fi
-fi
-rg -n -U 'compact_turn_actions\(\s*\n\s*&mut turn,\s*\n\s*state\.policy\.mode == PolicyMode::BenchmarkAutonomous,\s*\n\s*\)' \
-  crates/quorp_agent_core/src/runtime/turn.rs >/dev/null \
-  || fail "benchmark action compaction must be gated on BenchmarkAutonomous policy mode"
-rg -n -U 'allow_benchmark_playbook_extras\s*\n\s*&& turn\.actions\.iter\(\)' \
-  crates/quorp_agent_core/src/runtime/turn.rs >/dev/null \
-  || fail "benchmark playbook compaction extras must require an explicit benchmark gate"
+./script/quorp-no-benchmark-oracles
+./script/quorp-test-layout-audit
 
 echo "[quorp-audit-gaps] checking native backend write-handler parity"
 
+normalize_rust_test_declarations() {
+  python3 - "$1" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+path = Path(sys.argv[1])
+text = path.read_text()
+text = re.sub(
+    r'\n?#\[cfg\(test\)\]\s*\n'
+    r'(?:#\[path = "[^"]+"\]\s*\n)?'
+    r'\s*mod tests;\s*\n?',
+    '\n',
+    text,
+)
+print(text, end="")
+PY
+}
+
 if ! cmp -s \
-  crates/quorp/src/quorp/tui/native_backend/actions.rs \
-  crates/quorp_session/src/quorp/tui/native_backend/actions.rs
+  <(normalize_rust_test_declarations crates/quorp/src/quorp/tui/native_backend/actions.rs) \
+  <(normalize_rust_test_declarations crates/quorp_session/src/quorp/tui/native_backend/actions.rs)
 then
   fail "main/session native backend action handlers have diverged"
 fi

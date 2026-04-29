@@ -73,32 +73,6 @@ pub(crate) async fn handle_model_turn(
                     budget: request.parser_recovery_budget,
                     message: recovery_message,
                 });
-                if maybe_inject_case04_playbook_patch(
-                    step,
-                    state,
-                    request,
-                    tool_executor,
-                    event_sink,
-                    transcript,
-                    error_class,
-                )
-                .await?
-                {
-                    return Ok(ControlFlow::ContinueNoBudget);
-                }
-                if maybe_inject_case05_playbook_patch(
-                    step,
-                    state,
-                    request,
-                    tool_executor,
-                    event_sink,
-                    transcript,
-                    error_class,
-                )
-                .await?
-                {
-                    return Ok(ControlFlow::ContinueNoBudget);
-                }
                 if maybe_inject_required_repair_read(
                     step,
                     state,
@@ -172,32 +146,6 @@ pub(crate) async fn handle_model_turn(
                 budget: request.parser_recovery_budget,
                 message: recovery_message,
             });
-            if maybe_inject_case04_playbook_patch(
-                step,
-                state,
-                request,
-                tool_executor,
-                event_sink,
-                transcript,
-                "output_truncated",
-            )
-            .await?
-            {
-                return Ok(ControlFlow::ContinueNoBudget);
-            }
-            if maybe_inject_case05_playbook_patch(
-                step,
-                state,
-                request,
-                tool_executor,
-                event_sink,
-                transcript,
-                "output_truncated",
-            )
-            .await?
-            {
-                return Ok(ControlFlow::ContinueNoBudget);
-            }
             if maybe_inject_required_repair_read(
                 step,
                 state,
@@ -270,32 +218,6 @@ pub(crate) async fn handle_model_turn(
                 budget: request.parser_recovery_budget,
                 message: recovery_message,
             });
-            if maybe_inject_case04_playbook_patch(
-                step,
-                state,
-                request,
-                tool_executor,
-                event_sink,
-                transcript,
-                "missing_json_object",
-            )
-            .await?
-            {
-                return Ok(ControlFlow::ContinueNoBudget);
-            }
-            if maybe_inject_case05_playbook_patch(
-                step,
-                state,
-                request,
-                tool_executor,
-                event_sink,
-                transcript,
-                "missing_json_object",
-            )
-            .await?
-            {
-                return Ok(ControlFlow::ContinueNoBudget);
-            }
             if maybe_inject_required_repair_read(
                 step,
                 state,
@@ -362,32 +284,6 @@ pub(crate) async fn handle_model_turn(
                 budget: request.parser_recovery_budget,
                 message: recovery_message,
             });
-            if maybe_inject_case04_playbook_patch(
-                step,
-                state,
-                request,
-                tool_executor,
-                event_sink,
-                transcript,
-                "missing_json_object",
-            )
-            .await?
-            {
-                return Ok(ControlFlow::ContinueNoBudget);
-            }
-            if maybe_inject_case05_playbook_patch(
-                step,
-                state,
-                request,
-                tool_executor,
-                event_sink,
-                transcript,
-                "missing_json_object",
-            )
-            .await?
-            {
-                return Ok(ControlFlow::ContinueNoBudget);
-            }
             if maybe_inject_required_repair_read(
                 step,
                 state,
@@ -459,16 +355,48 @@ pub(crate) async fn handle_model_turn(
     canonicalize_benchmark_turn_actions(&mut turn, state.benchmark_case_ledger.as_ref());
     fill_hash_guards_from_observed_context(&mut turn, state);
     normalize_benchmark_repair_turn_actions(&mut turn, state);
-    compact_turn_actions(
-        &mut turn,
-        state.policy.mode == PolicyMode::BenchmarkAutonomous,
-    );
+    compact_turn_actions(&mut turn);
     if turn
         .parse_warnings
         .iter()
         .any(|warning| warning.contains("line-oriented tool syntax"))
     {
         state.record_line_oriented_parse();
+    }
+
+    if let Some(reason) =
+        confusion_detector::assistant_action_mismatch(&turn.assistant_message, &turn.actions)
+    {
+        let parser_recovery_stalled =
+            state.note_parser_recovery_failure(step, "assistant_action_mismatch", &reason);
+        let recovery_message = confusion_detector::recovery_refresh_message(&reason);
+        transcript.push(TranscriptMessage {
+            role: TranscriptRole::User,
+            content: recovery_message.clone(),
+        });
+        event_sink.emit(RuntimeEvent::PhaseChanged {
+            phase: "retrying".to_string(),
+            detail: Some("assistant/tool mismatch".to_string()),
+        });
+        event_sink.emit(RuntimeEvent::ParseRecoveryQueued {
+            step,
+            error_class: "assistant_action_mismatch".to_string(),
+            failures: state.parser_recovery_failures,
+            budget: request.parser_recovery_budget,
+            message: recovery_message,
+        });
+        if parser_recovery_stalled {
+            event_sink.emit(RuntimeEvent::ParseRecoveryExhausted {
+                failures: state.parser_recovery_failures,
+                last_error: reason.clone(),
+                error_class: "parser_recovery_stalled".to_string(),
+            });
+            return Err(
+                "Autonomous repair loop stalled during assistant/tool mismatch recovery."
+                    .to_string(),
+            );
+        }
+        return Ok(ControlFlow::ContinueNoBudget);
     }
 
     if turn.actions.is_empty()
@@ -608,33 +536,7 @@ pub(crate) async fn handle_model_turn(
             role: TranscriptRole::User,
             content: message,
         });
-        if maybe_inject_case04_playbook_patch(
-            step,
-            state,
-            request,
-            tool_executor,
-            event_sink,
-            transcript,
-            "invalid_repair_action",
-        )
-        .await?
-        {
-            return Ok(ControlFlow::ContinueNoBudget);
-        }
-        if maybe_inject_case05_playbook_patch(
-            step,
-            state,
-            request,
-            tool_executor,
-            event_sink,
-            transcript,
-            "invalid_repair_action",
-        )
-        .await?
-        {
-            return Ok(ControlFlow::ContinueNoBudget);
-        }
-        if maybe_inject_exact_benchmark_source_patch(
+        if maybe_inject_benchmark_source_patch(
             step,
             state,
             request,
@@ -736,19 +638,6 @@ pub(crate) async fn handle_model_turn(
 
     if state.turn_repeats_known_inspection_only(&turn.actions) {
         state.record_redundant_inspection_turn();
-        if maybe_inject_case05_playbook_patch(
-            step,
-            state,
-            request,
-            tool_executor,
-            event_sink,
-            transcript,
-            "redundant_inspection",
-        )
-        .await?
-        {
-            return Ok(ControlFlow::ContinueNoBudget);
-        }
         if state.benchmark_needs_baseline_validation()
             && let Some(message) = state.benchmark_baseline_validation_message()
         {
@@ -1147,7 +1036,7 @@ pub(crate) async fn handle_model_turn(
                     )
                     .await?
                     {
-                        if maybe_inject_exact_benchmark_source_patch(
+                        if maybe_inject_benchmark_source_patch(
                             step,
                             state,
                             request,
@@ -1301,25 +1190,11 @@ pub(crate) fn emit_assistant_turn_summary(
     });
 }
 
-pub(crate) fn compact_turn_actions(
-    turn: &mut AgentTurnResponse,
-    allow_benchmark_playbook_extras: bool,
-) {
+pub(crate) fn compact_turn_actions(turn: &mut AgentTurnResponse) {
     const MAX_ACTIONS_PER_TURN: usize = 6;
 
     let original_len = turn.actions.len();
-    let max_actions = if allow_benchmark_playbook_extras
-        && turn.actions.iter().any(|action| {
-            matches!(
-                action,
-                AgentAction::WriteFile { path, .. }
-                    if benchmark_playbook_allows_extra_compacted_action(path)
-            )
-        }) {
-        8
-    } else {
-        MAX_ACTIONS_PER_TURN
-    };
+    let max_actions = MAX_ACTIONS_PER_TURN;
     let mut seen = HashSet::new();
     let mut deduped = Vec::with_capacity(turn.actions.len());
     for action in turn.actions.drain(..) {

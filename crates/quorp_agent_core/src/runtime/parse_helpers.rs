@@ -705,19 +705,7 @@ pub(crate) fn maybe_repair_manifest_turn_parse_error(
     ) {
         return None;
     }
-    let action = exact_manifest_preview_action_from_state(state, repair_state, ledger)?;
-    Some(AgentTurnResponse {
-        assistant_message: String::new(),
-        actions: vec![action],
-        task_updates: Vec::new(),
-        memory_updates: Vec::new(),
-        requested_mode_change: None,
-        verifier_plan: None,
-        parse_warnings: vec![
-            "Recovered malformed manifest PreviewEdit JSON by constructing the benchmark manifest PreviewEdit from loaded context."
-                .to_string(),
-        ],
-    })
+    None
 }
 
 pub(crate) fn maybe_repair_plain_text_fast_loop_turn(

@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+fail() {
+  echo "[quorp-test-layout-audit] $1" >&2
+  exit 1
+}
+
+echo "[quorp-test-layout-audit] checking Rust test layout"
+
+if rg -n '^\s*#\[(test|tokio::test|gpui::test|smol_potat::test)\]' crates; then
+  fail "actual test functions must live under testing/"
+fi
+
+if rg -n -U '^\s*#\[cfg\(test\)\]\s*\n\s*mod [A-Za-z0-9_]+\s*\{' crates; then
+  fail "inline test modules must be moved under testing/"
+fi
+
+python3 - <<'PY'
+from pathlib import Path
+import re
+import sys
+
+bad = []
+pattern = re.compile(
+    r'#\[cfg\(test\)\]\s*\n'
+    r'(?:(#\[path = "([^"]+)"\])\s*\n)?'
+    r'\s*mod tests;'
+)
+
+for path in sorted(Path("crates").rglob("*.rs")):
+    if "target" in path.parts:
+        continue
+    text = path.read_text()
+    for match in pattern.finditer(text):
+        module_path = match.group(2)
+        if module_path is None or "testing/" not in module_path:
+            line = text.count("\n", 0, match.start()) + 1
+            bad.append(f"{path}:{line}: mod tests must use #[path = \"...testing/...\"]")
+
+if bad:
+    print("\n".join(bad), file=sys.stderr)
+    sys.exit(1)
+PY
+
+leftovers="$(
+  find crates \
+    \( -path '*/target/*' -prune \) -o \
+    \( -name 'tests.rs' -o -name 'tests_chunk_*.rs' -o -name '*_tests.rs' \) \
+    -type f -print
+)"
+if [[ -n "$leftovers" ]]; then
+  printf '%s\n' "$leftovers" >&2
+  fail "test files must not remain under crates/"
+fi
+
+echo "[quorp-test-layout-audit] ok"

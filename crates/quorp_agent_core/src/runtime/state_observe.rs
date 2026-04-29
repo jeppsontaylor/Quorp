@@ -289,6 +289,9 @@ impl AgentTaskState {
                 self.repair_requirement =
                     repair_requirement_from_action(outcome.action(), output_text);
             }
+            self.agent_repair_memory.last_failure_packet = Some(
+                quorp_verify::parse_failure_packet(&outcome.action().summary(), output_text),
+            );
         }
 
         match outcome.action() {
@@ -344,6 +347,7 @@ impl AgentTaskState {
                     }
                     self.last_failing_verifier = None;
                     self.last_safe_checkpoint = Some(plan.summary());
+                    self.agent_repair_memory.last_failure_packet = None;
                     if let Some(ledger) = self.benchmark_case_ledger.as_mut() {
                         if let Some(match_kind) = validation_plan_fast_loop_match_kind(ledger, plan)
                         {
@@ -412,6 +416,7 @@ impl AgentTaskState {
                         ActionOutcome::Success { .. } => {
                             self.verified_green = true;
                             self.last_failing_verifier = None;
+                            self.agent_repair_memory.last_failure_packet = None;
                             ledger.validation_status = Some("green: fast-loop".to_string());
                             ledger.last_validation_failure = None;
                             ledger.validation_details.fast_loop_rerun_match_kind =
@@ -433,6 +438,7 @@ impl AgentTaskState {
                 if matches!(outcome, ActionOutcome::Success { .. }) {
                     self.has_mutating_change = true;
                     self.verified_green = false;
+                    self.agent_repair_memory.last_failure_packet = None;
                 }
             }
             _ => {}

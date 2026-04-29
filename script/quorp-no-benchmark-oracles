@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+fail() {
+  echo "[quorp-no-benchmark-oracles] $1" >&2
+  exit 1
+}
+
+echo "[quorp-no-benchmark-oracles] checking runtime sources for benchmark oracle hooks"
+
+patterns=(
+  'maybe_inject_exact_benchmark_source_patch'
+  'exact_manifest_preview_action_from_state'
+  'exact_benchmark_source_patch_actions_from_state'
+  'exact_benchmark_source_patch_action_from_state'
+  'exact_bincode_de_owned_patch_action_from_state'
+  'exact_chrono_epoch_round_patch_action_from_state'
+  'exact_axum_fallback_patch_action_from_state'
+  'exact_cargo_dist_create_release_patch_actions_from_state'
+  'exact_cc_rs_compile_intermediates_patch_action_from_state'
+  'BenchmarkPlaybook'
+  'maybe_inject_case0'
+  'controller_injection_for_playbook'
+  'benchmark_playbook_allows_extra_compacted_action'
+  'benchmark/challenges/'
+  'cargo-dist/src/backend/ci/github.rs'
+  'compile_intermediates'
+  'axum/src/routing/mod.rs'
+  'src/features/serde/de_owned.rs'
+)
+
+for pattern in "${patterns[@]}"; do
+  if rg -n -g '!testing/**' -g '!benchmark/challenges/**' "$pattern" crates/quorp_agent_core; then
+    fail "found benchmark oracle hook in runtime sources: $pattern"
+  fi
+done
+
+echo "[quorp-no-benchmark-oracles] ok"

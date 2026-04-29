@@ -1,0 +1,1111 @@
+Below are my ranked **top 8 ideas**. I’m ranking by capability impact, token reduction, uniqueness, security/eval defensibility, and feasibility as real PRs.
+
+The biggest finding: **Quorp already has unusually strong primitives** — typed runtime actions, Patch VM receipts, verification reports, context/index infrastructure, event fanout, memory/rule scaffolding, sandbox/permission primitives, and benchmark telemetry — but the next leap is to turn those primitives into a **ledger-native autonomous engineering OS** rather than adding more one-off agent tricks. The 5/5 Rust SWE-bench run is valuable evidence, but it also exposes the key risk: some success came from benchmark-specific deterministic repair playbooks, so Quorp should generalize that behavior or quarantine it, not build on it as product logic. The run archive shows 5/5 success, 28 requests, 180,546 billed tokens, about 696 seconds wall clock, and several signs of inefficiency: delayed first writes, parser recovery, watchdog pressure, and patch packet injection. ([GitHub][1])
+
+I could not run a local build in this environment, so I am not claiming these snippets compile as-is. The recommendations are based on repo files and benchmark artifacts inspected via the public repo and current public sources.
+
+---
+
+## 1. Ledger-native Context OS: lossless state packets, visible context pressure, and automatic compaction
+
+**This is the highest-leverage upgrade.** Quorp should not merely “summarize the conversation.” It should maintain a durable, typed **State Packet** that is regenerated from the ledger after every important event and used as the authoritative compacted prompt substrate.
+
+### Why this matters
+
+The benchmark run shows token and latency pressure even on only five short-ish cases. The bincode case used 52,083 billed tokens with first write at step 7; axum used 62,702 billed tokens with first write at step 9; several cases hit watchdog pressure. ([GitHub][2]) Quorp already has pieces for this: `PromptCompactionPolicy`, token usage telemetry, runtime events, checkpoint events, and `AgentTaskStateSnapshot` with acceptance criteria, working set, verifier state, failed edits, total tokens, and repair memory. ([GitHub][3]) The context index already stores lexical chunks, symbols, diagnostics, imports, tests, proof history, and context-pack provenance in `.quorp/index/index.sqlite`. ([GitHub][4])
+
+Current competitors point in the same direction but do not fully expose a ledger-native context OS. Codex uses sandboxed persistent workspaces and resumable file/command work; Codex also uses progressive disclosure for skills, loading only a small skill list before loading full instructions. ([OpenAI Developers][5]) Claude exposes `/compact`-style lifecycle hooks through `PreCompact` and `PostCompact`, but Quorp can go further by making compaction proof-backed and replayable. ([Claude][6])
+
+### What to build
+
+Add a typed state layer that lives between the runtime ledger and prompt builder.
+
+**Add files**
+
+```text
+crates/quorp_agent_core/src/runtime/context_budget.rs
+crates/quorp_agent_core/src/runtime/state_packet.rs
+crates/quorp_agent_core/src/runtime/compaction.rs
+crates/quorp_context_model/src/state_packet.rs
+crates/quorp_session/src/prompt_ledger.rs
+crates/quorp_render/src/context_gauge.rs
+crates/quorp_slash/src/commands/status.rs
+crates/quorp_slash/src/commands/compact.rs
+```
+
+**Store artifacts**
+
+```text
+.quorp/runs/<run_id>/ledger/events.jsonl
+.quorp/runs/<run_id>/state/state-packet.latest.json
+.quorp/runs/<run_id>/state/state-packet.<step>.json
+.quorp/runs/<run_id>/context/context-pack.<step>.json
+.quorp/runs/<run_id>/proof/proof-dag.json
+```
+
+### Hard part: make the compacted packet auditable and loss-resistant
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ContextPressure {
+    pub model_context_limit: u32,
+    pub prompt_tokens_est: u32,
+    pub response_budget_tokens: u32,
+    pub tool_schema_tokens: u32,
+    pub ledger_tail_tokens: u32,
+    pub state_packet_tokens: u32,
+    pub retrieved_context_tokens: u32,
+    pub pressure: PressureLevel,
+    pub next_compaction_at: u32,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PressureLevel {
+    Green,
+    Yellow,
+    Orange,
+    Red,
+    Critical,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatePacket {
+    pub run_id: RunId,
+    pub step: u64,
+
+    // Never drop unless user explicitly changes the task.
+    pub objective: ObjectiveRecord,
+    pub user_constraints: Vec<ConstraintRecord>,
+    pub security_boundary: SecurityBoundaryRecord,
+
+    // Planning state.
+    pub task_dag: TaskDagSnapshot,
+    pub current_focus: Option<TaskId>,
+    pub open_questions: Vec<OpenQuestion>,
+    pub decisions: Vec<DecisionRecord>,
+
+    // Code/work state.
+    pub working_set: Vec<FileStateRecord>,
+    pub changed_files: Vec<ChangedFileRecord>,
+    pub important_symbols: Vec<SymbolRecord>,
+    pub context_pack_refs: Vec<ContextPackRef>,
+
+    // Failure and validation state.
+    pub failed_attempts: Vec<FailedAttemptRecord>,
+    pub validation_state: ValidationStateRecord,
+    pub proof_refs: Vec<ProofRef>,
+
+    // Memory/rule state.
+    pub active_rule_refs: Vec<RuleRef>,
+    pub negative_memory_refs: Vec<MemoryRef>,
+
+    // Replay/provenance.
+    pub source_event_range: EventRange,
+    pub hash: ContentHash,
+}
+
+pub fn maybe_compact(
+    pressure: &ContextPressure,
+    packet: &StatePacket,
+    ledger_tail: &[RuntimeEvent],
+) -> Option<CompactionPlan> {
+    let needs_compaction = matches!(
+        pressure.pressure,
+        PressureLevel::Orange | PressureLevel::Red | PressureLevel::Critical
+    );
+
+    if !needs_compaction {
+        return None;
+    }
+
+    Some(CompactionPlan {
+        preserve: PreserveSet {
+            objective: true,
+            user_constraints: true,
+            security_boundary: true,
+            task_dag: true,
+            failed_attempts: true,
+            validation_state: true,
+            proof_refs: true,
+            active_rules: true,
+        },
+        ledger_tail_events: select_recent_high_signal_events(ledger_tail, 32),
+        retrieved_context_budget: pressure
+            .model_context_limit
+            .saturating_sub(pressure.response_budget_tokens)
+            .saturating_mul(35)
+            / 100,
+        packet_ref: packet.hash.clone(),
+    })
+}
+```
+
+### UI behavior
+
+`/status` should show:
+
+```text
+Context: 38.2k / 128k  YELLOW
+State packet: 2.8k
+Ledger tail: 7.1k
+Retrieved code: 22.4k
+Tool schemas: 3.5k
+Next auto-compact: 44k
+Last compact: step 18, preserved 11 tasks, 4 failed attempts, 3 verifier states
+```
+
+`/compact` should offer:
+
+```text
+compact now
+compact and replay-check
+show loss audit
+restore pre-compact prompt
+```
+
+### Acceptance tests
+
+1. Replaying the axum case should preserve objective, touched file, failed command, successful verifier, and final patch after compaction.
+2. A synthetic long session with 100 events should remain resumable from `state-packet.latest.json`.
+3. `/status --json` should expose context pressure and compaction state.
+4. Compaction must never drop security boundaries, user constraints, failed attempts, or open validation failures.
+
+---
+
+## 2. Quarantine benchmark playbooks; replace them with a generic Failure Pattern Doctor
+
+This is the most important **trust** upgrade. Quorp should not ship benchmark-specific deterministic repair playbooks in the core autonomous runtime.
+
+### Why this matters
+
+The file `crates/quorp_agent_core/src/runtime/benchmark_playbooks.rs` is explicitly described as benchmark-specific deterministic repair playbooks and contains named cases such as cargo-dist, cc-rs, axum, chrono, and bincode, with exact source/patch generation functions. ([GitHub][7]) The runtime turn loop also contains benchmark repair injection paths and parser recovery paths. ([GitHub][8]) The 5/5 result is still useful, but several cases report patch packet injection or controller reads; axum and bincode especially look dependent on repair scaffolding. ([GitHub][1])
+
+The right move is not to delete the learning. It is to **extract the general strategy** and quarantine the oracle-like patch content.
+
+### What to build
+
+**Move**
+
+```text
+crates/quorp_agent_core/src/runtime/benchmark_playbooks.rs
+```
+
+to:
+
+```text
+crates/quorp_benchmark/src/oracle_playbooks.rs
+```
+
+behind:
+
+```rust
+#[cfg(any(test, feature = "benchmark-oracles"))]
+```
+
+Then add:
+
+```text
+crates/quorp_repair_doctor/src/lib.rs
+crates/quorp_repair_doctor/src/failure_signature.rs
+crates/quorp_repair_doctor/src/repair_packet.rs
+crates/quorp_repair_doctor/src/patterns/rust.rs
+crates/quorp_repair_doctor/src/patterns/cargo.rs
+```
+
+### Replace exact patches with general diagnosis packets
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FailureSignature {
+    pub language: Language,
+    pub command: String,
+    pub exit_code: Option<i32>,
+    pub stderr_fingerprint: String,
+    pub failing_tests: Vec<String>,
+    pub likely_symbols: Vec<String>,
+    pub likely_files: Vec<PathBuf>,
+    pub diagnostic_classes: Vec<DiagnosticClass>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepairPacket {
+    pub signature: FailureSignature,
+    pub hypotheses: Vec<RepairHypothesis>,
+    pub required_reads: Vec<ReadSpec>,
+    pub forbidden_shortcuts: Vec<ForbiddenShortcut>,
+    pub validation_plan: Vec<VerifyStep>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RepairHypothesis {
+    pub title: String,
+    pub confidence: f32,
+    pub evidence: Vec<EvidenceRef>,
+    pub patch_strategy: PatchStrategy,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub enum PatchStrategy {
+    InspectSymbolThenPatch { symbol: String },
+    AddCompatibilityBranch { condition_description: String },
+    PreserveExistingApiContract,
+    MinimizeDiffAroundFailingAssertion,
+}
+```
+
+The Repair Doctor may say:
+
+> “The failing test suggests fallback route matching changed. Read routing matcher and fallback tests. Preserve existing route ordering. Do not rewrite the entire module unless a minimal diff is impossible.”
+
+It must not say:
+
+> “Write this exact axum source file.”
+
+### Runtime guardrail
+
+```rust
+pub fn assert_no_benchmark_oracles_in_product_mode(config: &RuntimeConfig) -> anyhow::Result<()> {
+    if cfg!(feature = "benchmark-oracles") && !config.benchmark_mode.allow_oracles {
+        anyhow::bail!(
+            "benchmark-oracles feature is enabled outside explicit benchmark oracle mode"
+        );
+    }
+    Ok(())
+}
+```
+
+### Acceptance tests
+
+1. `cargo test -p quorp_agent_core` should fail if core runtime references `BenchmarkPlaybook`.
+2. `quorp run` should not load benchmark oracle code.
+3. `quorp benchmark --allow-oracle-playbooks` may use quarantined playbooks only as an ablation/control, never as a leaderboard result.
+4. Top-5 replay should report two numbers: **with oracles** and **general runtime only**.
+5. Regression gate should fail if exact benchmark source strings appear in non-benchmark crates.
+
+This may temporarily reduce the visible 5/5 score, but it will make Quorp’s progress real and defensible.
+
+---
+
+## 3. InspectPlan: multi-action read/search batching to cut turns before the first write
+
+This is the fastest way to reduce tokens and wall clock without reducing capability.
+
+### Why this matters
+
+The axum event stream shows a very expensive pattern: one request for directory listing, another for a file read, another for tests, another for search, another for command, another for another file read, another for a targeted read, and only then a write at step 9. ([GitHub][9]) The case report confirms 9 requests, 62,702 billed tokens, 9 reads, redundant reads, and first write at step 9. ([GitHub][10])
+
+Quorp already has typed read/search actions and context expansion hooks. ([GitHub][11]) But the model appears to be operating too serially. Competitors such as mini-SWE-agent show that simple trajectories and history processing can be very effective; the lesson is not “more complexity,” but “less unnecessary conversational round-tripping.” ([GitHub][12])
+
+### What to build
+
+Add one read-only compound action: `InspectPlan`.
+
+**Modify**
+
+```text
+crates/quorp_agent_core/src/agent_protocol.rs
+crates/quorp_agent_core/src/runtime/turn.rs
+crates/quorp_agent_core/src/runtime/actions.rs
+crates/quorp_context/src/quorp_context.rs
+crates/quorp_session/src/events.rs
+```
+
+**Add**
+
+```text
+crates/quorp_agent_core/src/runtime/inspect_plan.rs
+```
+
+### Protocol shape
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InspectPlan {
+    pub reason: String,
+    pub max_output_tokens: u32,
+    pub reads: Vec<ReadSpec>,
+    pub searches: Vec<SearchSpec>,
+    pub symbol_queries: Vec<SymbolQuery>,
+    pub commands: Vec<ReadOnlyCommandSpec>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InspectDigest {
+    pub plan_id: PlanId,
+    pub files: Vec<FileExcerptDigest>,
+    pub search_hits: Vec<SearchDigest>,
+    pub symbols: Vec<SymbolDigest>,
+    pub command_results: Vec<CommandDigest>,
+    pub omitted: Vec<OmittedContext>,
+    pub recommended_next_actions: Vec<NextActionHint>,
+}
+```
+
+Runtime rule: `InspectPlan` may only contain read-only operations. It cannot write, install dependencies, access network, run generated executables, or mutate git state.
+
+### Hard runtime logic
+
+```rust
+pub async fn execute_inspect_plan(
+    plan: InspectPlan,
+    ctx: &mut RuntimeContext,
+) -> anyhow::Result<InspectDigest> {
+    let budget = TokenBudget::new(plan.max_output_tokens.min(12_000));
+
+    let read_futs = plan.reads.iter().map(|r| ctx.tools.read_file_excerpt(r));
+    let search_futs = plan.searches.iter().map(|s| ctx.tools.search_text(s));
+    let symbol_futs = plan.symbol_queries.iter().map(|q| ctx.index.search_symbols(q));
+
+    let (reads, searches, symbols) = tokio::try_join!(
+        collect_bounded(read_futs, 8),
+        collect_bounded(search_futs, 8),
+        collect_bounded(symbol_futs, 8),
+    )?;
+
+    let digest = InspectDigestBuilder::new(budget)
+        .add_reads(reads)
+        .add_searches(searches)
+        .add_symbols(symbols)
+        .dedupe_by_file_and_range()
+        .prefer_failing_tests()
+        .prefer_changed_symbols()
+        .build();
+
+    ctx.ledger.record(RuntimeEvent::InspectPlanFinished {
+        plan_id: digest.plan_id,
+        read_count: digest.files.len(),
+        search_count: digest.search_hits.len(),
+        estimated_tokens: digest.estimated_tokens(),
+    })?;
+
+    Ok(digest)
+}
+```
+
+### Acceptance tests
+
+1. In the axum replay, first write should move from step 9 to step ≤5.
+2. Total billed tokens for the top-5 cohort should drop by at least 25% without lowering deterministic pass rate.
+3. `InspectPlan` must be denied if it includes mutation.
+4. Event logs must show which read/search outputs were omitted and why.
+5. `InspectPlan` output must be replayable from ledger artifacts.
+
+This would make Quorp feel dramatically faster in practice.
+
+---
+
+## 4. Rule Forge 2.0: tiny git-trackable rules with shadow evaluation and hostile-repo protection
+
+Quorp should learn from mistakes during real work, but the learning must be scoped, reviewable, and safe.
+
+### Why this matters
+
+Quorp already has a Memory OS with working, episodic, semantic, procedural, negative, and rule tiers. ([GitHub][13]) It also has a Rule Forge concept that mines failure signals into draft rules, validates in shadow mode, and promotes rules after evidence. ([GitHub][14]) That is exactly the right direction, but it needs to become **git-trackable, inspectable, and trust-aware**.
+
+Codex’s AGENTS.md behavior is relevant: instructions are layered, nearer files override earlier ones, and files have a size cap. ([OpenAI Developers][15]) Codex also only loads project config from trusted projects. ([OpenAI Developers][16]) Quorp should apply that same trust discipline to repo-authored rules.
+
+### What to build
+
+**Add**
+
+```text
+agent/rules/README.md
+agent/rules/_schema/rule.v1.schema.json
+agent/rules/candidate/
+agent/rules/draft/
+agent/rules/shadow/
+agent/rules/active/
+agent/rules/rejected/
+agent/rules/deprecated/
+
+crates/quorp_rule_store/src/lib.rs
+crates/quorp_rule_store/src/load.rs
+crates/quorp_rule_store/src/trust.rs
+crates/quorp_rule_store/src/eval.rs
+crates/quorp_rule_model/src/schema.rs
+crates/quorp_slash/src/commands/rules.rs
+```
+
+### Example rule
+
+```yaml
+schema: quorp.rule.v1
+id: qrule-2026-04-29-rust-targeted-read-before-routing-patch
+state: shadow
+title: "Read fallback tests before editing router matching"
+scope:
+  languages: ["rust"]
+  crates: ["axum"]
+  paths:
+    - "axum/src/routing/**"
+  failure_types:
+    - "test_assertion_failure"
+trigger:
+  stderr_regex:
+    - "fallback"
+    - "routing::tests"
+  symbols:
+    - "Router"
+    - "fallback"
+advice:
+  max_prompt_tokens: 120
+  text: >
+    Before patching fallback route behavior, inspect routing tests and the matcher
+    implementation. Prefer a minimal semantic patch over a full module rewrite.
+guards:
+  forbid:
+    - "rewrite_entire_file_without_density_check"
+    - "edit_tests_before_source"
+evidence:
+  created_from:
+    run_id: "2026-04-28-205401"
+    case: "08-axum-fallback"
+  shadow_results: []
+trust:
+  origin: "generated"
+  repo_trusted: false
+  human_reviewed: false
+```
+
+### Hard part: protect against malicious repo-authored rules
+
+Rules should have trust levels:
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RuleTrust {
+    Builtin,
+    UserReviewed,
+    WorkspaceGenerated,
+    RepoAuthoredUntrusted,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum RuleState {
+    Candidate,
+    Draft,
+    Shadow,
+    Active,
+    Rejected,
+    Deprecated,
+}
+
+pub fn load_rules(
+    workspace: &Workspace,
+    trust_policy: &TrustPolicy,
+) -> anyhow::Result<Vec<LoadedRule>> {
+    let mut rules = Vec::new();
+
+    rules.extend(load_builtin_rules()?);
+    rules.extend(load_user_rules(trust_policy.user_rules_dir())?);
+
+    let repo_rules = load_repo_rules(workspace.join("agent/rules"))?;
+    for rule in repo_rules {
+        let trust = if trust_policy.is_workspace_trusted(workspace) {
+            RuleTrust::WorkspaceGenerated
+        } else {
+            RuleTrust::RepoAuthoredUntrusted
+        };
+
+        rules.push(rule.with_trust(trust));
+    }
+
+    Ok(rules
+        .into_iter()
+        .filter(|r| r.is_schema_valid())
+        .filter(|r| !r.contains_prompt_injection_markers())
+        .filter(|r| trust_policy.may_load(r.trust, r.state))
+        .collect())
+}
+```
+
+Untrusted repo rules can be displayed and shadow-evaluated, but not allowed to grant permissions, weaken sandboxing, suppress security warnings, or override user constraints.
+
+### `/rules` UX
+
+```text
+/rules
+  Active: 7
+  Shadow: 4
+  Candidate: 3
+  Rejected: 2
+
+/rules show qrule-...
+/rules promote qrule-...
+/rules reject qrule-...
+/rules replay --rule qrule-... --suite rust-swebench-top5
+/rules diff --before runA --after runB
+```
+
+### Acceptance tests
+
+1. Generated rule enters `candidate` or `shadow`, never `active`.
+2. Rule promotion requires repeated positive evidence or human approval.
+3. Repo-authored untrusted rules cannot affect permissions.
+4. Replaying a run with and without a rule shows whether it reduced tokens, prevented a failure, or caused harm.
+5. `/status` shows active/shadow rule count and trust state.
+
+This gives Quorp a unique “learn fast without getting hijacked” capability.
+
+---
+
+## 5. Proof-backed Task DAG with subagents in isolated worktrees
+
+Quorp should stop treating long autonomous work as a linear chat. It should make the task graph explicit, visible, resumable, and proof-backed.
+
+### Why this matters
+
+The current runtime already tracks task state, phases, checkpoints, failed edits, validation queues, and recovery packets. ([GitHub][3]) But long repository work needs a real **Task DAG**: independent subtasks, dependencies, leases on files, validation obligations, and merge rules.
+
+This would also compete directly with modern agent systems. Codex CLI now advertises subagents, cloud tasks, approval modes, and terminal workflows. ([OpenAI Developers][17]) Claude exposes lifecycle events for `TaskCreated`, `TaskCompleted`, `SubagentStart`, `SubagentStop`, worktree creation/removal, and compaction hooks. ([Claude][6]) OpenAI’s Symphony work frames the issue tracker as a control plane for many coding agents, with the claim that it materially increased landed PR throughput in production-like workflows. ([OpenAI][18])
+
+### What to build
+
+**Add**
+
+```text
+crates/quorp_task_graph/src/lib.rs
+crates/quorp_task_graph/src/dag.rs
+crates/quorp_task_graph/src/lease.rs
+crates/quorp_task_graph/src/subagent.rs
+crates/quorp_agent_core/src/runtime/task_graph.rs
+crates/quorp_agent_core/src/runtime/subagent_runner.rs
+crates/quorp_render/src/task_dag.rs
+crates/quorp_slash/src/commands/tasks.rs
+crates/quorp_slash/src/commands/agents.rs
+```
+
+### Task shape
+
+```rust
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct TaskNode {
+    pub id: TaskId,
+    pub title: String,
+    pub status: TaskStatus,
+    pub depends_on: Vec<TaskId>,
+    pub file_leases: Vec<FileLease>,
+    pub acceptance: Vec<AcceptanceCriterion>,
+    pub assigned_agent: Option<AgentId>,
+    pub proof_obligations: Vec<ProofObligation>,
+    pub last_progress_event: Option<EventId>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SubagentReturn {
+    pub task_id: TaskId,
+    pub changed_files: Vec<PathBuf>,
+    pub diff_summary: String,
+    pub proof_packets: Vec<ProofPacketRef>,
+    pub validation_results: Vec<VerifyReportRef>,
+    pub open_questions: Vec<String>,
+    pub merge_preconditions: Vec<HashPrecondition>,
+}
+```
+
+### Critical design rule
+
+A subagent should not return prose as the main artifact. It should return:
+
+1. a patch or patch proposal,
+2. proof packets,
+3. validation results,
+4. touched paths,
+5. unresolved questions,
+6. exact merge preconditions.
+
+### Acceptance tests
+
+1. Two subagents cannot lease the same file mutably at the same time.
+2. Parent agent cannot merge subagent diff without Patch VM hash preconditions.
+3. Interrupted task DAG resumes from ledger and worktree state.
+4. `/tasks` shows blocked/running/failed/validated tasks.
+5. A subagent result with no proof packet is marked incomplete.
+
+This would give Quorp a serious advantage for long-form work: not just “agent mode,” but **auditable multi-agent engineering**.
+
+---
+
+## 6. Unified Tool Gateway: permissions, sandbox, hooks, and audit receipts in one path
+
+Every mutating action should pass through a single **Tool Gateway** that classifies, authorizes, sandboxes, executes, audits, and emits hook events.
+
+### Why this matters
+
+Quorp already has strong primitives. The permissions crate has modes such as `ReadOnly`, `Ask`, `AcceptEdits`, `AutoSafe`, and `YoloSandbox`, and detects risky capabilities such as compound shell commands, network, dependency installs, Docker, git remote mutation, generated executables, MCP, browser, and secrets access. ([GitHub][19]) The sandbox crate supports host, git-worktree, tmp-copy, and container plans with network disabled, capabilities dropped, `no-new-privileges`, and redacted environment handling. ([GitHub][20])
+
+But the product-level security model should be stricter: **full-auto should never mean unsupervised host execution**. Codex’s approval model uses sandboxing plus approval policy, with default network off and approval required for network or out-of-workspace work. ([OpenAI Developers][21]) Claude’s auto mode also uses background safety checks, while its permission modes separate plan/read/edit/auto behavior. ([Claude][22])
+
+### What to build
+
+**Add**
+
+```text
+crates/quorp_tool_gateway/src/lib.rs
+crates/quorp_tool_gateway/src/classify.rs
+crates/quorp_tool_gateway/src/authorize.rs
+crates/quorp_tool_gateway/src/hooks.rs
+crates/quorp_tool_gateway/src/receipt.rs
+crates/quorp_tool_gateway/src/shell_ast.rs
+crates/quorp_slash/src/commands/permissions.rs
+crates/quorp_slash/src/commands/sandbox.rs
+```
+
+**Modify**
+
+```text
+crates/quorp_agent_core/src/runtime/actions.rs
+crates/quorp_tools/*
+crates/quorp_permissions/*
+crates/quorp_sandbox/*
+crates/quorp_session/src/events.rs
+```
+
+### Hard path
+
+```rust
+pub async fn authorize_execute(
+    &self,
+    action: ToolAction,
+    ctx: ToolContext,
+) -> anyhow::Result<ToolReceipt> {
+    let classified = self.classifier.classify(&action, &ctx)?;
+
+    let pre_hook = self.hooks.pre_tool_use(&classified, &ctx).await?;
+    if pre_hook.denied() {
+        return Ok(ToolReceipt::denied(classified, pre_hook.reason()));
+    }
+
+    let decision = self.permissions.decide(&classified, &ctx)?;
+    if decision.denied() {
+        return Ok(ToolReceipt::denied(classified, decision.reason()));
+    }
+
+    let lease = self.sandbox.lease_for(&classified, &ctx, &decision)?;
+
+    let start = Instant::now();
+    let result = lease.execute(action).await;
+
+    let receipt = ToolReceipt {
+        id: ToolReceiptId::new(),
+        action_class: classified.action_class,
+        capability_tokens: classified.capability_tokens,
+        sandbox_surface: lease.surface(),
+        permission_decision: decision,
+        command_fingerprint: classified.command_fingerprint,
+        changed_paths: result.changed_paths(),
+        stdout_digest: result.stdout_digest(),
+        stderr_digest: result.stderr_digest(),
+        duration_ms: start.elapsed().as_millis() as u64,
+        result: result.into_status(),
+    };
+
+    self.hooks.post_tool_use(&receipt, &ctx).await?;
+    self.audit.write_receipt(&receipt)?;
+
+    Ok(receipt)
+}
+```
+
+### Hook events to support
+
+Claude’s hook system is a good reference point, but Quorp should make hooks typed and receipt-backed rather than just shell callbacks. ([Claude][6])
+
+```text
+SessionStart
+UserPromptSubmit
+PreToolUse
+PostToolUse
+PermissionRequest
+TaskCreated
+TaskCompleted
+SubagentStart
+SubagentStop
+PreCompact
+PostCompact
+FileChanged
+VerifierFailed
+VerifierPassed
+RuleCandidateCreated
+```
+
+### Acceptance tests
+
+1. In `AutoSafe`, network, dependency install, generated executable, MCP, browser, and git remote mutation are denied or prompted unless sandbox policy explicitly allows them.
+2. `YoloSandbox` is impossible on host.
+3. Repo prompt injection cannot grant permissions through repo config or repo rules.
+4. Every write, shell command, MCP call, browser action, and generated executable run emits a receipt.
+5. Hook decisions are recorded and replayable.
+
+This would make Quorp safer than “YOLO mode” agents while still supporting high-agency work.
+
+---
+
+## 7. Semantic Edit Sequencer: smaller patches, stale-hash recovery, and diff-density enforcement
+
+Quorp should make the **minimal safe edit** the default, not the model’s responsibility.
+
+### Why this matters
+
+The Patch VM is already a major strength: it validates preconditions, previews changes, applies with rollback tokens, and has policy controls such as `allow_full_file_rewrite = false` and max file counts. ([GitHub][23]) But the axum run still had a 705-line `write_file` to `axum/src/routing/mod.rs`, even though the actual logical change was likely much smaller. ([GitHub][9]) Large rewrites increase token cost, merge risk, and regression risk.
+
+### What to build
+
+**Add**
+
+```text
+crates/quorp_patch_vm/src/density.rs
+crates/quorp_patch_vm/src/semantic_plan.rs
+crates/quorp_patch_vm/src/tree_sitter_rust.rs
+crates/quorp_agent_core/src/runtime/edit_sequencer.rs
+crates/quorp_render/src/diff_view.rs
+crates/quorp_slash/src/commands/diff.rs
+```
+
+### Diff-density gate
+
+```rust
+#[derive(Debug, Clone)]
+pub struct PatchDensity {
+    pub files_changed: usize,
+    pub total_lines_before: usize,
+    pub touched_lines: usize,
+    pub inserted_lines: usize,
+    pub deleted_lines: usize,
+}
+
+impl PatchDensity {
+    pub fn rewrite_ratio(&self) -> f32 {
+        if self.total_lines_before == 0 {
+            return 1.0;
+        }
+        self.touched_lines as f32 / self.total_lines_before as f32
+    }
+
+    pub fn is_suspicious_rewrite(&self) -> bool {
+        self.files_changed == 1 && self.total_lines_before > 200 && self.rewrite_ratio() > 0.20
+    }
+}
+
+pub fn enforce_density_policy(
+    density: &PatchDensity,
+    policy: &PatchVmPolicy,
+    preview: Option<PreviewId>,
+) -> anyhow::Result<()> {
+    if density.is_suspicious_rewrite()
+        && !policy.allow_full_file_rewrite
+        && preview.is_none()
+    {
+        anyhow::bail!(
+            "large rewrite requires semantic patch plan or approved preview: touched {} / {} lines",
+            density.touched_lines,
+            density.total_lines_before
+        );
+    }
+
+    Ok(())
+}
+```
+
+### Runtime behavior
+
+When the model proposes `write_file` on an existing large file:
+
+1. compute diff density,
+2. attempt to convert to semantic hunks,
+3. require preview if still broad,
+4. re-read if hash is stale,
+5. run targeted formatting and validation,
+6. emit proof receipt.
+
+### Acceptance tests
+
+1. The axum replay should not permit a 705-line full-file rewrite without explicit preview approval.
+2. A stale hash should trigger auto-reread and rebase, not blind overwrite.
+3. Semantic patch must preserve unrelated code byte-for-byte.
+4. `/diff` should show density, risk, touched symbols, and rollback token.
+5. Patch VM receipts should include density metrics.
+
+This is a capability upgrade and a token upgrade: smaller patches are easier for the model to reason about, easier to validate, and easier for humans to trust.
+
+---
+
+## 8. TUI Mission Control: context, DAG, permissions, diff, proof, rules, and replay in one terminal product
+
+Quorp should not merely imitate Codex CLI or Claude Code. It should become the best terminal interface for **watching and steering autonomous engineering**.
+
+### Why this matters
+
+The current render layer has good ingredients: custom ANSI/crossterm rendering, no-color support, brand/session components, permission modal, status footer, shell frame, and slash overlay. ([GitHub][24]) But the shell frame is still relatively simple; status/composer/overlay are not yet a full mission-control surface. ([GitHub][25])
+
+Codex CLI and Claude Code already provide terminal workflows, slash commands, model/permission controls, approvals, and agent features. ([OpenAI Developers][17]) Quorp can beat them by making the **agent’s internal state visible**: context pressure, proof state, task DAG, sandbox boundary, rule learning, and replay.
+
+### What to build
+
+**Add**
+
+```text
+crates/quorp_render/src/mission_control.rs
+crates/quorp_render/src/context_gauge.rs
+crates/quorp_render/src/task_dag.rs
+crates/quorp_render/src/proof_view.rs
+crates/quorp_render/src/rule_view.rs
+crates/quorp_render/src/memory_view.rs
+crates/quorp_render/src/replay_scrubber.rs
+crates/quorp_render/src/diff_view.rs
+crates/quorp_render/src/sandbox_view.rs
+
+crates/quorp_slash/src/commands/status.rs
+crates/quorp_slash/src/commands/context.rs
+crates/quorp_slash/src/commands/compact.rs
+crates/quorp_slash/src/commands/tasks.rs
+crates/quorp_slash/src/commands/agents.rs
+crates/quorp_slash/src/commands/proof.rs
+crates/quorp_slash/src/commands/rules.rs
+crates/quorp_slash/src/commands/memory.rs
+crates/quorp_slash/src/commands/sandbox.rs
+crates/quorp_slash/src/commands/replay.rs
+```
+
+### Layout
+
+```text
+┌ Quorp ─ model: gpt-x ─ mode: AutoSafe ─ sandbox: tmp-copy ─ ctx: 38k/128k YELLOW ─ $0.42 ┐
+│ Task DAG                    │ Live transcript / tool stream                     │ Inspector │
+│ ✓ T1 reproduce failure      │ 12:04 read axum/src/routing/mod.rs                │ /diff     │
+│ ▶ T2 patch fallback matcher │ 12:05 cargo test routing::tests::fallback FAILED  │ /proof    │
+│ • T3 run full validation    │ 12:06 semantic patch preview: 3 hunks             │ /context  │
+│                             │                                                    │ /rules    │
+├ Permissions: network off | deps ask | generated exe deny | repo rules untrusted ──────────┤
+│ Composer:  /status  /tasks  /diff  /verify  /compact  /rules  /sandbox  /replay           │
+└────────────────────────────────────────────────────────────────────────────────────────────┘
+```
+
+### Core commands
+
+```text
+/status       run state, context pressure, cost, tasks, validation, sandbox, rules
+/context      context packs, provenance, omitted files, token budget
+/compact      compact now, compact+replay-check, show loss audit
+/tasks        DAG, blockers, file leases, proof obligations
+/agents       subagents, worktrees, leases, returns
+/diff         semantic diff, density risk, rollback token
+/verify       validation ladder, cache hits, failed commands, rerun
+/proof        proof DAG, receipts, verifier reports
+/rules        active/shadow/candidate rules, trust, replay impact
+/memory       negative memory, failed attempts, decisions
+/sandbox      surface, network, env, mounts, generated executable policy
+/replay       scrub ledger by event, compare before/after compaction
+```
+
+### Hard part: render state without becoming noisy
+
+```rust
+pub struct MissionControlFrame<'a> {
+    pub status: StatusRibbon<'a>,
+    pub task_dag: TaskDagPane<'a>,
+    pub transcript: TranscriptPane<'a>,
+    pub inspector: InspectorPane<'a>,
+    pub permission_bar: PermissionBar<'a>,
+    pub composer: ComposerPane<'a>,
+}
+
+pub enum InspectorPane<'a> {
+    Diff(DiffView<'a>),
+    Proof(ProofView<'a>),
+    Context(ContextView<'a>),
+    Rules(RuleView<'a>),
+    Memory(MemoryView<'a>),
+    Sandbox(SandboxView<'a>),
+    Replay(ReplayScrubber<'a>),
+}
+
+pub fn render_mission_control(frame: &MissionControlFrame<'_>, width: u16) -> Vec<Line> {
+    if width < 100 {
+        return render_compact_single_column(frame, width);
+    }
+
+    let layout = MissionLayout::new(width)
+        .left(28)
+        .right(34)
+        .min_center(48);
+
+    let mut out = Vec::new();
+    out.extend(render_status_ribbon(&frame.status, width));
+    out.extend(render_three_pane(
+        &frame.task_dag,
+        &frame.transcript,
+        &frame.inspector,
+        layout,
+    ));
+    out.extend(render_permission_bar(&frame.permission_bar, width));
+    out.extend(render_composer(&frame.composer, width));
+    out
+}
+```
+
+### Acceptance tests
+
+1. Golden snapshots for 80, 120, and 180 columns.
+2. Golden snapshots for no-color mode.
+3. Mission-control render must not touch stdout directly.
+4. `/replay` can scrub from event 0 to final proof.
+5. Permission prompts must show exact capability tokens and sandbox surface.
+6. `/context` must show omitted context, not just included context.
+
+This is where Quorp can become visibly better than Claude/Codex: not prettier text, but **higher-resolution operational awareness**.
+
+---
+
+# The first PR sequence I would actually ship
+
+## PR 1: Benchmark-oracle quarantine
+
+Objective: protect Quorp’s credibility.
+
+Files:
+
+```text
+crates/quorp_agent_core/src/runtime/benchmark_playbooks.rs
+crates/quorp_benchmark/src/oracle_playbooks.rs
+crates/quorp_agent_core/src/runtime/turn.rs
+script/quorp-benchmark-regression-gate
+```
+
+Acceptance:
+
+```text
+normal quorp run cannot reference BenchmarkPlaybook
+benchmark oracle mode requires explicit flag/env
+top-5 report shows oracle vs non-oracle mode separately
+```
+
+## PR 2: Context pressure + State Packet v1
+
+Objective: reduce token drift and make long sessions resumable.
+
+Files:
+
+```text
+crates/quorp_agent_core/src/runtime/context_budget.rs
+crates/quorp_agent_core/src/runtime/state_packet.rs
+crates/quorp_session/src/prompt_ledger.rs
+crates/quorp_render/src/context_gauge.rs
+crates/quorp_slash/src/commands/status.rs
+```
+
+Acceptance:
+
+```text
+/status shows context pressure
+state-packet.latest.json written every checkpoint
+compaction preserves objective, constraints, failed attempts, validation state
+```
+
+## PR 3: InspectPlan read/search batching
+
+Objective: reduce first-write delay and token waste.
+
+Files:
+
+```text
+crates/quorp_agent_core/src/agent_protocol.rs
+crates/quorp_agent_core/src/runtime/inspect_plan.rs
+crates/quorp_agent_core/src/runtime/turn.rs
+crates/quorp_context/src/quorp_context.rs
+```
+
+Acceptance:
+
+```text
+axum replay first write <= 5 steps
+top-5 replay token count drops >= 25%
+InspectPlan cannot mutate workspace
+```
+
+## PR 4: Rule Store v1
+
+Objective: safe real-time learning.
+
+Files:
+
+```text
+agent/rules/_schema/rule.v1.schema.json
+crates/quorp_rule_store/src/*
+crates/quorp_rule_model/src/schema.rs
+crates/quorp_slash/src/commands/rules.rs
+```
+
+Acceptance:
+
+```text
+generated rules enter shadow, not active
+repo-authored untrusted rules cannot grant permission
+/rules replay shows helped/hurt evidence
+```
+
+## PR 5: Mission Control TUI shell
+
+Objective: make Quorp feel like an autonomous engineering cockpit.
+
+Files:
+
+```text
+crates/quorp_render/src/mission_control.rs
+crates/quorp_render/src/task_dag.rs
+crates/quorp_render/src/context_gauge.rs
+crates/quorp_render/src/proof_view.rs
+crates/quorp_render/src/replay_scrubber.rs
+```
+
+Acceptance:
+
+```text
+golden snapshots pass
+no-color mode pass
+/status, /tasks, /context, /diff, /proof panes render from real ledger state
+```
+
+---
+
+# The most novel breakthrough
+
+The unique opportunity is to make Quorp a **ledger-native coding-agent OS**:
+
+1. every model thought is less important than every typed event;
+2. every context pack has provenance;
+3. every compaction is loss-audited;
+4. every rule is scoped and replay-evaluated;
+5. every edit has hash preconditions and rollback;
+6. every subagent return is proof-backed;
+7. every permission decision has a receipt;
+8. every benchmark result can be replayed, ablated, and inspected in the TUI.
+
+That combination would be genuinely differentiated. Codex and Claude are strong terminal agents; Quorp can become the first open-source Rust coding agent where **state, proof, memory, permissions, replay, and UI are all first-class parts of the same runtime**.
+
+[1]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/benchmark/challenges/rust-swebench-top5/run-logs/2026-04-28-205401/batch-report.md "raw.githubusercontent.com"
+[2]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/benchmark/challenges/rust-swebench-top5/run-logs/2026-04-28-205401/cases/06-rust-swebench-bincode-serde-decoder-memory/benchmark-report.md "raw.githubusercontent.com"
+[3]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_agent_core/src/runtime.rs "raw.githubusercontent.com"
+[4]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_context/src/index.rs "raw.githubusercontent.com"
+[5]: https://developers.openai.com/api/docs/guides/agents/sandboxes "Sandbox Agents | OpenAI API"
+[6]: https://code.claude.com/docs/en/hooks "Hooks reference - Claude Code Docs"
+[7]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_agent_core/src/runtime/benchmark_playbooks.rs "raw.githubusercontent.com"
+[8]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/refs/heads/main/crates/quorp_agent_core/src/runtime/turn.rs "raw.githubusercontent.com"
+[9]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/benchmark/challenges/rust-swebench-top5/run-logs/2026-04-28-205401/cases/08-rust-swebench-axum-fallback-merge/attempt-001/agent/events.jsonl "raw.githubusercontent.com"
+[10]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/benchmark/challenges/rust-swebench-top5/run-logs/2026-04-28-205401/cases/08-rust-swebench-axum-fallback-merge/benchmark-report.md "raw.githubusercontent.com"
+[11]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/AGENT_SUPPORT.md "raw.githubusercontent.com"
+[12]: https://github.com/SWE-agent/mini-swe-agent "GitHub - SWE-agent/mini-swe-agent: The 100 line AI agent that solves GitHub issues or helps you in your command line. Radically simple, no huge configs, no giant monorepo—but scores >74% on SWE-bench verified! · GitHub"
+[13]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_memory/src/quorp_memory.rs "raw.githubusercontent.com"
+[14]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_rule_forge/src/quorp_rule_forge.rs "raw.githubusercontent.com"
+[15]: https://developers.openai.com/codex/guides/agents-md "Custom instructions with AGENTS.md – Codex | OpenAI Developers"
+[16]: https://developers.openai.com/codex/config-reference "Configuration Reference – Codex | OpenAI Developers"
+[17]: https://developers.openai.com/codex/cli "CLI – Codex | OpenAI Developers"
+[18]: https://openai.com/index/open-source-codex-orchestration-symphony/ "An open-source spec for Codex orchestration: Symphony. | OpenAI"
+[19]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_permissions/src/quorp_permissions.rs "raw.githubusercontent.com"
+[20]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_sandbox/src/lib.rs "raw.githubusercontent.com"
+[21]: https://developers.openai.com/codex/agent-approvals-security "Agent approvals & security – Codex | OpenAI Developers"
+[22]: https://code.claude.com/docs/en/permission-modes "Choose a permission mode - Claude Code Docs"
+[23]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_patch_vm/src/quorp_patch_vm.rs "raw.githubusercontent.com"
+[24]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_render/src/quorp_render.rs "raw.githubusercontent.com"
+[25]: https://raw.githubusercontent.com/jeppsontaylor/Quorp/main/crates/quorp_render/src/shell.rs "raw.githubusercontent.com"
+

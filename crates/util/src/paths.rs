@@ -1591,5 +1591,5 @@ impl UrlExt for url::Url {
 }
 
 #[cfg(test)]
-#[path = "tests.rs"]
+#[path = "../../../testing/util/paths/tests.rs"]
 mod tests;

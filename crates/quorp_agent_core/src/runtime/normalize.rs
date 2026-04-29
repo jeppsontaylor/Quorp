@@ -27,27 +27,17 @@ use crate::agent_protocol::{
 use crate::agent_turn::{AgentTurnResponse, parse_agent_turn_response};
 pub(crate) fn normalize_benchmark_repair_turn_actions(
     turn: &mut AgentTurnResponse,
-    state: &AgentTaskState,
+    state: &mut AgentTaskState,
 ) {
     if state.policy.mode != PolicyMode::BenchmarkAutonomous {
         return;
     }
-    let Some(repair_state) = state.benchmark_repair_state.as_ref() else {
+    let Some(repair_state) = state.benchmark_repair_state.as_ref().cloned() else {
         return;
     };
-    let Some(ledger) = state.benchmark_case_ledger.as_ref() else {
+    let Some(ledger) = state.benchmark_case_ledger.as_ref().cloned() else {
         return;
     };
-    if turn.actions.iter().any(AgentAction::is_write_like)
-        && let Some((actions, playbook_name)) = benchmark_write_repair_actions_from_state(state)
-    {
-        let dropped = turn.actions.len();
-        turn.actions = actions;
-        turn.parse_warnings.push(format!(
-            "Replaced {dropped} broad {playbook_name} repair action(s) with semantic benchmark patch action(s)."
-        ));
-        return;
-    }
     match repair_state.phase {
         BenchmarkRepairPhase::NeedsFailureAnchorRead => {
             retain_only_first_valid_repair_action(turn, |action| {
@@ -85,7 +75,7 @@ pub(crate) fn normalize_benchmark_repair_turn_actions(
             });
         }
         BenchmarkRepairPhase::NeedsPatch => {
-            normalize_benchmark_patch_turn_actions(turn, state, repair_state, ledger);
+            normalize_benchmark_patch_turn_actions(turn, state, &repair_state, &ledger);
         }
         BenchmarkRepairPhase::NeedsFastLoopRerun | BenchmarkRepairPhase::Idle => {}
     }
@@ -111,21 +101,18 @@ where
 
 pub(crate) fn normalize_benchmark_patch_turn_actions(
     turn: &mut AgentTurnResponse,
-    state: &AgentTaskState,
+    state: &mut AgentTaskState,
     repair_state: &BenchmarkRepairState,
     ledger: &BenchmarkCaseLedger,
 ) {
     let patch_target =
-        benchmark_patch_target_path(repair_state, ledger, &state.agent_repair_memory);
+        benchmark_patch_target_path(repair_state, ledger, &state.agent_repair_memory).into_owned();
     let target_context_loaded = patch_target_context_loaded(
         repair_state,
         &state.agent_repair_memory,
-        patch_target.as_ref(),
+        patch_target.as_str(),
     );
-    if normalize_benchmark_patch_turn_through_playbook(turn, state, repair_state, ledger) {
-        return;
-    }
-    if !target_context_loaded && !patch_target.as_ref().ends_with(".toml") {
+    if !target_context_loaded && !patch_target.ends_with(".toml") {
         let suggested_range = repair_state.implementation_suggested_range.or_else(|| {
             state.benchmark_case_ledger.as_ref().and_then(|ledger| {
                 ledger
@@ -146,7 +133,7 @@ pub(crate) fn normalize_benchmark_patch_turn_actions(
             matches!(
                 action,
                 AgentAction::ReadFile { path, range }
-                    if canonical_path(path) == canonical_path(patch_target.as_ref())
+                    if canonical_path(path) == canonical_path(patch_target.as_str())
                         && range.and_then(crate::agent_protocol::ReadFileRange::normalized).is_some()
             )
         }) {
@@ -162,7 +149,7 @@ pub(crate) fn normalize_benchmark_patch_turn_actions(
             matches!(
                 action,
                 AgentAction::ReadFile { path, .. }
-                    if canonical_path(path) == canonical_path(patch_target.as_ref())
+                    if canonical_path(path) == canonical_path(patch_target.as_str())
             )
         }) {
             let mut action = turn.actions[index].clone();
@@ -206,7 +193,7 @@ pub(crate) fn normalize_benchmark_patch_turn_actions(
         {
             let dropped = turn.actions.len();
             turn.actions = vec![AgentAction::ReadFile {
-                path: patch_target.into_owned(),
+                path: patch_target.clone(),
                 range: Some(suggested_range),
             }];
             turn.parse_warnings.push(format!(
@@ -219,9 +206,9 @@ pub(crate) fn normalize_benchmark_patch_turn_actions(
     if !target_context_loaded {
         return;
     }
-    if !patch_target.as_ref().ends_with(".toml") {
+    if !patch_target.ends_with(".toml") {
         if let Some(index) = turn.actions.iter().position(|action| {
-            source_patch_action_targets(action, patch_target.as_ref(), &state.agent_repair_memory)
+            source_patch_action_targets(action, patch_target.as_str(), &state.agent_repair_memory)
         }) {
             let mut actions = Vec::new();
             actions.push(turn.actions[index].clone());
@@ -238,23 +225,6 @@ pub(crate) fn normalize_benchmark_patch_turn_actions(
                     "Kept only the leased source patch action plus legal fast-loop rerun and dropped {dropped} unrelated action(s)."
                 ));
             }
-        } else if turn.actions.iter().any(|action| {
-            matches!(
-                action,
-                AgentAction::ListDirectory { .. }
-                    | AgentAction::SearchText { .. }
-                    | AgentAction::SearchSymbols { .. }
-                    | AgentAction::GetRepoCapsule { .. }
-                    | AgentAction::ReadFile { .. }
-            )
-        }) && let Some(actions) =
-            exact_benchmark_source_patch_actions_from_state(state, repair_state, ledger)
-        {
-            let dropped = turn.actions.len();
-            turn.actions = actions;
-            turn.parse_warnings.push(format!(
-                "Replaced {dropped} read-only source-phase action(s) with the exact benchmark source patch."
-            ));
         }
         return;
     }
@@ -291,13 +261,13 @@ pub(crate) fn normalize_benchmark_patch_turn_actions(
         }
         return;
     }
-    if let Some(index) = turn.actions.iter().position(|action| {
-        matches!(
-            action,
-            AgentAction::PreviewEdit {
-                path,
-                edit: PreviewEditPayload::ModifyToml { .. },
-            } if canonical_path(path) == canonical_path(patch_target.as_ref())
+        if let Some(index) = turn.actions.iter().position(|action| {
+            matches!(
+                action,
+                AgentAction::PreviewEdit {
+                    path,
+                    edit: PreviewEditPayload::ModifyToml { .. },
+            } if canonical_path(path) == canonical_path(patch_target.as_str())
         )
     }) {
         let action = turn.actions[index].clone();
@@ -308,42 +278,6 @@ pub(crate) fn normalize_benchmark_patch_turn_actions(
                 "Kept only the required manifest PreviewEdit and dropped {dropped} bundled follow-up action(s)."
             ));
         }
-        return;
-    }
-    if turn.actions.iter().any(|action| {
-        matches!(
-            action,
-            AgentAction::ReadFile { path, .. }
-            | AgentAction::ReplaceRange { path, .. }
-            | AgentAction::ModifyToml { path, .. }
-            | AgentAction::WriteFile { path, .. }
-            | AgentAction::ApplyPatch { path, .. }
-            | AgentAction::ReplaceBlock { path, .. }
-                if canonical_path(path) == canonical_path(patch_target.as_ref())
-        )
-    }) && let Some(action) =
-        exact_manifest_preview_action_from_state(state, repair_state, ledger)
-    {
-        turn.actions = vec![action];
-        turn.parse_warnings.push(
-            "Replaced direct or redundant manifest edit with the exact benchmark manifest PreviewEdit."
-                .to_string(),
-        );
-        return;
-    }
-    if turn.actions.iter().any(|action| {
-        matches!(
-            action,
-            AgentAction::RunCommand { .. } | AgentAction::RunValidation { .. }
-        )
-    }) && let Some(action) =
-        exact_manifest_preview_action_from_state(state, repair_state, ledger)
-    {
-        turn.actions = vec![action];
-        turn.parse_warnings.push(
-            "Replaced premature manifest validation with the exact benchmark manifest PreviewEdit."
-                .to_string(),
-        );
     }
 }
 

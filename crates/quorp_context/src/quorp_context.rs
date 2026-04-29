@@ -19,8 +19,18 @@ use std::collections::BTreeSet;
 use std::fs;
 use std::path::{Path, PathBuf};
 
+mod compaction;
+mod handles;
 mod index;
+mod pressure;
+mod prompt_frame;
+mod provenance;
+pub use compaction::{ContextCompactionReport, compact_prompt_frame};
+pub use handles::{HandleStore, HandleSummary, ResultHandle, ToolSynopsis};
 pub use index::*;
+pub use pressure::{ContextPressureReport, measure_context_pressure};
+pub use prompt_frame::PromptFrame;
+pub use provenance::PromptProvenance;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct CompileContext {
@@ -202,6 +212,14 @@ impl<'a> Default for ContextCompiler<'a> {
     fn default() -> Self {
         Self::new()
     }
+}
+
+pub fn packet_content_hash(packet_json: &str) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(packet_json.as_bytes());
+    format!("{:x}", hasher.finalize())
 }
 
 fn derive_memory_query(anchors: &[Anchor]) -> MemoryQuery {
@@ -816,357 +834,6 @@ fn item_label(item: &ContextItem) -> String {
         ContextItem::AgentContract { title, .. } => title.clone(),
     }
 }
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use quorp_repo_graph::SymbolPath;
-    use rand::{Rng, SeedableRng, rngs::StdRng};
-
-    #[test]
-    fn compile_with_no_memory_returns_handle_per_anchor() {
-        let compiler = ContextCompiler::new();
-        let req = CompileRequest {
-            anchors: vec![
-                Anchor::Symbol(SymbolPath::new("crate::main")),
-                Anchor::Query("borrow checker".into()),
-            ],
-            budget: TokenBudget {
-                total: 8000,
-                per_item_cap: 2000,
-                reserve_for_output: 1000,
-            },
-        };
-        let ctx = CompileContext {
-            git_sha: Some("abc".into()),
-            generated_at_unix: 0,
-        };
-        let pack = compiler.compile(&req, &ctx).unwrap();
-        assert!(pack.items.is_empty());
-        assert_eq!(pack.handles.len(), 2);
-    }
-
-    #[test]
-    fn compile_with_memory_inlines_recalled_snippet() {
-        let memory = Memory::new();
-        memory
-            .record(quorp_memory::MemoryEvent::RecordSemantic(
-                quorp_memory_model::SemanticFact {
-                    subject: "crate:quorp_agent_core".into(),
-                    predicate: "forbids".into(),
-                    object: "let _ = on fallible".into(),
-                    confidence: 0.95,
-                },
-            ))
-            .unwrap();
-
-        let compiler = ContextCompiler::with_memory(&memory);
-        let req = CompileRequest {
-            anchors: vec![Anchor::Query("forbids let _".into())],
-            budget: TokenBudget {
-                total: 8000,
-                per_item_cap: 2000,
-                reserve_for_output: 1000,
-            },
-        };
-        let ctx = CompileContext {
-            git_sha: None,
-            generated_at_unix: 1,
-        };
-        let pack = compiler.compile(&req, &ctx).unwrap();
-        assert!(
-            pack.items
-                .iter()
-                .any(|item| matches!(item, ContextItem::Memory { .. }))
-        );
-    }
-
-    #[test]
-    fn token_estimate_at_least_eight() {
-        assert!(estimate_tokens("hi") >= 8);
-        assert!(estimate_tokens(&"x".repeat(120)) >= 30);
-    }
-
-    #[test]
-    fn compile_workspace_inlines_file_owner_test_and_proof_context() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let workspace = root.path();
-        std::fs::create_dir_all(workspace.join("agent")).expect("agent dir");
-        std::fs::create_dir_all(workspace.join("crates/quorp_tools/src")).expect("src dir");
-        std::fs::write(
-            workspace.join("crates/quorp_tools/src/lib.rs"),
-            "pub fn one() -> u8 {\n    1\n}\n",
-        )
-        .expect("source");
-        std::fs::write(
-            workspace.join("agent/owner-map.json"),
-            r#"{
-              "version": 1,
-              "owners": [{
-                "id": "adapters",
-                "paths": ["crates/quorp_tools/**"],
-                "responsibility": "tool executors"
-              }]
-            }"#,
-        )
-        .expect("owner map");
-        std::fs::write(
-            workspace.join("agent/test-map.json"),
-            r#"{
-              "version": 1,
-              "lanes": [{
-                "id": "tools",
-                "paths": ["crates/quorp_tools/**"],
-                "commands": ["cargo test -p quorp_tools --lib"]
-              }]
-            }"#,
-        )
-        .expect("test map");
-        std::fs::write(
-            workspace.join("agent/proof-lanes.toml"),
-            r#"
-version = 1
-[lanes.fast]
-description = "fast proof"
-commands = ["cargo check --workspace"]
-"#,
-        )
-        .expect("proof lanes");
-        std::fs::write(
-            workspace.join("agent/generated-zones.toml"),
-            r#"
-version = 1
-[[zones]]
-path = "target/**"
-policy = "never-edit"
-reason = "build output"
-"#,
-        )
-        .expect("generated zones");
-
-        let compiler = ContextCompiler::new();
-        let req = CompileRequest {
-            anchors: vec![Anchor::Range(
-                PathBuf::from("crates/quorp_tools/src/lib.rs"),
-                LineRange { start: 1, end: 2 },
-            )],
-            budget: TokenBudget {
-                total: 2000,
-                per_item_cap: 800,
-                reserve_for_output: 200,
-            },
-        };
-        let pack = compiler
-            .compile_workspace(
-                workspace,
-                &req,
-                &CompileContext {
-                    git_sha: None,
-                    generated_at_unix: 5,
-                },
-            )
-            .expect("compile");
-
-        assert!(pack.items.iter().any(|item| matches!(
-            item,
-            ContextItem::Excerpt { path, text, .. }
-                if path.ends_with("crates/quorp_tools/src/lib.rs") && text.contains("pub fn one")
-        )));
-        assert!(pack.items.iter().any(|item| matches!(
-            item,
-            ContextItem::AgentContract { title, meta, .. }
-                if title == "owner:adapters" && meta.source == Source::OwnerMap
-        )));
-        assert!(pack.items.iter().any(|item| matches!(
-            item,
-            ContextItem::AgentContract { title, meta, .. }
-                if title == "test-lane:tools" && meta.source == Source::TestMap
-        )));
-        assert!(pack.items.iter().any(|item| matches!(
-            item,
-            ContextItem::AgentContract { title, meta, .. }
-                if title == "proof-lane:fast" && meta.source == Source::ProofLane
-        )));
-    }
-
-    #[test]
-    fn compile_workspace_deduplicates_repeated_file_anchors() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let workspace = root.path();
-        std::fs::create_dir_all(workspace.join("src")).expect("src dir");
-        std::fs::write(workspace.join("src/lib.rs"), "fn a() {}\n").expect("source");
-
-        let compiler = ContextCompiler::new();
-        let req = CompileRequest {
-            anchors: vec![
-                Anchor::File(PathBuf::from("src/lib.rs")),
-                Anchor::File(PathBuf::from("src/lib.rs")),
-            ],
-            budget: TokenBudget {
-                total: 1000,
-                per_item_cap: 500,
-                reserve_for_output: 100,
-            },
-        };
-        let pack = compiler
-            .compile_workspace(
-                workspace,
-                &req,
-                &CompileContext {
-                    git_sha: None,
-                    generated_at_unix: 6,
-                },
-            )
-            .expect("compile");
-
-        let excerpt_count = pack
-            .items
-            .iter()
-            .filter(|item| matches!(item, ContextItem::Excerpt { .. }))
-            .count();
-        assert_eq!(excerpt_count, 1);
-    }
-
-    #[test]
-    fn compile_workspace_spills_oversized_items_to_handles() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let workspace = root.path();
-        std::fs::create_dir_all(workspace.join("src")).expect("src dir");
-        std::fs::write(workspace.join("src/lib.rs"), "x".repeat(2000)).expect("source");
-
-        let compiler = ContextCompiler::new();
-        let req = CompileRequest {
-            anchors: vec![Anchor::File(PathBuf::from("src/lib.rs"))],
-            budget: TokenBudget {
-                total: 300,
-                per_item_cap: 100,
-                reserve_for_output: 50,
-            },
-        };
-        let pack = compiler
-            .compile_workspace(
-                workspace,
-                &req,
-                &CompileContext {
-                    git_sha: None,
-                    generated_at_unix: 7,
-                },
-            )
-            .expect("compile");
-
-        assert!(pack.items.is_empty());
-        assert!(
-            pack.handles
-                .iter()
-                .any(|handle| handle.source == Source::File)
-        );
-    }
-
-    #[test]
-    fn compile_workspace_uses_query_anchors_for_lexical_context() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let workspace = root.path();
-        std::fs::create_dir_all(workspace.join("src")).expect("src dir");
-        std::fs::create_dir_all(workspace.join("target")).expect("target dir");
-        std::fs::write(
-            workspace.join("src/billing.rs"),
-            "fn unrelated() {}\nfn grace_period_upgrade() {\n    // bill later\n}\n",
-        )
-        .expect("source");
-        std::fs::write(
-            workspace.join("target/generated.rs"),
-            "fn grace_period_upgrade() {}\n",
-        )
-        .expect("target source");
-
-        let compiler = ContextCompiler::new();
-        let req = CompileRequest {
-            anchors: vec![Anchor::Query("grace period upgrade".to_string())],
-            budget: TokenBudget {
-                total: 1200,
-                per_item_cap: 500,
-                reserve_for_output: 100,
-            },
-        };
-        let pack = compiler
-            .compile_workspace(
-                workspace,
-                &req,
-                &CompileContext {
-                    git_sha: None,
-                    generated_at_unix: 8,
-                },
-            )
-            .expect("compile");
-
-        assert!(pack.items.iter().any(|item| matches!(
-            item,
-            ContextItem::Excerpt { path, meta, text, .. }
-                if path.ends_with("src/billing.rs")
-                    && meta.source == Source::Lexical
-                    && text.contains("grace_period_upgrade")
-        )));
-        assert!(!pack.items.iter().any(|item| matches!(
-            item,
-            ContextItem::Excerpt { path, .. } if path.starts_with("target")
-        )));
-    }
-
-    #[test]
-    fn compile_budget_used_never_exceeds_total_for_random_anchor_sets() {
-        let mut rng = StdRng::seed_from_u64(0x5e5f_2026);
-        let compiler = ContextCompiler::new();
-
-        for _ in 0..32 {
-            let budget_total = rng.random_range(64..4096);
-            let per_item_cap = rng.random_range(8..=budget_total);
-            let reserve_for_output = rng.random_range(0..=budget_total / 2);
-            let anchor_count = rng.random_range(0..8);
-            let mut anchors = Vec::with_capacity(anchor_count);
-
-            for index in 0..anchor_count {
-                match rng.random_range(0..4) {
-                    0 => anchors.push(Anchor::Query(format!(
-                        "query-{index}-{}",
-                        rng.random::<u16>()
-                    ))),
-                    1 => anchors.push(Anchor::File(PathBuf::from(format!("src/file_{index}.rs")))),
-                    2 => anchors.push(Anchor::Symbol(SymbolPath::new(format!(
-                        "crate::module::symbol_{index}"
-                    )))),
-                    _ => anchors.push(Anchor::Range(
-                        PathBuf::from(format!("src/file_{index}.rs")),
-                        LineRange {
-                            start: 1 + rng.random_range(0..16),
-                            end: 2 + rng.random_range(0..16),
-                        },
-                    )),
-                }
-            }
-
-            let pack = compiler
-                .compile(
-                    &CompileRequest {
-                        anchors,
-                        budget: TokenBudget {
-                            total: budget_total,
-                            per_item_cap,
-                            reserve_for_output,
-                        },
-                    },
-                    &CompileContext {
-                        git_sha: Some("seed".to_string()),
-                        generated_at_unix: 26,
-                    },
-                )
-                .expect("compile");
-
-            assert!(
-                pack.budget_used <= budget_total,
-                "budget_used={} budget_total={} pack={pack:?}",
-                pack.budget_used,
-                budget_total
-            );
-        }
-    }
-}
+#[path = "../../../testing/quorp_context/quorp_context/tests.rs"]
+mod tests;

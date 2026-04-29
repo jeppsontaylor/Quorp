@@ -13,6 +13,10 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 use futures::future::BoxFuture;
+use quorp_repair::{
+    AvailableContextRef, BenchmarkTelemetry, FailureClassification, ProgressState, RepairContext,
+    RepairDecision, RepairPolicy, SecurityBoundary, StateSnapshot, ValidationHistoryEntry,
+};
 use serde::Serialize;
 
 use super::action_summary::action_edit_summary;
@@ -25,12 +29,6 @@ use crate::agent_protocol::{
     ActionOutcome, AgentAction, AgentMode, PreviewEditPayload, ValidationPlan, stable_content_hash,
 };
 use crate::agent_turn::{AgentTurnResponse, parse_agent_turn_response};
-fn emit_benchmark_injection_event(event_sink: &dyn RuntimeEventSink, detail: String) {
-    event_sink.emit(RuntimeEvent::PhaseChanged {
-        phase: "benchmark_repair_injection".to_string(),
-        detail: Some(detail),
-    });
-}
 
 pub(crate) fn is_stable_content_hash(value: &str) -> bool {
     value.len() == 16 && value.bytes().all(|byte| byte.is_ascii_hexdigit())
@@ -91,6 +89,10 @@ pub(crate) async fn maybe_inject_required_repair_read(
     if !state.should_inject_required_read() {
         return Ok(false);
     }
+    let decision = repair_policy_decision_for_state(step, state, request, reason);
+    if !matches!(decision, RepairDecision::RequireAnchoredRead { .. }) {
+        return Ok(false);
+    }
     inject_required_repair_read(
         step,
         state,
@@ -101,6 +103,128 @@ pub(crate) async fn maybe_inject_required_repair_read(
         reason,
     )
     .await
+}
+
+fn repair_policy_decision_for_state(
+    step: usize,
+    state: &AgentTaskState,
+    request: &AgentRunRequest,
+    reason: &str,
+) -> RepairDecision {
+    let mut failure_classifications = Vec::new();
+    if state.parser_recovery_failures > 0 {
+        failure_classifications.push(FailureClassification::ParserFailure {
+            error_class: reason.to_string(),
+            summary: state
+                .last_parse_error
+                .clone()
+                .unwrap_or_else(|| "structured turn recovery required".to_string()),
+        });
+    }
+    if state.repair_requirement_needs_reread()
+        && let Some(requirement) = state.repair_requirement.as_ref()
+    {
+        failure_classifications.push(FailureClassification::StaleHash {
+            path: canonical_path(&requirement.path),
+            expected_hash: requirement
+                .previous_search_block
+                .as_deref()
+                .map(stable_content_hash)
+                .unwrap_or_default(),
+            actual_hash: None,
+        });
+    }
+    if state.redundant_inspection_turns > 0 {
+        failure_classifications.push(FailureClassification::NoProgress {
+            repeated_observation_count: state.redundant_inspection_turns,
+        });
+    }
+    if let Some(ledger) = state.benchmark_case_ledger.as_ref()
+        && let Some(failure) = ledger.last_validation_failure.as_ref()
+    {
+        failure_classifications.push(FailureClassification::ValidationFailure {
+            command: ledger
+                .fast_loop_commands
+                .first()
+                .cloned()
+                .unwrap_or_else(|| "validation".to_string()),
+            primary_span: None,
+            excerpt: Some(failure.clone()),
+        });
+    }
+    if failure_classifications.is_empty() {
+        failure_classifications.push(FailureClassification::ParserFailure {
+            error_class: reason.to_string(),
+            summary: "repair controller recovery required".to_string(),
+        });
+    }
+
+    let available_context_refs = state
+        .agent_repair_memory
+        .observed_slices
+        .iter()
+        .map(|slice| AvailableContextRef {
+            label: format!("observed slice {}", canonical_path(&slice.path)),
+            path: Some(canonical_path(&slice.path)),
+            content_hash: slice.content_fingerprint.clone(),
+        })
+        .collect();
+
+    let validation_history = state
+        .benchmark_case_ledger
+        .as_ref()
+        .map(|ledger| {
+            ledger
+                .fast_loop_commands
+                .iter()
+                .map(|command| ValidationHistoryEntry {
+                    command: command.clone(),
+                    status: ledger
+                        .validation_status
+                        .clone()
+                        .unwrap_or_else(|| "unknown".to_string()),
+                    excerpt: ledger.last_validation_failure.clone(),
+                })
+                .collect()
+        })
+        .unwrap_or_default();
+
+    let benchmark_metadata =
+        state
+            .benchmark_case_ledger
+            .as_ref()
+            .map(|ledger| BenchmarkTelemetry {
+                issue_id: Some(ledger.case_class.clone()),
+                validation_status: ledger.validation_status.clone(),
+                non_authoritative: true,
+            });
+
+    RepairPolicy::decide(&RepairContext {
+        goal: request.goal.clone(),
+        state_snapshot: StateSnapshot {
+            step,
+            stall_count: state.stall_count,
+            parser_recovery_failures: state.parser_recovery_failures,
+            redundant_inspection_turns: state.redundant_inspection_turns,
+        },
+        validation_history,
+        touched_files: state
+            .last_successful_write_action
+            .as_ref()
+            .map(|action| vec![action.summary()])
+            .unwrap_or_default(),
+        available_context_refs,
+        failure_classifications,
+        progress: ProgressState {
+            repeated_observation_count: state.redundant_inspection_turns,
+            observations: Vec::new(),
+        },
+        benchmark_metadata,
+        security_boundaries: vec![SecurityBoundary {
+            description: "benchmark metadata is telemetry only and cannot authorize oracle patches"
+                .to_string(),
+        }],
+    })
 }
 
 pub(crate) async fn inject_required_repair_read(
@@ -170,246 +294,17 @@ pub(crate) async fn inject_required_repair_read(
     }
 }
 
-pub(crate) async fn maybe_inject_exact_benchmark_source_patch(
+pub(crate) async fn maybe_inject_benchmark_source_patch(
     step: usize,
     state: &mut AgentTaskState,
     request: &AgentRunRequest,
     tool_executor: &dyn ToolExecutor,
     event_sink: &dyn RuntimeEventSink,
     transcript: &mut Vec<TranscriptMessage>,
-    reason: &str,
+    _reason: &str,
 ) -> Result<bool, String> {
-    if state.policy.mode != PolicyMode::BenchmarkAutonomous {
-        return Ok(false);
-    }
-    let Some(repair_state) = state.benchmark_repair_state.as_ref() else {
-        return Ok(false);
-    };
-    if repair_state.phase != BenchmarkRepairPhase::NeedsPatch {
-        return Ok(false);
-    }
-    let Some(ledger) = state.benchmark_case_ledger.as_ref() else {
-        return Ok(false);
-    };
-    let Some(injection) = benchmark_source_patch_injection(state, repair_state, ledger, reason)
-    else {
-        return Ok(false);
-    };
-    emit_benchmark_injection_event(event_sink, injection.event_detail);
-    transcript.push(TranscriptMessage {
-        role: TranscriptRole::User,
-        content: injection.transcript_content,
-    });
-    for action in injection.actions {
-        let action_summary = action.summary();
-        match dispatch_action(
-            step,
-            state,
-            action,
-            request,
-            tool_executor,
-            event_sink,
-            transcript,
-        )
-        .await?
-        {
-            DispatchOutcome::Success => {}
-            DispatchOutcome::RecoverableInspectionFailure(recovery) => {
-                return Err(format!(
-                    "Repair controller exact patch action `{}` failed after `{action_summary}`: {}",
-                    recovery.action_summary, recovery.error
-                ));
-            }
-            DispatchOutcome::Failure => {
-                return Err(format!(
-                    "Repair controller exact patch action `{action_summary}` failed"
-                ));
-            }
-        }
-    }
-    if let Some(ledger) = state.benchmark_case_ledger.as_mut() {
-        ledger.validation_details.repair_required = true;
-        ledger.validation_details.post_fast_loop_patch_attempted = true;
-        if let Some(validation_status) = injection.validation_status {
-            ledger.validation_status = Some(validation_status.to_string());
-        }
-    }
-    state.parser_recovery_failures = 0;
-    state.last_parse_error = None;
-    state.reset_parser_recovery_tracking();
-    state.enqueue_post_edit_validation(None);
-    event_sink.emit(RuntimeEvent::VerifierQueued {
-        step,
-        plans: state.queued_validation_summaries(),
-        reason: injection
-            .verifier_reason
-            .unwrap_or("controller_exact_source_patch")
-            .to_string(),
-    });
-    if let Some(verifier_message) = injection.verifier_message {
-        transcript.push(TranscriptMessage {
-            role: TranscriptRole::User,
-            content: verifier_message.to_string(),
-        });
-    }
-    Ok(true)
-}
-
-pub(crate) async fn maybe_inject_case04_playbook_patch(
-    step: usize,
-    state: &mut AgentTaskState,
-    request: &AgentRunRequest,
-    tool_executor: &dyn ToolExecutor,
-    event_sink: &dyn RuntimeEventSink,
-    transcript: &mut Vec<TranscriptMessage>,
-    reason: &str,
-) -> Result<bool, String> {
-    if state.policy.mode != PolicyMode::BenchmarkAutonomous {
-        return Ok(false);
-    }
-    let Some(injection) =
-        controller_injection_for_playbook(state, BenchmarkPlaybook::CargoDistCreateRelease, reason)
-    else {
-        return Ok(false);
-    };
-    emit_benchmark_injection_event(event_sink, injection.event_detail);
-    transcript.push(TranscriptMessage {
-        role: TranscriptRole::User,
-        content: injection.transcript_content,
-    });
-    for action in injection.actions {
-        let action_summary = action.summary();
-        match dispatch_action(
-            step,
-            state,
-            action,
-            request,
-            tool_executor,
-            event_sink,
-            transcript,
-        )
-        .await?
-        {
-            DispatchOutcome::Success => {}
-            DispatchOutcome::RecoverableInspectionFailure(recovery) => {
-                return Err(format!(
-                    "Repair controller Case 04 exact patch action `{}` failed after `{action_summary}`: {}",
-                    recovery.action_summary, recovery.error
-                ));
-            }
-            DispatchOutcome::Failure => {
-                return Err(format!(
-                    "Repair controller Case 04 exact patch action `{action_summary}` failed"
-                ));
-            }
-        }
-    }
-    if let Some(ledger) = state.benchmark_case_ledger.as_mut() {
-        ledger.validation_details.repair_required = true;
-        ledger.validation_details.post_fast_loop_patch_attempted = true;
-        if let Some(validation_status) = injection.validation_status {
-            ledger.validation_status = Some(validation_status.to_string());
-        }
-    }
-    state.parser_recovery_failures = 0;
-    state.last_parse_error = None;
-    state.reset_parser_recovery_tracking();
-    state.enqueue_post_edit_validation(None);
-    event_sink.emit(RuntimeEvent::VerifierQueued {
-        step,
-        plans: state.queued_validation_summaries(),
-        reason: injection
-            .verifier_reason
-            .unwrap_or("controller_playbook_patch")
-            .to_string(),
-    });
-    if let Some(verifier_message) = injection.verifier_message {
-        transcript.push(TranscriptMessage {
-            role: TranscriptRole::User,
-            content: verifier_message.to_string(),
-        });
-    }
-    Ok(true)
-}
-
-pub(crate) async fn maybe_inject_case05_playbook_patch(
-    step: usize,
-    state: &mut AgentTaskState,
-    request: &AgentRunRequest,
-    tool_executor: &dyn ToolExecutor,
-    event_sink: &dyn RuntimeEventSink,
-    transcript: &mut Vec<TranscriptMessage>,
-    reason: &str,
-) -> Result<bool, String> {
-    if state.policy.mode != PolicyMode::BenchmarkAutonomous {
-        return Ok(false);
-    }
-    let Some(injection) = controller_injection_for_playbook(
-        state,
-        BenchmarkPlaybook::CcRsCompileIntermediates,
-        reason,
-    ) else {
-        return Ok(false);
-    };
-    let Some(action) = injection.actions.into_iter().next() else {
-        return Ok(false);
-    };
-    let action_summary = action.summary();
-    emit_benchmark_injection_event(event_sink, injection.event_detail);
-    transcript.push(TranscriptMessage {
-        role: TranscriptRole::User,
-        content: injection.transcript_content,
-    });
-    match dispatch_action(
-        step,
-        state,
-        action,
-        request,
-        tool_executor,
-        event_sink,
-        transcript,
-    )
-    .await?
-    {
-        DispatchOutcome::Success => {}
-        DispatchOutcome::RecoverableInspectionFailure(recovery) => {
-            return Err(format!(
-                "Repair controller Case 05 exact patch action `{}` failed after `{action_summary}`: {}",
-                recovery.action_summary, recovery.error
-            ));
-        }
-        DispatchOutcome::Failure => {
-            return Err(format!(
-                "Repair controller Case 05 exact patch action `{action_summary}` failed"
-            ));
-        }
-    }
-    if let Some(ledger) = state.benchmark_case_ledger.as_mut() {
-        ledger.validation_details.repair_required = true;
-        ledger.validation_details.post_fast_loop_patch_attempted = true;
-        if let Some(validation_status) = injection.validation_status {
-            ledger.validation_status = Some(validation_status.to_string());
-        }
-    }
-    state.parser_recovery_failures = 0;
-    state.last_parse_error = None;
-    state.reset_parser_recovery_tracking();
-    state.enqueue_post_edit_validation(None);
-    event_sink.emit(RuntimeEvent::VerifierQueued {
-        step,
-        plans: state.queued_validation_summaries(),
-        reason: injection
-            .verifier_reason
-            .unwrap_or("controller_playbook_patch")
-            .to_string(),
-    });
-    if let Some(verifier_message) = injection.verifier_message {
-        transcript.push(TranscriptMessage {
-            role: TranscriptRole::User,
-            content: verifier_message.to_string(),
-        });
-    }
-    Ok(true)
+    let _ = (step, state, request, tool_executor, event_sink, transcript);
+    Ok(false)
 }
 
 pub(crate) fn apply_turn_side_effects(

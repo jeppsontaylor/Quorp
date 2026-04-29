@@ -8,7 +8,16 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 use quorp_ids::QuorpError;
+use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+mod amplification;
+mod semantic;
+mod write_lease;
+
+pub use amplification::WriteAmplification;
+pub use semantic::{normalized_diff_hash, smallest_safe_edit};
+pub use write_lease::{WriteLease, WriteLeaseOperation};
 
 /// Compute the canonical SHA-256 file hash used for precondition checks.
 /// Wrapped in `FileHash` for type clarity.
@@ -105,6 +114,61 @@ impl PatchApplyReport {
             preview_id: self.preview_id.clone(),
             touched_paths: self.touched_paths.clone(),
             rollback_tokens: self.rollback_tokens.clone(),
+        }
+    }
+
+    pub fn receipt_v2(
+        &self,
+        provenance: EditProvenance,
+        before_hash: FileHash,
+        after_hash: FileHash,
+        smallest_safe_edit: bool,
+        verifier_packet_ids: Vec<String>,
+    ) -> PatchReceiptV2 {
+        let receipt = self.receipt(provenance);
+        PatchReceiptV2::from_receipt(
+            &receipt,
+            before_hash,
+            after_hash,
+            smallest_safe_edit,
+            verifier_packet_ids,
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct PatchReceiptV2 {
+    pub intent_kind: String,
+    pub before_hash: FileHash,
+    pub after_hash: FileHash,
+    pub normalized_diff_hash: String,
+    pub smallest_safe_edit: bool,
+    pub verifier_packet_ids: Vec<String>,
+}
+
+impl PatchReceiptV2 {
+    pub fn from_receipt(
+        receipt: &PatchReceipt,
+        before_hash: FileHash,
+        after_hash: FileHash,
+        smallest_safe_edit: bool,
+        verifier_packet_ids: Vec<String>,
+    ) -> Self {
+        let intent_kind = edit_provenance_intent_kind(&receipt.provenance).to_string();
+        let normalized_diff_hash = normalized_diff_hash(
+            &intent_kind,
+            &before_hash,
+            &after_hash,
+            &receipt.touched_paths,
+            receipt.rollback_tokens.len(),
+        );
+        Self {
+            intent_kind,
+            before_hash,
+            after_hash,
+            normalized_diff_hash,
+            smallest_safe_edit,
+            verifier_packet_ids,
         }
     }
 }
@@ -453,219 +517,19 @@ fn expected_hash_pair<'a>(
         .map(|(_, bytes)| (hash, bytes.clone()))
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn hash_round_trip() {
-        let bytes = b"hello world";
-        let h = hash_bytes(bytes);
-        assert!(h.0.len() == 64);
-        check_file_hash(bytes, &h).unwrap();
-    }
-
-    #[test]
-    fn check_rejects_changed_bytes() {
-        let h = hash_bytes(b"original");
-        let err = check_file_hash(b"changed", &h).unwrap_err();
-        assert!(matches!(err, QuorpError::PreconditionFailed(_)));
-    }
-
-    #[test]
-    fn preview_and_apply_low_risk_update_with_hashes_only() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let file = root.path().join("src/lib.rs");
-        std::fs::create_dir_all(file.parent().expect("parent")).expect("mkdir");
-        std::fs::write(&file, "pub fn value() -> i32 { 1 }\n").expect("write");
-
-        let vm = PatchVm::new();
-        let patch_id = quorp_ids::PatchId::new("patch-low");
-        let change = FileChange {
-            path: file.clone(),
-            display_path: "src/lib.rs".to_string(),
-            expected_hash: Some(hash_bytes(b"pub fn value() -> i32 { 1 }\n")),
-            kind: FileChangeKind::Update {
-                content: b"pub fn value() -> i32 { 2 }\n".to_vec(),
-            },
-        };
-
-        let preview = vm
-            .preview_file_changes(
-                &patch_id,
-                std::slice::from_ref(&change),
-                PatchVmPolicy::default(),
-            )
-            .expect("preview");
-        assert_eq!(preview.risk, PatchRisk::Low);
-
-        let report = vm
-            .apply_file_changes(
-                &patch_id,
-                &[change],
-                PatchApplyProof::HashesOnly,
-                PatchVmPolicy::default(),
-            )
-            .expect("apply");
-        assert_eq!(report.outcome, ApplyOutcome::Applied);
-        assert_eq!(
-            std::fs::read_to_string(file).expect("read"),
-            "pub fn value() -> i32 { 2 }\n"
-        );
-        assert_eq!(report.rollback_tokens.len(), 1);
-    }
-
-    #[test]
-    fn high_risk_multi_file_patch_requires_matching_preview_id() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let first = root.path().join("a.txt");
-        let second = root.path().join("b.txt");
-        std::fs::write(&first, "a\n").expect("write a");
-        std::fs::write(&second, "b\n").expect("write b");
-
-        let vm = PatchVm::new();
-        let patch_id = quorp_ids::PatchId::new("patch-high");
-        let changes = vec![
-            FileChange {
-                path: first,
-                display_path: "a.txt".to_string(),
-                expected_hash: Some(hash_bytes(b"a\n")),
-                kind: FileChangeKind::Update {
-                    content: b"aa\n".to_vec(),
-                },
-            },
-            FileChange {
-                path: second,
-                display_path: "b.txt".to_string(),
-                expected_hash: Some(hash_bytes(b"b\n")),
-                kind: FileChangeKind::Update {
-                    content: b"bb\n".to_vec(),
-                },
-            },
-        ];
-
-        let preview = vm
-            .preview_file_changes(&patch_id, &changes, PatchVmPolicy::default())
-            .expect("preview");
-        assert_eq!(preview.risk, PatchRisk::High);
-
-        let error = vm
-            .apply_file_changes(
-                &patch_id,
-                &changes,
-                PatchApplyProof::HashesOnly,
-                PatchVmPolicy::default(),
-            )
-            .expect_err("hash-only high-risk apply");
-        assert!(error.to_string().contains("requires a matching preview id"));
-
-        vm.apply_file_changes(
-            &patch_id,
-            &changes,
-            PatchApplyProof::PreviewId(&preview.preview_id),
-            PatchVmPolicy::default(),
-        )
-        .expect("apply");
-    }
-
-    #[test]
-    fn failed_apply_rolls_back_previous_changes_and_preserves_original_bytes() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let first = root.path().join("a.txt");
-        let second = root.path().join("b.txt");
-        std::fs::write(&first, "a\n").expect("write a");
-        std::fs::write(&second, "b\n").expect("write b");
-
-        let original_first = std::fs::read(&first).expect("read a");
-        let original_second = std::fs::read(&second).expect("read b");
-
-        let vm = PatchVm::new();
-        let patch_id = quorp_ids::PatchId::new("patch-rollback");
-        let changes = vec![
-            FileChange {
-                path: first.clone(),
-                display_path: "a.txt".to_string(),
-                expected_hash: Some(hash_bytes(b"a\n")),
-                kind: FileChangeKind::Update {
-                    content: b"aa\n".to_vec(),
-                },
-            },
-            FileChange {
-                path: second.clone(),
-                display_path: "b.txt".to_string(),
-                expected_hash: None,
-                kind: FileChangeKind::Add {
-                    content: b"bb\n".to_vec(),
-                },
-            },
-        ];
-
-        let preview = vm
-            .preview_file_changes(&patch_id, &changes, PatchVmPolicy::default())
-            .expect("preview");
-        let error = vm
-            .apply_file_changes(
-                &patch_id,
-                &changes,
-                PatchApplyProof::PreviewId(&preview.preview_id),
-                PatchVmPolicy::default(),
-            )
-            .expect_err("apply should fail on existing add target");
-
-        assert!(error.to_string().contains("refusing to add existing file"));
-        assert_eq!(std::fs::read(&first).expect("read a"), original_first);
-        assert_eq!(std::fs::read(&second).expect("read b"), original_second);
-    }
-
-    #[test]
-    fn stale_expected_hash_rejects_without_mutating() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let file = root.path().join("target.txt");
-        std::fs::write(&file, "changed\n").expect("write");
-
-        let vm = PatchVm::new();
-        let patch_id = quorp_ids::PatchId::new("patch-stale");
-        let change = FileChange {
-            path: file.clone(),
-            display_path: "target.txt".to_string(),
-            expected_hash: Some(hash_bytes(b"original\n")),
-            kind: FileChangeKind::Update {
-                content: b"new\n".to_vec(),
-            },
-        };
-
-        let error = vm
-            .apply_file_changes(
-                &patch_id,
-                &[change],
-                PatchApplyProof::HashesOnly,
-                PatchVmPolicy::default(),
-            )
-            .expect_err("stale hash");
-        assert!(matches!(error, QuorpError::PreconditionFailed(_)));
-        assert_eq!(std::fs::read_to_string(file).expect("read"), "changed\n");
-    }
-
-    #[test]
-    fn full_file_rewrite_policy_rejects_large_update() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let file = root.path().join("large.txt");
-        std::fs::write(&file, "small\n").expect("write");
-
-        let vm = PatchVm::new();
-        let patch_id = quorp_ids::PatchId::new("patch-large");
-        let change = FileChange {
-            path: file,
-            display_path: "large.txt".to_string(),
-            expected_hash: Some(hash_bytes(b"small\n")),
-            kind: FileChangeKind::Update {
-                content: vec![b'x'; 256 * 1024 + 1],
-            },
-        };
-
-        let error = vm
-            .preview_file_changes(&patch_id, &[change], PatchVmPolicy::default())
-            .expect_err("large rewrite");
-        assert!(error.to_string().contains("full-file rewrite"));
+pub fn edit_provenance_intent_kind(provenance: &EditProvenance) -> &'static str {
+    match provenance {
+        EditProvenance::WriteFile { .. } => "write_file",
+        EditProvenance::ApplyPatch { .. } => "apply_patch",
+        EditProvenance::ReplaceBlock { .. } => "replace_block",
+        EditProvenance::ReplaceRange { .. } => "replace_range",
+        EditProvenance::ModifyToml { .. } => "modify_toml",
+        EditProvenance::ApplyPreview { .. } => "apply_preview",
+        EditProvenance::SetExecutable { .. } => "set_executable",
+        EditProvenance::SemanticPatch => "semantic_patch",
+        EditProvenance::Unknown { .. } => "unknown",
     }
 }
+#[cfg(test)]
+#[path = "../../../testing/quorp_patch_vm/quorp_patch_vm/tests.rs"]
+mod tests;

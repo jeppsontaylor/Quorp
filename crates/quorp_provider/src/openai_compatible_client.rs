@@ -2,6 +2,9 @@ use anyhow::Context as _;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
+use std::env;
+use std::fs;
+use std::time::Duration;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct OpenAiCompatibleClientConfig {
@@ -69,22 +72,26 @@ impl OpenAiCompatibleUsage {
             total_tokens,
             reasoning_tokens: usage_u64(&[
                 &["reasoning_tokens"],
+                &["reasoning_output_tokens"],
                 &["output_tokens_details", "reasoning_tokens"],
                 &["completion_tokens_details", "reasoning_tokens"],
             ]),
             cache_read_input_tokens: usage_u64(&[
                 &["cache_read_input_tokens"],
+                &["cached_input_tokens"],
                 &["input_tokens_details", "cached_tokens"],
                 &["prompt_tokens_details", "cached_tokens"],
             ]),
             cache_write_input_tokens: usage_u64(&[
                 &["cache_write_input_tokens"],
+                &["cache_write_tokens"],
                 &["input_tokens_details", "cache_write_tokens"],
                 &["prompt_tokens_details", "cache_write_tokens"],
             ]),
             provider_request_id: provider_request_id.map(str::to_string).or_else(|| {
                 payload
                     .get("provider_request_id")
+                    .or_else(|| payload.get("id"))
                     .and_then(serde_json::Value::as_str)
                     .map(str::to_string)
             }),
@@ -125,15 +132,18 @@ struct ResponseDelta {
 pub fn build_request_body(
     config: &OpenAiCompatibleClientConfig,
     request: &OpenAiCompatibleChatRequest,
+    stream: bool,
 ) -> serde_json::Value {
     let mut body = serde_json::json!({
         "model": config.model_id,
         "messages": request.messages,
-        "stream": true,
-        "stream_options": {
-            "include_usage": true
-        },
+        "stream": stream,
     });
+    if stream {
+        body["stream_options"] = serde_json::json!({
+            "include_usage": true
+        });
+    }
     if let Some(max_tokens) = request.max_tokens {
         body["max_tokens"] = serde_json::json!(max_tokens);
     }
@@ -144,6 +154,53 @@ pub fn build_request_body(
         body[key] = value.clone();
     }
     body
+}
+
+pub fn build_http_client(
+    connect_timeout: Duration,
+    read_timeout: Duration,
+) -> anyhow::Result<reqwest::Client> {
+    let mut builder = reqwest::Client::builder()
+        .connect_timeout(connect_timeout)
+        .read_timeout(read_timeout)
+        .no_gzip()
+        .no_brotli()
+        .no_deflate()
+        .no_zstd();
+
+    if let Some(certificate) = load_root_certificate_from_env()? {
+        builder = builder.add_root_certificate(certificate);
+    }
+
+    builder
+        .build()
+        .map_err(|error| anyhow::Error::msg(format!("Failed to build HTTP client: {error}")))
+}
+
+fn load_root_certificate_from_env() -> anyhow::Result<Option<reqwest::Certificate>> {
+    for variable_name in ["SSL_CERT_FILE", "CURL_CA_BUNDLE", "REQUESTS_CA_BUNDLE"] {
+        let Some(path) = env::var_os(variable_name) else {
+            continue;
+        };
+        let path = std::path::PathBuf::from(path);
+        if !path.exists() {
+            continue;
+        }
+        let bytes = fs::read(&path)
+            .with_context(|| format!("failed to read certificate bundle {}", path.display()))?;
+        if let Ok(certificate) = reqwest::Certificate::from_pem(&bytes) {
+            return Ok(Some(certificate));
+        }
+        if let Ok(certificate) = reqwest::Certificate::from_der(&bytes) {
+            return Ok(Some(certificate));
+        }
+        anyhow::bail!(
+            "failed to parse certificate bundle {} from {}",
+            path.display(),
+            variable_name
+        );
+    }
+    Ok(None)
 }
 
 pub fn parse_sse_data_line(line: &str) -> Option<&str> {
@@ -256,136 +313,6 @@ pub fn sha256_hex(bytes: &[u8]) -> String {
     let digest = Sha256::digest(bytes);
     format!("{digest:x}")
 }
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn chat_completions_url_accepts_remote_urls() {
-        assert_eq!(
-            chat_completions_url("https://example.com/v1").expect("url"),
-            "https://example.com/v1/chat/completions"
-        );
-    }
-
-    #[test]
-    fn normalize_base_url_appends_v1_once() {
-        assert_eq!(
-            normalize_base_url("https://example.com", true).expect("normalize"),
-            "https://example.com/v1"
-        );
-        assert_eq!(
-            normalize_base_url("https://example.com/v1/", true).expect("normalize"),
-            "https://example.com/v1"
-        );
-    }
-
-    #[test]
-    fn parse_sse_payload_supports_text_and_reasoning() {
-        let payload = r#"{"choices":[{"index":0,"delta":{"content":"hello","reasoning_content":"think"},"finish_reason":null}]}"#;
-        assert_eq!(
-            parse_sse_payload(payload).expect("parse"),
-            vec![
-                OpenAiCompatibleStreamEvent::TextDelta("hello".to_string()),
-                OpenAiCompatibleStreamEvent::ReasoningDelta("think".to_string()),
-            ]
-        );
-    }
-
-    #[test]
-    fn parse_sse_chunk_preserves_metadata_usage_and_payload_hash() {
-        let payload = r#"{"id":"chatcmpl-1","model":"qwen","choices":[{"index":0,"delta":{"content":"hello"},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":4,"total_tokens":14,"completion_tokens_details":{"reasoning_tokens":2},"provider_request_id":"provider-1"}}"#;
-        let chunk = parse_sse_chunk(payload).expect("parse");
-
-        assert_eq!(chunk.provider_request_id.as_deref(), Some("chatcmpl-1"));
-        assert_eq!(chunk.model_id.as_deref(), Some("qwen"));
-        assert_eq!(chunk.finish_reason.as_deref(), Some("stop"));
-        assert_eq!(
-            chunk.events,
-            vec![
-                OpenAiCompatibleStreamEvent::TextDelta("hello".to_string()),
-                OpenAiCompatibleStreamEvent::Finished,
-            ]
-        );
-        let usage = chunk.usage.expect("usage");
-        assert_eq!(usage.input_tokens, 10);
-        assert_eq!(usage.output_tokens, 4);
-        assert_eq!(usage.total_tokens, 14);
-        assert_eq!(usage.reasoning_tokens, Some(2));
-        assert_eq!(usage.provider_request_id.as_deref(), Some("chatcmpl-1"));
-        assert_eq!(chunk.raw_payload_sha256.len(), 64);
-    }
-
-    #[test]
-    fn retry_backoff_prefers_retry_after_and_clamps() {
-        let mut headers = reqwest::header::HeaderMap::new();
-        headers.insert(reqwest::header::RETRY_AFTER, "7".parse().expect("header"));
-        assert_eq!(retry_backoff_seconds(&headers, 0), 7);
-        headers.insert(reqwest::header::RETRY_AFTER, "999".parse().expect("header"));
-        assert_eq!(retry_backoff_seconds(&headers, 0), 120);
-        headers.clear();
-        assert_eq!(retry_backoff_seconds(&headers, 1), 60);
-    }
-
-    #[test]
-    fn parse_sse_payload_supports_done_marker() {
-        assert_eq!(
-            parse_sse_payload("[DONE]").expect("done"),
-            vec![OpenAiCompatibleStreamEvent::Finished]
-        );
-    }
-
-    #[test]
-    fn parse_sse_chunk_reports_malformed_payloads() {
-        let error = parse_sse_chunk("{not json").expect_err("malformed");
-        assert!(error.contains("Malformed SSE payload"));
-    }
-
-    #[test]
-    fn parse_sse_data_line_ignores_comments_and_blank_lines() {
-        assert_eq!(parse_sse_data_line(""), None);
-        assert_eq!(parse_sse_data_line(": keep-alive"), None);
-        assert_eq!(parse_sse_data_line("data: hello"), Some("hello"));
-    }
-
-    #[test]
-    fn build_request_body_merges_extra_body_fields() {
-        let mut extra_body = serde_json::Map::new();
-        extra_body.insert(
-            "models".to_string(),
-            serde_json::json!(["qwen/qwen3-coder:free", "qwen/qwen2.5-coder:free"]),
-        );
-        extra_body.insert(
-            "provider".to_string(),
-            serde_json::json!({ "sort": "throughput" }),
-        );
-        let body = build_request_body(
-            &OpenAiCompatibleClientConfig {
-                base_url: "https://example.test/api/v1".to_string(),
-                model_id: "qwen/qwen3-coder:free".to_string(),
-                connect_timeout: std::time::Duration::from_secs(2),
-                read_timeout: std::time::Duration::from_secs(30),
-                extra_headers: std::collections::BTreeMap::new(),
-                extra_body,
-            },
-            &OpenAiCompatibleChatRequest {
-                messages: vec![OpenAiCompatibleChatMessage {
-                    role: "user",
-                    content: "hello".to_string(),
-                }],
-                max_tokens: Some(64),
-                reasoning_effort: None,
-            },
-        );
-        assert_eq!(
-            body["models"],
-            serde_json::json!(["qwen/qwen3-coder:free", "qwen/qwen2.5-coder:free"])
-        );
-        assert_eq!(body["provider"]["sort"], serde_json::json!("throughput"));
-        assert_eq!(
-            body["stream_options"]["include_usage"],
-            serde_json::json!(true)
-        );
-    }
-}
+#[path = "../../../testing/quorp_provider/openai_compatible_client/tests.rs"]
+mod tests;

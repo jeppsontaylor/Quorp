@@ -1,5 +1,6 @@
 use std::fs;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::AtomicBool;
 use std::sync::mpsc::SyncSender;
 use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -299,13 +300,20 @@ pub struct RoutingSummary {
 struct CompositeEventSink<'a> {
     primary: &'a dyn RuntimeEventSink,
     secondary: Option<&'a dyn RuntimeEventSink>,
+    tertiary: Option<&'a dyn RuntimeEventSink>,
 }
 
 impl<'a> RuntimeEventSink for CompositeEventSink<'a> {
     fn emit(&self, event: RuntimeEvent) {
         self.primary.emit(event.clone());
-        if let Some(secondary) = self.secondary {
-            secondary.emit(event);
+        match (self.secondary, self.tertiary) {
+            (Some(secondary), Some(tertiary)) => {
+                secondary.emit(event.clone());
+                tertiary.emit(event);
+            }
+            (Some(secondary), None) => secondary.emit(event),
+            (None, Some(tertiary)) => tertiary.emit(event),
+            (None, None) => {}
         }
     }
 }
@@ -361,6 +369,19 @@ impl RuntimeEventSink for RuntimeEventProgressSink {
                 ..
             } => Some(format!(
                 "step {step}: model request #{request_id} started ({message_count} messages)"
+            )),
+            RuntimeEvent::ContextPressureMeasured { step, telemetry } => Some(format!(
+                "step {step}: context pressure {:?} ({:.0}% used)",
+                telemetry.pressure,
+                telemetry.pressure_ratio() * 100.0
+            )),
+            RuntimeEvent::ContextCompacted {
+                step,
+                packet_id,
+                removed_messages,
+                ..
+            } => Some(format!(
+                "step {step}: context compacted into {packet_id} (removed {removed_messages} messages)"
             )),
             RuntimeEvent::ModelRequestFinished {
                 step,
@@ -654,6 +675,24 @@ impl HeadlessEventRecorder {
                     .map(|value| value.to_string())
                     .unwrap_or_else(|| "default".to_string()),
                 safety_mode.as_deref().unwrap_or("standard")
+            ),
+            RuntimeEvent::ContextPressureMeasured { step, telemetry } => eprintln!(
+                "{}[context]{} step={} pressure={:?} used={:.0}%",
+                ANSI_CYAN,
+                ANSI_RESET,
+                step,
+                telemetry.pressure,
+                telemetry.pressure_ratio() * 100.0
+            ),
+            RuntimeEvent::ContextCompacted {
+                step,
+                packet_id,
+                removed_messages,
+                retained_messages,
+                ..
+            } => eprintln!(
+                "{}[context]{} step={} packet={} removed={} retained={}",
+                ANSI_CYAN, ANSI_RESET, step, packet_id, removed_messages, retained_messages
             ),
             RuntimeEvent::ModelRequestFinished {
                 step,
@@ -1391,6 +1430,33 @@ pub struct HeadlessRunOptions {
     pub seed_context: Vec<TranscriptMessage>,
 }
 
+/// Optional hooks that augment a headless agent run without changing its
+/// observable behavior when defaulted. Every field defaults to `None`,
+/// so `run_headless_agent_with_hooks(opts, HeadlessRunHooks::default())`
+/// is byte-equivalent to `run_headless_agent_with_progress(opts, None)`.
+///
+/// The desktop bridge (`quorp_desktop_core`) populates these fields to
+/// stream RuntimeEvents through a Tauri channel and to honor cooperative
+/// cancellation from the UI without disturbing the existing CLI path.
+#[derive(Default, Clone)]
+pub struct HeadlessRunHooks {
+    /// TUI command-progress channel. Same semantics as the legacy
+    /// `progress_tx` parameter on `run_headless_agent_with_progress`.
+    pub progress_tx: Option<SyncSender<TuiEvent>>,
+
+    /// Additional `RuntimeEventSink` fanned out alongside the
+    /// always-installed `HeadlessEventRecorder` and the optional
+    /// progress sink. The desktop installs a sink here that batches
+    /// events for the Tauri channel.
+    pub extra_event_sink: Option<Arc<dyn RuntimeEventSink>>,
+
+    /// Cooperative cancellation flag. When set, threaded into
+    /// `AgentRunRequest::cancellation_flag` and polled inside the agent
+    /// recovery loop. Flipping it to `true` yields a clean `Cancelled`
+    /// stop reason on the next poll.
+    pub cancellation_flag: Option<Arc<AtomicBool>>,
+}
+
 pub fn run_headless_agent(options: HeadlessRunOptions) -> anyhow::Result<AgentRunOutcome> {
     run_headless_agent_with_progress(options, None)
 }
@@ -1399,6 +1465,29 @@ pub fn run_headless_agent_with_progress(
     options: HeadlessRunOptions,
     progress_tx: Option<SyncSender<TuiEvent>>,
 ) -> anyhow::Result<AgentRunOutcome> {
+    run_headless_agent_with_hooks(
+        options,
+        HeadlessRunHooks {
+            progress_tx,
+            ..HeadlessRunHooks::default()
+        },
+    )
+}
+
+/// Hooks-accepting variant. The two existing public entry points
+/// (`run_headless_agent` and `run_headless_agent_with_progress`) are
+/// thin wrappers over this function with `HeadlessRunHooks::default()`,
+/// so behavior on the CLI path is unchanged. Desktop callers use this
+/// directly to plumb the extra event sink and cancellation flag.
+pub fn run_headless_agent_with_hooks(
+    options: HeadlessRunOptions,
+    hooks: HeadlessRunHooks,
+) -> anyhow::Result<AgentRunOutcome> {
+    let HeadlessRunHooks {
+        progress_tx,
+        extra_event_sink,
+        cancellation_flag,
+    } = hooks;
     let objective_path = if options.objective_file.is_absolute() {
         options.objective_file.clone()
     } else {
@@ -1530,7 +1619,7 @@ pub fn run_headless_agent_with_progress(
             != Some("nvidia_qwen_benchmark"),
         completion_policy: options.completion_policy.clone(),
         run_metadata: options.objective_metadata.clone(),
-        cancellation_flag: None,
+        cancellation_flag: cancellation_flag.clone(),
     };
 
     let mut request_value = serde_json::to_value(&request)?;
@@ -1539,28 +1628,65 @@ pub fn run_headless_agent_with_progress(
     }
     write_json(&options.result_dir.join("request.json"), &request_value)?;
 
-    let outcome = if let Some(progress_tx) = progress_tx {
-        let event_sink = CompositeEventSink {
-            primary: &event_fanout,
-            secondary: Some(&RuntimeEventProgressSink {
-                event_tx: progress_tx,
-            }),
-        };
-        runtime.block_on(quorp_agent_core::run_agent_task(
-            &request,
-            &completion_client,
-            &tool_executor,
-            &event_sink,
-            None,
-        ))
-    } else {
-        runtime.block_on(quorp_agent_core::run_agent_task(
+    // Build the runtime sink chain. The primary is always the
+    // recorder fanout. Secondary holds the optional TUI progress sink;
+    // tertiary holds the optional desktop sink. When neither extra is
+    // present we still emit through the bare fanout to preserve the
+    // legacy fast path.
+    let progress_sink = progress_tx.map(|tx| RuntimeEventProgressSink { event_tx: tx });
+    let extra_sink_arc = extra_event_sink;
+    let outcome = match (progress_sink.as_ref(), extra_sink_arc.as_ref()) {
+        (None, None) => runtime.block_on(quorp_agent_core::run_agent_task(
             &request,
             &completion_client,
             &tool_executor,
             &event_fanout,
             None,
-        ))
+        )),
+        (Some(progress), None) => {
+            let event_sink = CompositeEventSink {
+                primary: &event_fanout,
+                secondary: Some(progress),
+                tertiary: None,
+            };
+            runtime.block_on(quorp_agent_core::run_agent_task(
+                &request,
+                &completion_client,
+                &tool_executor,
+                &event_sink,
+                None,
+            ))
+        }
+        (None, Some(extra)) => {
+            let extra_ref: &dyn RuntimeEventSink = extra.as_ref();
+            let event_sink = CompositeEventSink {
+                primary: &event_fanout,
+                secondary: Some(extra_ref),
+                tertiary: None,
+            };
+            runtime.block_on(quorp_agent_core::run_agent_task(
+                &request,
+                &completion_client,
+                &tool_executor,
+                &event_sink,
+                None,
+            ))
+        }
+        (Some(progress), Some(extra)) => {
+            let extra_ref: &dyn RuntimeEventSink = extra.as_ref();
+            let event_sink = CompositeEventSink {
+                primary: &event_fanout,
+                secondary: Some(progress),
+                tertiary: Some(extra_ref),
+            };
+            runtime.block_on(quorp_agent_core::run_agent_task(
+                &request,
+                &completion_client,
+                &tool_executor,
+                &event_sink,
+                None,
+            ))
+        }
     };
 
     durable_consumers.stop()?;
@@ -1663,6 +1789,7 @@ pub fn resume_headless_agent_with_progress(
             secondary: Some(&RuntimeEventProgressSink {
                 event_tx: progress_tx,
             }),
+            tertiary: None,
         };
         runtime.block_on(quorp_agent_core::run_agent_task(
             &request,
@@ -1793,6 +1920,29 @@ fn infer_routing_summary_from_request(request: &CompletionRequest) -> RoutingDec
         .to_string();
     let requested_model = request.model_id.clone();
     match provider {
+        InteractiveProviderKind::Local => {
+            let runtime = crate::quorp::provider_config::resolve_local_runtime(
+                request.base_url_override.as_deref(),
+            )
+            .ok();
+            RoutingDecision {
+                routing_mode,
+                requested_provider: provider.label().to_string(),
+                requested_model: requested_model.clone(),
+                candidate_models: vec![requested_model.clone()],
+                effective_provider: provider.label().to_string(),
+                effective_model: requested_model,
+                used_fallback: false,
+                fallback_reason: None,
+                comparable: true,
+                provider_base_url: runtime.as_ref().map(|value| value.base_url.clone()),
+                auth_mode: runtime.as_ref().map(|value| value.auth_mode.clone()),
+                proxy_visible_remote_egress_expected: runtime
+                    .as_ref()
+                    .map(|value| value.proxy_visible_remote_egress_expected)
+                    .unwrap_or(true),
+            }
+        }
         InteractiveProviderKind::Nvidia => {
             let runtime = crate::quorp::provider_config::resolve_nvidia_runtime(
                 request.base_url_override.as_deref(),
@@ -1921,108 +2071,6 @@ fn timestamp_ms() -> u64 {
         .map(|duration| duration.as_millis() as u64)
         .unwrap_or_default()
 }
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-    use tempfile::tempdir;
-
-    #[test]
-    fn core_to_chat_message_maps_all_roles() {
-        for (role, expected_role) in [
-            (TranscriptRole::System, ChatServiceRole::System),
-            (TranscriptRole::User, ChatServiceRole::User),
-            (TranscriptRole::Assistant, ChatServiceRole::Assistant),
-        ] {
-            let message = TranscriptMessage {
-                role,
-                content: "hello".to_string(),
-            };
-            let chat_message = core_to_chat_message(&message);
-            assert_eq!(chat_message.role, expected_role);
-            assert_eq!(chat_message.content, "hello");
-        }
-    }
-
-    #[test]
-    fn durable_runtime_consumers_persist_memory_and_journals() {
-        let workspace = tempdir().expect("workspace tempdir");
-        let result_dir = tempdir().expect("result tempdir");
-        let event_recorder = Arc::new(
-            HeadlessEventRecorder::new(
-                &result_dir.path().join("events.jsonl"),
-                result_dir.path().to_path_buf(),
-                false,
-            )
-            .expect("event recorder"),
-        );
-        let fanout = RuntimeEventFanout::with_downstream(event_recorder);
-        let consumers = spawn_runtime_event_consumers(workspace.path(), result_dir.path(), &fanout);
-
-        fanout.emit(RuntimeEvent::RunStarted {
-            goal: "stabilize runtime consumers".to_string(),
-            model_id: "test-model".to_string(),
-        });
-        fanout.emit(RuntimeEvent::FailedEditRecorded {
-            step: 3,
-            record: FailedEditRecord {
-                action_kind: "replace_block".to_string(),
-                path: "src/lib.rs".to_string(),
-                search_hash: Some("search-hash".to_string()),
-                replace_hash: Some("replace-hash".to_string()),
-                failure_reason: "no matching block".to_string(),
-                matching_line_numbers: vec![12],
-                attempts: 2,
-            },
-        });
-        fanout.emit(RuntimeEvent::RunFinished {
-            reason: StopReason::Success,
-            total_steps: 3,
-            total_billed_tokens: 17,
-            duration_ms: 42,
-        });
-
-        consumers.stop().expect("stop runtime consumers");
-
-        let reopened_memory = Memory::with_workspace(workspace.path()).expect("reopen memory");
-        assert_eq!(reopened_memory.failed_attempt_count().expect("count"), 1);
-        assert!(
-            reopened_memory
-                .failed_attempts_for_signature("replace_block:src/lib.rs:no matching block")
-                .expect("signature recall")
-                .iter()
-                .any(|record| record.fingerprint.owner.as_deref() == Some("src/lib.rs"))
-        );
-
-        let memory_journal = result_dir
-            .path()
-            .join("artifacts/runtime-subscribers/memory_writer/events.jsonl");
-        let proof_journal = result_dir
-            .path()
-            .join("artifacts/runtime-subscribers/proof_recorder/events.jsonl");
-        let benchmark_journal = result_dir
-            .path()
-            .join("artifacts/runtime-subscribers/benchmark_recorder/events.jsonl");
-
-        assert!(memory_journal.exists());
-        assert!(proof_journal.exists());
-        assert!(benchmark_journal.exists());
-        assert!(
-            !std::fs::read_to_string(&proof_journal)
-                .expect("proof journal")
-                .trim()
-                .is_empty()
-        );
-    }
-
-    #[test]
-    fn write_final_diff_uses_fallback_outside_git_workspace() {
-        let tempdir = tempdir().expect("tempdir");
-        let output_path = tempdir.path().join("diff.txt");
-
-        write_final_diff(tempdir.path(), &output_path).expect("write diff");
-
-        let contents = std::fs::read_to_string(&output_path).expect("read diff");
-        assert!(contents.contains("final diff unavailable"));
-    }
-}
+#[path = "../../../../testing/quorp_session/quorp/agent_runner/tests.rs"]
+mod tests;

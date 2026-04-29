@@ -25,9 +25,19 @@ type SessionShadowFiles = std::collections::HashMap<PathBuf, Option<String>>;
 type ShadowWorktree = std::collections::HashMap<usize, SessionShadowFiles>;
 
 static SHADOW_WORKTREE: std::sync::OnceLock<Mutex<ShadowWorktree>> = std::sync::OnceLock::new();
+#[cfg(test)]
+static NATIVE_BACKEND_TEST_LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
 
 fn get_shadow_worktree() -> &'static Mutex<ShadowWorktree> {
     SHADOW_WORKTREE.get_or_init(|| Mutex::new(ShadowWorktree::new()))
+}
+
+#[cfg(test)]
+pub(crate) fn native_backend_test_guard() -> std::sync::MutexGuard<'static, ()> {
+    NATIVE_BACKEND_TEST_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
 }
 
 fn stash_file_for_rollback(session_id: usize, path: &PathBuf) {
@@ -1443,5 +1453,5 @@ pub(crate) use process_browser::{
 };
 
 #[cfg(test)]
-#[path = "native_backend/tests.rs"]
+#[path = "../../../../../testing/quorp_session/quorp/tui/native_backend/tests.rs"]
 mod tests;

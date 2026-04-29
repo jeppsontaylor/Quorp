@@ -2,7 +2,9 @@ use std::collections::BTreeMap;
 use std::path::PathBuf;
 
 use clap::ValueEnum;
-use quorp_agent_core::{AgentRepairMemory, AgentRepairScorecard, FailedEditRecord, StopReason};
+use quorp_agent_core::{
+    AgentRepairMemory, AgentRepairScorecard, FailedEditRecord, RepairSource, StopReason,
+};
 use serde::{Deserialize, Serialize};
 
 use crate::{ChallengeMetadata, EvaluatorOutcome};
@@ -371,6 +373,10 @@ pub struct BenchmarkReport {
     #[serde(default)]
     pub comparable_run: Option<bool>,
     #[serde(default)]
+    pub oracle_run: bool,
+    #[serde(default)]
+    pub oracle_non_comparable_reason: Option<String>,
+    #[serde(default)]
     pub provider_request_id: Option<String>,
     #[serde(default)]
     pub routing_status: Option<String>,
@@ -693,6 +699,8 @@ pub struct RunSummaryCase {
     pub primary_failure: Option<String>,
     pub agent_final_failure_classification: Option<String>,
     pub final_stop_reason: Option<StopReason>,
+    #[serde(default)]
+    pub repair_source: Option<RepairSource>,
     pub first_valid_write_step: Option<usize>,
     pub parser_recovery_count: usize,
     pub redundant_read_count: usize,
@@ -765,6 +773,8 @@ pub struct BenchmarkScoreCase {
     pub success: bool,
     #[serde(default)]
     pub secure_success: bool,
+    #[serde(default)]
+    pub repair_source: Option<RepairSource>,
     pub progress_score: u8,
     pub progress_phase: String,
     pub failure_classification: String,

@@ -1426,10 +1426,18 @@ pub(crate) fn apply_session_env_overrides(launch: &SessionLaunchConfig) {
     match (launch.provider, launch.base_url.as_deref()) {
         (Some(crate::quorp::executor::InteractiveProviderKind::Nvidia), Some(base_url)) => unsafe {
             std::env::set_var("QUORP_NVIDIA_BASE_URL", base_url);
+            std::env::remove_var("QUORP_LOCAL_BASE_URL");
+            std::env::remove_var("QUORP_BASE_URL");
+            std::env::remove_var("QUORP_CHAT_BASE_URL");
+        },
+        (Some(crate::quorp::executor::InteractiveProviderKind::Local), Some(base_url)) => unsafe {
+            std::env::set_var("QUORP_LOCAL_BASE_URL", base_url);
+            std::env::remove_var("QUORP_NVIDIA_BASE_URL");
             std::env::remove_var("QUORP_BASE_URL");
             std::env::remove_var("QUORP_CHAT_BASE_URL");
         },
         _ => unsafe {
+            std::env::remove_var("QUORP_LOCAL_BASE_URL");
             std::env::remove_var("QUORP_BASE_URL");
             std::env::remove_var("QUORP_CHAT_BASE_URL");
             std::env::remove_var("QUORP_NVIDIA_BASE_URL");

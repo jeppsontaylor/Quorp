@@ -17,6 +17,7 @@ use std::time::Instant;
 use futures::future::BoxFuture;
 use serde::Serialize;
 
+use super::write_routing::large_source_write_violation;
 use super::*;
 use crate::agent_context::{
     AgentConfig, AutonomyProfile, PolicyMode, PolicySettings, load_agent_config,
@@ -93,7 +94,18 @@ impl AgentTaskState {
         if let Some(error) = self.benchmark_target_lease_violation(action) {
             return Err(error);
         }
+        if let Some(error) = large_source_write_violation(self, action) {
+            return Err(error);
+        }
         if let Some(error) = self.benchmark_write_requires_observed_target_context(action) {
+            return Err(error);
+        }
+        if action.is_write_like()
+            && let Some(error) = write_readiness::write_readiness_message(self)
+        {
+            return Err(error);
+        }
+        if let Some(error) = no_progress::repeated_evidence_action_block(self, action) {
             return Err(error);
         }
         if action.is_write_like()

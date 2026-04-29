@@ -159,18 +159,48 @@ fn map_memory_error(err: quorp_desktop_core::MemoryAdapterError) -> IpcError {
 pub struct MemoryPruneReceipt {
     pub tier: String,
     pub removed: u32,
+    pub message: String,
+}
+
+impl From<quorp_desktop_core::MemoryPruneReceipt> for MemoryPruneReceipt {
+    fn from(value: quorp_desktop_core::MemoryPruneReceipt) -> Self {
+        Self {
+            tier: value.tier,
+            removed: value.removed,
+            message: value.message,
+        }
+    }
 }
 
 #[tauri::command]
 pub async fn prune_memory(
     state: tauri::State<'_, AppHandleState>,
+    workspace_id: WorkspaceId,
     tier: String,
     older_than_iso: String,
 ) -> Result<MemoryPruneReceipt, IpcError> {
-    let _ = (state, older_than_iso);
-    Err(IpcError::not_implemented(format!(
-        "prune_memory(tier={tier}): lands once the memory adapter is wired"
-    )))
+    if tier.is_empty() {
+        return Err(IpcError::invalid_input("tier must not be empty"));
+    }
+    let workspace = state.core.workspaces.get(&workspace_id).ok_or_else(|| {
+        IpcError::new(
+            IpcErrorCode::WorkspaceNotFound,
+            format!("workspace not found: {workspace_id}"),
+        )
+    })?;
+    let workspace_root = PathBuf::from(&workspace.canonical_path);
+    let memory = state.core.memory.clone();
+    let runtime = state.core.runtime.clone();
+    let receipt = runtime
+        .spawn(async move {
+            memory
+                .prune(&workspace_root, &tier, older_than_iso)
+                .await
+        })
+        .await
+        .map_err(|err| IpcError::new(IpcErrorCode::Internal, format!("join: {err}")))?
+        .map_err(map_memory_error)?;
+    Ok(MemoryPruneReceipt::from(receipt))
 }
 
 /// Wire shape mirroring `quorp_desktop_core::RuleSummaryDto`.

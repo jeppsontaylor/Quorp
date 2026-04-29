@@ -1439,4 +1439,5 @@ pub(crate) use process_browser::{
 };
 
 #[cfg(test)]
+#[path = "../../../../../testing/quorp/quorp/tui/native_backend/tests.rs"]
 mod tests;

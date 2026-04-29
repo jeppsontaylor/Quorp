@@ -100,6 +100,60 @@ reviewed_on = "2026-04-28"
 expires_or_review_by = "roadmap eval/release closure"
 
 [[allowlist]]
+path = "crates/quorp_agent_core/src/runtime/compaction.rs"
+pattern = "fs::write"
+reason = "Context compaction persists packet artifacts under .quorp/context."
+owner = "agent-runtime"
+sink = "artifact"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_agent_core/src/runtime/compaction.rs"
+pattern = "OpenOptions::new"
+reason = "Context compaction appends the JSONL compaction ledger under .quorp/context."
+owner = "agent-runtime"
+sink = "log"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_context/src/handles.rs"
+pattern = "fs::write"
+reason = "Result handles persist payloads under .quorp/handles."
+owner = "agent-runtime"
+sink = "storage"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_sandbox/src/macos_apple_sandbox.rs"
+pattern = "std::fs::write"
+reason = "The sandbox writes temporary profile and run metadata artifacts."
+owner = "sandbox"
+sink = "storage"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_sandbox/src/macos_apple_sandbox.rs"
+pattern = "std::fs::set_permissions"
+reason = "The sandbox marks temporary profile artifacts executable."
+owner = "sandbox"
+sink = "storage"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
+path = "crates/quorp_sandbox/src/macos_apple_sandbox.rs"
+pattern = "std::fs::remove_dir_all"
+reason = "The sandbox cleans up temporary directories during teardown."
+owner = "sandbox"
+sink = "storage"
+reviewed_on = "2026-04-28"
+expires_or_review_by = "roadmap eval/release closure"
+
+[[allowlist]]
 path = "crates/quorp/src/quorp/tui/diagnostics.rs"
 pattern = "OpenOptions::new"
 reason = "TUI diagnostics append to the diagnostics log sink."

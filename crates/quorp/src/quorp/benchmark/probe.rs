@@ -526,17 +526,38 @@ pub(crate) fn resolve_benchmark_model_id(
     _executor: BenchmarkExecutor,
     requested_model: Option<String>,
 ) -> anyhow::Result<String> {
+    let local_mode = matches!(
+        crate::quorp::provider_config::resolved_provider_env(),
+        Some(crate::quorp::executor::InteractiveProviderKind::Local)
+    ) || matches!(
+        crate::quorp::provider_config::resolved_routing_mode(),
+        crate::quorp::provider_config::RoutingMode::Local
+    );
     if let Some(model_id) = requested_model.filter(|value| {
-        value.trim() == crate::quorp::provider_config::NVIDIA_QWEN_MODEL
-            || value.trim()
-                == format!(
-                    "nvidia/{}",
-                    crate::quorp::provider_config::NVIDIA_QWEN_MODEL
-                )
+        let normalized = value.trim();
+        normalized == crate::quorp::provider_config::NVIDIA_QWEN_MODEL
+            || normalized == format!(
+                "nvidia/{}",
+                crate::quorp::provider_config::NVIDIA_QWEN_MODEL
+            )
+            || normalized.starts_with("ssd_moe/")
+            || normalized == "qwen3-coder-30b-a3b"
     }) {
+        if model_id.trim() == "qwen3-coder-30b-a3b" {
+            return Ok(if local_mode {
+                "ssd_moe/qwen3-coder-30b-a3b".to_string()
+            } else {
+                crate::quorp::provider_config::NVIDIA_QWEN_MODEL.to_string()
+            });
+        }
         return Ok(model_id);
     }
-    Ok(crate::quorp::provider_config::NVIDIA_QWEN_MODEL.to_string())
+    Ok(match crate::quorp::provider_config::resolved_provider_env() {
+        Some(crate::quorp::executor::InteractiveProviderKind::Local) => {
+            "ssd_moe/qwen3-coder-30b-a3b".to_string()
+        }
+        _ => crate::quorp::provider_config::NVIDIA_QWEN_MODEL.to_string(),
+    })
 }
 
 pub(crate) fn base_url_override_for_executor(
@@ -560,6 +581,27 @@ pub(crate) fn benchmark_provider_summary(
         crate::quorp::executor::interactive_provider_from_env(),
     );
     match provider {
+        crate::quorp::executor::InteractiveProviderKind::Local => {
+            match crate::quorp::provider_config::resolve_local_runtime(base_url_override) {
+                Ok(config) => BenchmarkProviderSummary {
+                    provider_kind: provider.label().to_string(),
+                    provider_base_url: Some(config.base_url),
+                    auth_mode: config.auth_mode,
+                    usage_source: "provider_response".to_string(),
+                    proxy_visible_remote_egress_expected: config
+                        .proxy_visible_remote_egress_expected,
+                },
+                Err(_) => BenchmarkProviderSummary {
+                    provider_kind: provider.label().to_string(),
+                    provider_base_url: base_url_override.map(str::to_string),
+                    auth_mode: "missing".to_string(),
+                    usage_source: "provider_response".to_string(),
+                    proxy_visible_remote_egress_expected: base_url_override.is_some_and(
+                        |base_url| !crate::quorp::provider_config::is_loopback_base_url(base_url),
+                    ),
+                },
+            }
+        }
         crate::quorp::executor::InteractiveProviderKind::Nvidia => {
             match crate::quorp::provider_config::resolve_nvidia_runtime(base_url_override) {
                 Ok(config) => BenchmarkProviderSummary {

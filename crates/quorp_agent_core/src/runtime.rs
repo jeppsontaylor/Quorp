@@ -15,6 +15,8 @@ use crate::agent_protocol::{ActionOutcome, AgentAction, AgentMode, ValidationPla
 use crate::agent_turn::AgentTurnResponse;
 #[cfg(test)]
 use crate::agent_turn::parse_agent_turn_response;
+use quorp_context_model::ContextBudgetTelemetry;
+use quorp_verify_model::FailurePacket;
 #[cfg(test)]
 use std::fs;
 
@@ -134,6 +136,35 @@ impl PromptCompactionPolicy {
             Self::BenchmarkRepairMinimal => "benchmark-repair-minimal",
             Self::BenchmarkStatePacket => "benchmark-state-packet",
             Self::Off => "off",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, Eq, PartialEq, Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum RepairSource {
+    Model,
+    Skill,
+    Controller,
+    EvalOracle,
+}
+
+impl RepairSource {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Model => "model",
+            Self::Skill => "skill",
+            Self::Controller => "controller",
+            Self::EvalOracle => "eval_oracle",
+        }
+    }
+
+    pub fn precedence(self) -> u8 {
+        match self {
+            Self::Model => 0,
+            Self::Skill => 1,
+            Self::Controller => 2,
+            Self::EvalOracle => 3,
         }
     }
 }
@@ -267,6 +298,8 @@ pub struct FailedEditRecord {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, serde::Deserialize, Default)]
 pub struct AgentRepairScorecard {
+    #[serde(default)]
+    pub repair_source: Option<RepairSource>,
     #[serde(default)]
     pub parser_recovery_count: usize,
     #[serde(default)]
@@ -454,6 +487,8 @@ pub struct AgentRepairMemory {
     #[serde(default)]
     pub last_rollback_diagnostic: Option<String>,
     #[serde(default)]
+    pub last_failure_packet: Option<FailurePacket>,
+    #[serde(default)]
     pub scorecard: AgentRepairScorecard,
 }
 
@@ -481,6 +516,7 @@ impl AgentRepairMemory {
             && self.last_preview_path.is_none()
             && self.preview_origin.is_none()
             && self.last_rollback_diagnostic.is_none()
+            && self.last_failure_packet.is_none()
             && self.scorecard == AgentRepairScorecard::default()
     }
 }
@@ -522,6 +558,17 @@ pub enum RuntimeEvent {
         prompt_token_estimate: u64,
         completion_token_cap: Option<u32>,
         safety_mode: Option<String>,
+    },
+    ContextPressureMeasured {
+        step: usize,
+        telemetry: ContextBudgetTelemetry,
+    },
+    ContextCompacted {
+        step: usize,
+        packet_id: String,
+        removed_messages: usize,
+        retained_messages: usize,
+        telemetry: ContextBudgetTelemetry,
     },
     ModelRequestFinished {
         step: usize,
@@ -1007,7 +1054,11 @@ pub(crate) struct AgentTaskState {
 }
 
 mod action_summary;
-mod benchmark_playbooks;
+mod compaction;
+mod confusion_detector;
+mod context_budget;
+mod evidenceboard;
+mod no_progress;
 mod normalize;
 mod parse_helpers;
 mod path_intel;
@@ -1018,12 +1069,23 @@ mod state_observe;
 mod state_record;
 mod state_validate;
 mod suggestions;
+mod tool_payload;
 mod turn;
+mod write_readiness;
+mod write_routing;
 
 #[allow(unused_imports)]
 pub use action_summary::ToolResultEnvelope;
 #[allow(unused_imports)]
-pub use benchmark_playbooks::*;
+pub use compaction::*;
+#[allow(unused_imports)]
+pub use confusion_detector::*;
+#[allow(unused_imports)]
+pub use context_budget::*;
+#[allow(unused_imports)]
+pub use evidenceboard::*;
+#[allow(unused_imports)]
+pub use no_progress::*;
 #[allow(unused_imports)]
 pub use normalize::*;
 #[allow(unused_imports)]
@@ -1035,7 +1097,12 @@ pub use recovery::*;
 #[allow(unused_imports)]
 pub use suggestions::*;
 #[allow(unused_imports)]
+pub use tool_payload::*;
+#[allow(unused_imports)]
 pub use turn::*;
+#[allow(unused_imports)]
+pub use write_readiness::*;
 
 #[cfg(test)]
+#[path = "../../../testing/quorp_agent_core/runtime/tests.rs"]
 mod tests;

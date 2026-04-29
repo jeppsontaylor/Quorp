@@ -51,6 +51,9 @@ pub fn summarize_run_report(report: &BatchReport) -> RunSummary {
                         .agent_final_failure_classification
                         .clone(),
                     final_stop_reason: case.final_stop_reason,
+                    repair_source: scorecard
+                        .as_ref()
+                        .and_then(|scorecard| scorecard.repair_source),
                     first_valid_write_step: scorecard
                         .as_ref()
                         .and_then(|scorecard| scorecard.first_valid_write_step),
@@ -97,9 +100,12 @@ pub fn render_run_summary(summary: &RunSummary) -> String {
     ];
     for case in &summary.cases {
         lines.push(format!(
-            "- `{}` success={} primary={} agent={} stop={:?} first_write={} parser_recovery={} redundant_reads={} validation_rejects={} target_redirects={} syntax_preview_failures={} adaptive_retry={} report={}",
+            "- `{}` success={} source={} primary={} agent={} stop={:?} first_write={} parser_recovery={} redundant_reads={} validation_rejects={} target_redirects={} syntax_preview_failures={} adaptive_retry={} report={}",
             case.case_id,
             case.success,
+            case.repair_source
+                .map(|source| source.label().to_string())
+                .unwrap_or_else(|| "n/a".to_string()),
             case.primary_failure
                 .clone()
                 .unwrap_or_else(|| "none".to_string()),
@@ -255,6 +261,14 @@ pub fn render_report_markdown(report: &BenchmarkReport) -> String {
             report
                 .comparable_run
                 .map(|value| value.to_string())
+                .unwrap_or_else(|| "n/a".to_string())
+        ),
+        format!("- Oracle run: `{}`", report.oracle_run),
+        format!(
+            "- Oracle non-comparable reason: `{}`",
+            report
+                .oracle_non_comparable_reason
+                .clone()
                 .unwrap_or_else(|| "n/a".to_string())
         ),
         format!(
@@ -692,7 +706,12 @@ pub fn render_report_markdown(report: &BenchmarkReport) -> String {
         ));
     }
     lines.push(format!(
-        "- Agent scorecard: parser_recovery=`{}` line_tools=`{}` controller_reads=`{}` redundant_reads=`{}` first_write=`{}` repeated_edits=`{}` bare_replace_block_retries=`{}` validation_rejects=`{}` test_edit_rejects=`{}` target_redirects=`{}` evidence_fixations=`{}` anchors=`{}` syntax_previews=`{}`/`{}` prose_recoveries=`{}` classification=`{}`",
+        "- Agent scorecard: source=`{}` parser_recovery=`{}` line_tools=`{}` controller_reads=`{}` redundant_reads=`{}` first_write=`{}` repeated_edits=`{}` bare_replace_block_retries=`{}` validation_rejects=`{}` test_edit_rejects=`{}` target_redirects=`{}` evidence_fixations=`{}` anchors=`{}` syntax_previews=`{}`/`{}` prose_recoveries=`{}` classification=`{}`",
+        report
+            .agent_repair_scorecard
+            .repair_source
+            .map(|source| source.label())
+            .unwrap_or("n/a"),
         report.agent_repair_scorecard.parser_recovery_count,
         report.agent_repair_scorecard.line_oriented_parse_count,
         report.agent_repair_scorecard.controller_injected_read_count,

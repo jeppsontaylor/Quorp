@@ -125,9 +125,16 @@ fn default_provider_for_workspace(
 
 fn default_model_for_workspace(
     _workspace: &Path,
-    _provider: crate::quorp::executor::InteractiveProviderKind,
+    provider: crate::quorp::executor::InteractiveProviderKind,
 ) -> anyhow::Result<String> {
-    Ok(crate::quorp::provider_config::NVIDIA_QWEN_MODEL.to_string())
+    Ok(match provider {
+        crate::quorp::executor::InteractiveProviderKind::Local => {
+            "ssd_moe/qwen3-coder-30b-a3b".to_string()
+        }
+        crate::quorp::executor::InteractiveProviderKind::Nvidia => {
+            crate::quorp::provider_config::NVIDIA_QWEN_MODEL.to_string()
+        }
+    })
 }
 
 fn default_base_url_for_workspace(
@@ -135,12 +142,21 @@ fn default_base_url_for_workspace(
     provider: crate::quorp::executor::InteractiveProviderKind,
 ) -> anyhow::Result<Option<String>> {
     let loaded = load_workspace_settings(workspace)?;
-    let base_url = loaded.settings.provider.base_url.trim();
-    if base_url.is_empty() {
-        return Ok(None);
-    }
-    let _ = provider;
-    Ok(Some(base_url.to_string()))
+    let base_url = match provider {
+        crate::quorp::executor::InteractiveProviderKind::Local => {
+            crate::quorp::provider_config::env_value("QUORP_LOCAL_BASE_URL").or_else(|| {
+                let base_url = loaded.settings.provider.base_url.trim();
+                (!base_url.is_empty()).then(|| base_url.to_string())
+            })
+        }
+        crate::quorp::executor::InteractiveProviderKind::Nvidia => {
+            crate::quorp::provider_config::env_value("QUORP_NVIDIA_BASE_URL").or_else(|| {
+                let base_url = loaded.settings.provider.base_url.trim();
+                (!base_url.is_empty()).then(|| base_url.to_string())
+            })
+        }
+    };
+    Ok(base_url)
 }
 
 fn default_sandbox_for_workspace(workspace: &Path) -> anyhow::Result<CliSandboxMode> {
@@ -758,11 +774,18 @@ fn run_autonomous_command(args: RunCliArgs) -> anyhow::Result<()> {
                 crate::quorp::run_support::default_run_result_dir(&source_workspace, "run")
             });
             std::fs::create_dir_all(&result_dir)?;
-            let provider = start
-                .base_url
-                .as_ref()
-                .map(|_| crate::quorp::executor::InteractiveProviderKind::Nvidia)
-                .unwrap_or(default_provider_for_workspace(&source_workspace)?);
+            let provider =
+                crate::quorp::provider_config::resolved_provider_env().unwrap_or_else(|| {
+                    if matches!(
+                        crate::quorp::provider_config::resolved_routing_mode(),
+                        crate::quorp::provider_config::RoutingMode::Local
+                    ) {
+                        crate::quorp::executor::InteractiveProviderKind::Local
+                    } else {
+                        default_provider_for_workspace(&source_workspace)
+                            .unwrap_or(crate::quorp::executor::InteractiveProviderKind::Nvidia)
+                    }
+                });
             let model_id = default_model_for_workspace(&source_workspace, provider)?;
             let base_url_override = start
                 .base_url
@@ -1982,121 +2005,6 @@ pub struct BenchmarkBatchArgs {
     #[arg(long)]
     log_dir: Option<PathBuf>,
 }
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn shorthand_and_session_workspace_resolution_match() {
-        let temp_dir = tempfile::tempdir().expect("tempdir");
-        let challenge = temp_dir.path().join("04-entitlement-recovery-replay");
-        std::fs::create_dir_all(&challenge).expect("challenge dir");
-
-        let shorthand = SessionLaunchConfig::from_paths_or_urls(
-            vec![challenge.display().to_string()],
-            CliTuiMode::Auto,
-            None,
-        );
-        let explicit = SessionLaunchConfig::from_workspace(
-            challenge,
-            CliTuiMode::Auto,
-            None,
-            None,
-            None,
-            None,
-        );
-
-        assert_eq!(shorthand.workspace_root, explicit.workspace_root);
-    }
-
-    #[test]
-    fn benchmark_briefing_file_defaults_to_public_note() {
-        let run_args = CliArgs::parse_from([
-            "quorp",
-            "benchmark",
-            "run",
-            "--path",
-            "benchmark/exhaustive/issues/ISSUE-00-toy-preview",
-        ]);
-
-        let prompt_args = CliArgs::parse_from([
-            "quorp",
-            "benchmark",
-            "prompt",
-            "--path",
-            "benchmark/exhaustive/issues/ISSUE-00-toy-preview",
-            "--workspace-dir",
-            "/tmp/quorp-workspace",
-        ]);
-
-        let batch_args = CliArgs::parse_from([
-            "quorp",
-            "benchmark",
-            "batch",
-            "--cases-root",
-            "benchmark/exhaustive/issues",
-        ]);
-
-        let (run_briefing_file, run_result_dir) = match run_args.command {
-            Some(Command::Benchmark {
-                command: BenchmarkCommand::Run(ref run_args),
-            }) => (
-                run_args.briefing_file.clone(),
-                run_args
-                    .result_dir
-                    .clone()
-                    .unwrap_or_else(crate::quorp::run_support::default_benchmark_run_result_dir),
-            ),
-            other => panic!("unexpected parsed command: {other:?}"),
-        };
-
-        let prompt_briefing_file = match prompt_args.command {
-            Some(Command::Benchmark {
-                command: BenchmarkCommand::Prompt(prompt_args),
-            }) => prompt_args.briefing_file,
-            other => panic!("unexpected parsed command: {other:?}"),
-        };
-
-        let (batch_briefing_file, batch_result_dir) = match batch_args.command {
-            Some(Command::Benchmark {
-                command: BenchmarkCommand::Batch(ref batch_args),
-            }) => (
-                batch_args.briefing_file.clone(),
-                batch_args
-                    .result_dir
-                    .clone()
-                    .unwrap_or_else(crate::quorp::run_support::default_benchmark_batch_result_dir),
-            ),
-            other => panic!("unexpected parsed command: {other:?}"),
-        };
-
-        let expected_briefing_file = default_benchmark_briefing_file();
-        assert_eq!(run_briefing_file, expected_briefing_file);
-        assert_eq!(prompt_briefing_file, expected_briefing_file);
-        assert_eq!(batch_briefing_file, expected_briefing_file);
-        assert!(run_result_dir.starts_with(paths::temp_dir()));
-        assert!(batch_result_dir.starts_with(paths::temp_dir()));
-    }
-
-    #[test]
-    fn yolo_forces_sandboxed_autonomy() {
-        let (sandbox, autonomy_profile) =
-            resolve_yolo_run_mode(true, None, "autonomous_host".to_string()).expect("resolve");
-
-        assert_eq!(sandbox, Some(CliSandboxMode::TmpCopy));
-        assert_eq!(autonomy_profile, "autonomous_sandboxed");
-    }
-
-    #[test]
-    fn yolo_rejects_host_sandbox() {
-        let error = resolve_yolo_run_mode(
-            true,
-            Some(CliSandboxMode::Host),
-            "autonomous_host".to_string(),
-        )
-        .expect_err("host yolo rejected");
-
-        assert!(error.to_string().contains("isolated sandbox"));
-    }
-}
+#[path = "../../../../testing/quorp_cli/quorp/cli/tests.rs"]
+mod tests;

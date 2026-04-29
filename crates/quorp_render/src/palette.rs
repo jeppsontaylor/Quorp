@@ -56,24 +56,6 @@ pub const ACCENT_YELLOW: Rgb = Rgb::new(0xFF, 0xD1, 0x66);
 pub const DIFF_ADD_BG: Rgb = Rgb::new(0x06, 0x2D, 0x1F);
 pub const DIFF_DEL_BG: Rgb = Rgb::new(0x35, 0x10, 0x16);
 pub const FG_TEXT: Rgb = Rgb::new(0xE6, 0xEA, 0xF2);
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn fg_escape_is_correct() {
-        let red = Rgb::new(255, 0, 0);
-        assert_eq!(red.fg(), "\x1b[38;2;255;0;0m");
-    }
-
-    #[test]
-    fn lerp_endpoints_unchanged() {
-        let a = Rgb::new(0, 0, 0);
-        let b = Rgb::new(255, 255, 255);
-        assert_eq!(lerp_rgb(a, b, 0.0), a);
-        assert_eq!(lerp_rgb(a, b, 1.0), b);
-        let mid = lerp_rgb(a, b, 0.5);
-        assert!(mid.r >= 126 && mid.r <= 129);
-    }
-}
+#[path = "../../../testing/quorp_render/palette/tests.rs"]
+mod tests;

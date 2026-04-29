@@ -97,16 +97,6 @@ pub struct GraphStats {
     pub symbols: u32,
     pub edges: u32,
 }
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn symbol_path_round_trips() {
-        let p = SymbolPath::new("quorp_core::PermissionMode");
-        let json = serde_json::to_string(&p).unwrap();
-        let back: SymbolPath = serde_json::from_str(&json).unwrap();
-        assert_eq!(p, back);
-    }
-}
+#[path = "../../../testing/quorp_repo_graph/quorp_repo_graph/tests.rs"]
+mod tests;

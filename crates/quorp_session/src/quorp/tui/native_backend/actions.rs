@@ -31,7 +31,8 @@ use quorp_memory::Memory;
 use quorp_memory_model::{MemoryQuery, Tier};
 use quorp_patch_vm::{
     EditProvenance, FileChange, FileChangeKind, PatchApplyProof, PatchApplyReport, PatchReceipt,
-    PatchVm, PatchVmPolicy, hash_bytes,
+    PatchReceiptV2, PatchVm, PatchVmPolicy, WriteAmplification, edit_provenance_intent_kind,
+    hash_bytes, smallest_safe_edit,
 };
 use quorp_rule_forge::{ClusterKey, RuleForge};
 use quorp_sandbox::{build_command_plan, default_policy, sandbox_runtime_for_path};
@@ -39,6 +40,7 @@ use quorp_tools::apply::apply_patch_edit;
 use quorp_tools::edit::{apply_toml_operations, perform_range_replacement, set_executable_bit};
 use quorp_tools::patch::{perform_block_replacement, sanitize_project_path};
 use quorp_tools::preview::{load_preview_record, syntax_preflight_for_preview};
+use quorp_tools::write_contract::{WriteContractDecision, classify_write_file};
 use quorp_verify::{
     VerifyCommand, VerifyCommandResult, VerifyLevel, VerifyRequest, VerifyStore, VerifyTarget,
     default_verify_plan, execute_verify_request_durable,
@@ -77,11 +79,23 @@ fn render_patch_vm_receipt(receipt: &PatchReceipt) -> String {
     )
 }
 
+fn render_patch_vm_receipt_v2(receipt: &PatchReceiptV2) -> String {
+    format!(
+        "patch_vm_receipt_v2:\nintent_kind: {}\nbefore_hash: {}\nafter_hash: {}\nnormalized_diff_hash: {}\nsmallest_safe_edit: {}\nverifier_packet_ids: {}",
+        receipt.intent_kind,
+        receipt.before_hash.0,
+        receipt.after_hash.0,
+        receipt.normalized_diff_hash,
+        receipt.smallest_safe_edit,
+        receipt.verifier_packet_ids.join(", ")
+    )
+}
+
 fn apply_single_file_change(
     session_id: usize,
     path: String,
     target: PathBuf,
-    next_content: String,
+    next_content: &str,
     provenance: EditProvenance,
 ) -> anyhow::Result<String> {
     let existing_bytes = std::fs::read(&target).ok();
@@ -91,10 +105,10 @@ fn apply_single_file_change(
         expected_hash: existing_bytes.as_deref().map(hash_bytes),
         kind: match existing_bytes {
             Some(_) => FileChangeKind::Update {
-                content: next_content.into_bytes(),
+                content: next_content.as_bytes().to_vec(),
             },
             None => FileChangeKind::Add {
-                content: next_content.into_bytes(),
+                content: next_content.as_bytes().to_vec(),
             },
         },
     };
@@ -111,7 +125,26 @@ fn apply_single_file_change(
         default_patch_vm_policy(),
     )?;
     record_patch_vm_rollback(session_id, &report);
-    Ok(render_patch_vm_receipt(&report.receipt(provenance)))
+    let receipt = report.receipt(provenance.clone());
+    let receipt_v2 = PatchReceiptV2::from_receipt(
+        &receipt,
+        existing_bytes
+            .as_deref()
+            .map(hash_bytes)
+            .unwrap_or_else(|| hash_bytes(&[])),
+        hash_bytes(next_content.as_bytes()),
+        smallest_safe_edit(&WriteAmplification::from_content_change(
+            edit_provenance_intent_kind(&provenance),
+            existing_bytes.as_deref(),
+            next_content.as_bytes(),
+        )),
+        Vec::new(),
+    );
+    Ok(format!(
+        "{}\n{}",
+        render_patch_vm_receipt(&receipt),
+        render_patch_vm_receipt_v2(&receipt_v2)
+    ))
 }
 
 fn apply_set_executable_change(
@@ -121,6 +154,7 @@ fn apply_set_executable_change(
 ) -> anyhow::Result<String> {
     let current_bytes = std::fs::read(&target)
         .map_err(|error| anyhow::anyhow!("Failed to read file for set_executable: {error}"))?;
+    let current_bytes_for_receipt = current_bytes.clone();
     let change = FileChange {
         path: target.clone(),
         display_path: path.clone(),
@@ -143,11 +177,21 @@ fn apply_set_executable_change(
     )?;
     record_patch_vm_rollback(session_id, &report);
     set_executable_bit(&target)?;
-    Ok(render_patch_vm_receipt(&report.receipt(
-        EditProvenance::SetExecutable {
-            path: PathBuf::from(path),
-        },
-    )))
+    let receipt = report.receipt(EditProvenance::SetExecutable {
+        path: PathBuf::from(path),
+    });
+    let receipt_v2 = PatchReceiptV2::from_receipt(
+        &receipt,
+        hash_bytes(&current_bytes_for_receipt),
+        hash_bytes(&current_bytes_for_receipt),
+        true,
+        Vec::new(),
+    );
+    Ok(format!(
+        "{}\n{}",
+        render_patch_vm_receipt(&receipt),
+        render_patch_vm_receipt_v2(&receipt_v2)
+    ))
 }
 
 fn validation_stage_id(
@@ -549,11 +593,17 @@ pub(crate) fn spawn_write_file_task(
             content: content.clone(),
         };
         let result = sanitize_project_path(&project_root, &cwd, &path).and_then(|candidate| {
+            match classify_write_file(candidate.as_path(), &content, None) {
+                WriteContractDecision::Allowed { .. } => {}
+                WriteContractDecision::Denied { reason } => {
+                    return Err(anyhow::anyhow!(reason));
+                }
+            }
             let receipt = apply_single_file_change(
                 session_id,
                 path.clone(),
                 candidate,
-                content.clone(),
+                &content,
                 EditProvenance::WriteFile {
                     path: PathBuf::from(path.clone()),
                 },
@@ -630,7 +680,7 @@ pub(crate) fn spawn_replace_block_task(
                 session_id,
                 path.clone(),
                 target,
-                new_content,
+                &new_content,
                 EditProvenance::ReplaceBlock {
                     path: PathBuf::from(path.clone()),
                 },
@@ -682,7 +732,7 @@ pub(crate) fn spawn_replace_range_task(
                 session_id,
                 path.clone(),
                 target,
-                updated_content,
+                &updated_content,
                 EditProvenance::ReplaceRange {
                     path: PathBuf::from(path.clone()),
                 },
@@ -737,7 +787,7 @@ pub(crate) fn spawn_modify_toml_task(
                 session_id,
                 path.clone(),
                 target,
-                updated_content,
+                &updated_content,
                 EditProvenance::ModifyToml {
                     path: PathBuf::from(path.clone()),
                 },
@@ -785,7 +835,7 @@ pub(crate) fn spawn_apply_preview_task(
                 session_id,
                 record.path.clone(),
                 record.target_path.clone(),
-                record.updated_content.clone(),
+                &record.updated_content,
                 EditProvenance::ApplyPreview {
                     preview_id: preview_id.clone(),
                 },
@@ -1560,73 +1610,6 @@ fn append_command_timeout_cleanup_errors(final_output: &mut String, cleanup_erro
     final_output.push_str(&cleanup_errors.join("; "));
     final_output.push(']');
 }
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn timeout_cleanup_errors_are_included_in_failure_output() {
-        let mut output = String::from("partial output\n[Command timed out]");
-
-        append_command_timeout_cleanup_errors(
-            &mut output,
-            &[
-                "failed to kill command process group 123: no such process".to_string(),
-                "failed to wait on timed-out command: child already waited".to_string(),
-            ],
-        );
-
-        assert!(output.contains("[Command cleanup failed: "));
-        assert!(output.contains("failed to kill command process group 123"));
-        assert!(output.contains("failed to wait on timed-out command"));
-    }
-
-    #[test]
-    fn validation_plan_maps_to_verify_request() {
-        let plan = crate::quorp::tui::agent_protocol::ValidationPlan {
-            fmt: true,
-            clippy: true,
-            workspace_tests: false,
-            tests: vec!["crate::tests::smoke".to_string()],
-            custom_commands: vec!["cargo check -p quorp_session".to_string()],
-        };
-        let commands = vec![
-            "cargo fmt --all --check".to_string(),
-            "cargo clippy --workspace".to_string(),
-            "cargo test crate::tests::smoke".to_string(),
-            "cargo check -p quorp_session".to_string(),
-        ];
-
-        let request = validation_plan_to_verify_request(Path::new("."), &plan, &commands);
-
-        assert_eq!(request.plan.level, VerifyLevel::L3Broad);
-        assert_eq!(request.commands.len(), 4);
-        assert_eq!(request.commands[0].stage_id, "fmt");
-        assert_eq!(request.commands[1].stage_id, "clippy");
-        assert!(request.plan.targets.iter().any(
-            |target| matches!(target, VerifyTarget::Test(name) if name == "crate::tests::smoke")
-        ));
-    }
-
-    #[test]
-    fn apply_single_file_change_returns_patch_vm_receipt_and_updates_bytes() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let target = root.path().join("target.txt");
-
-        let receipt = apply_single_file_change(
-            41,
-            "target.txt".to_string(),
-            target.clone(),
-            "hello\n".to_string(),
-            EditProvenance::WriteFile {
-                path: PathBuf::from("target.txt"),
-            },
-        )
-        .expect("apply");
-
-        assert!(receipt.contains("patch_vm_receipt"));
-        assert!(receipt.contains("rollback_tokens: 0"));
-        assert_eq!(std::fs::read_to_string(target).expect("read"), "hello\n");
-    }
-}
+#[path = "../../../../../../testing/quorp_session/quorp/tui/native_backend/actions/tests.rs"]
+mod tests;

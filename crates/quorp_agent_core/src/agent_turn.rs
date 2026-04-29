@@ -1951,4 +1951,5 @@ mod render;
 pub use render::render_agent_turn_text;
 
 #[cfg(test)]
+#[path = "../../../testing/quorp_agent_core/agent_turn/tests.rs"]
 mod tests;

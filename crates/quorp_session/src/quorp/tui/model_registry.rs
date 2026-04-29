@@ -12,6 +12,7 @@ pub fn chat_model_provider(
 pub fn chat_model_raw_id(model_id: &str) -> &str {
     model_id
         .strip_prefix("nvidia/")
+        .or_else(|| model_id.strip_prefix("ssd_moe/"))
         .filter(|raw| !raw.trim().is_empty())
         .unwrap_or(model_id)
 }

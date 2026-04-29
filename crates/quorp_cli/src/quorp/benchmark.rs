@@ -1664,5 +1664,5 @@ pub(crate) use reporting::*;
 pub(crate) use state::*;
 
 #[cfg(test)]
-#[path = "benchmark/tests.rs"]
+#[path = "../../../../testing/quorp_cli/benchmark/tests.rs"]
 mod tests;

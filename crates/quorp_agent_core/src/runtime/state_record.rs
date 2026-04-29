@@ -45,6 +45,8 @@ impl AgentTaskState {
                 "Keep going until the visible evaluator succeeds: {evaluate_command}"
             ));
         }
+        let mut agent_repair_memory = AgentRepairMemory::default();
+        agent_repair_memory.scorecard.repair_source = Some(RepairSource::Model);
         Self {
             goal: request.goal.clone(),
             current_mode: request.agent_mode,
@@ -88,7 +90,7 @@ impl AgentTaskState {
             last_successful_write_action: None,
             benchmark_repair_state: None,
             failed_edit_records: Vec::new(),
-            agent_repair_memory: AgentRepairMemory::default(),
+            agent_repair_memory,
         }
     }
 
@@ -223,6 +225,9 @@ impl AgentTaskState {
                 "Agent memory: {}",
                 render_agent_repair_memory(&self.agent_repair_memory)
             ));
+        }
+        if let Some(repair_source) = self.agent_repair_memory.scorecard.repair_source {
+            lines.push(format!("Repair source: {}", repair_source.label()));
         }
         if self.repair_recovery_turns_remaining > 0 {
             lines.push(format!(
@@ -413,6 +418,9 @@ impl AgentTaskState {
                     .validation_details
                     .post_fast_loop_validation_rerun_attempted
             ));
+        }
+        if let Some(packet) = self.agent_repair_memory.last_failure_packet.as_ref() {
+            lines.push(format!("Last failure packet: {}", packet.summary));
         }
         lines.join("\n")
     }
@@ -999,6 +1007,14 @@ impl AgentTaskState {
             .scorecard
             .controller_injected_read_count
             .saturating_add(1);
+        self.record_repair_source(RepairSource::Controller);
+    }
+
+    pub(crate) fn record_repair_source(&mut self, source: RepairSource) {
+        match self.agent_repair_memory.scorecard.repair_source {
+            Some(current) if current.precedence() > source.precedence() => {}
+            _ => self.agent_repair_memory.scorecard.repair_source = Some(source),
+        }
     }
 
     pub(crate) fn record_suggested_edit_anchor(

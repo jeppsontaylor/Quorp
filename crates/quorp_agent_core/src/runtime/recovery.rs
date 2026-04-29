@@ -1138,71 +1138,21 @@ pub(crate) fn benchmark_dependency_candidates(ledger: &BenchmarkCaseLedger) -> V
     names.into_iter().collect()
 }
 
-pub(crate) fn benchmark_is_case_06_manifest_repair(ledger: &BenchmarkCaseLedger) -> bool {
-    ledger
-        .expected_touch_targets
-        .iter()
-        .any(|path| canonical_path(path) == "src/features/serde/de_owned.rs")
-        && ledger
-            .expected_touch_targets
-            .iter()
-            .any(|path| canonical_path(path).eq_ignore_ascii_case("Cargo.toml"))
-        && ledger
-            .owner_files
-            .iter()
-            .any(|path| canonical_path(path) == "tests/issues/issue_474.rs")
-}
-
-pub(crate) fn benchmark_manifest_dependency_versions(
-    ledger: &BenchmarkCaseLedger,
-) -> Option<Vec<(&'static str, &'static str)>> {
-    if !benchmark_is_case_06_manifest_repair(ledger) {
-        return None;
-    }
-    Some(vec![("chrono", "0.4"), ("uuid", "0.8")])
-}
-
 pub(crate) fn benchmark_manifest_patch_operations(
-    ledger: &BenchmarkCaseLedger,
+    _ledger: &BenchmarkCaseLedger,
     target_dependency_table: Option<&str>,
     dependency_candidates: &[String],
 ) -> Vec<crate::agent_protocol::TomlEditOperation> {
-    let Some(version_map) = benchmark_manifest_dependency_versions(ledger) else {
-        return dependency_candidates
-            .iter()
-            .map(
-                |name| crate::agent_protocol::TomlEditOperation::SetDependency {
-                    table: target_dependency_table
-                        .unwrap_or("dependencies")
-                        .to_string(),
-                    name: name.clone(),
-                    version: Some("<version>".to_string()),
-                    features: Vec::new(),
-                    default_features: None,
-                    optional: None,
-                    package: None,
-                    path: None,
-                },
-            )
-            .collect();
-    };
-    let candidate_set = dependency_candidates
+    dependency_candidates
         .iter()
-        .map(|name| name.to_ascii_lowercase())
-        .collect::<BTreeSet<_>>();
-    version_map
-        .into_iter()
-        .filter(|(name, _)| {
-            candidate_set.is_empty() || candidate_set.contains(&name.to_ascii_lowercase())
-        })
         .map(
-            |(name, version)| crate::agent_protocol::TomlEditOperation::SetDependency {
+            |name| crate::agent_protocol::TomlEditOperation::SetDependency {
                 table: target_dependency_table
                     .unwrap_or("dependencies")
                     .to_string(),
-                name: name.to_string(),
-                version: Some(version.to_string()),
-                features: vec!["serde".to_string()],
+                name: name.clone(),
+                version: Some("<version>".to_string()),
+                features: Vec::new(),
                 default_features: None,
                 optional: None,
                 package: None,
@@ -1605,7 +1555,7 @@ pub async fn run_agent_task(
             role: TranscriptRole::User,
             content: state.runtime_summary(),
         });
-        let completion_request = CompletionRequest {
+        let mut completion_request = CompletionRequest {
             request_id: request_counter,
             session_id: request.session_id,
             model_id: request.model_id.clone(),
@@ -1633,6 +1583,28 @@ pub async fn run_agent_task(
             capture_scope: metadata_string(&request.run_metadata, "warpos_capture_scope"),
             capture_call_class: metadata_string(&request.run_metadata, "warpos_capture_call_class"),
         };
+        let telemetry = super::context_budget::telemetry_for_request(
+            &completion_request,
+            &completion_request.messages,
+            "",
+            "",
+            0,
+            0,
+        );
+        event_sink.emit(RuntimeEvent::ContextPressureMeasured {
+            step: current_iteration + 1,
+            telemetry: telemetry.clone(),
+        });
+        let compaction = super::compaction::maybe_compact_request_messages(
+            &request.project_root,
+            &completion_request,
+            &state,
+            &completion_request.messages,
+            telemetry,
+            current_iteration + 1,
+            event_sink,
+        );
+        completion_request.messages = compaction.messages;
         event_sink.emit(RuntimeEvent::ModelRequestStarted {
             step: current_iteration + 1,
             request_id: request_counter,

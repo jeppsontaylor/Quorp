@@ -11,7 +11,8 @@ use crate::preview::{
 use quorp_ids::PatchId;
 use quorp_patch_vm::{
     EditProvenance, FileChange, FileChangeKind, PatchApplyProof, PatchApplyReport, PatchReceipt,
-    PatchVm, PatchVmPolicy, hash_bytes,
+    PatchReceiptV2, PatchVm, PatchVmPolicy, WriteAmplification, edit_provenance_intent_kind,
+    hash_bytes, smallest_safe_edit,
 };
 
 pub fn apply_patch_edit(
@@ -23,38 +24,42 @@ pub fn apply_patch_edit(
 ) -> anyhow::Result<String> {
     let target = sanitize_project_path(project_root, cwd, path)?;
     if let Some(blocks) = try_parse_search_replace_blocks(patch) {
-        let mut current_content = std::fs::read_to_string(&target)
+        let before_content = std::fs::read_to_string(&target)
             .map_err(|error| anyhow::anyhow!("Failed to read file: {error}"))?;
-        let base_hash = hash_bytes(current_content.as_bytes());
+        let base_hash = hash_bytes(before_content.as_bytes());
+        let mut current_content = before_content.clone();
         stash_touched_path(&target);
         for (search, replace) in blocks {
             current_content = perform_block_replacement(&current_content, &search, &replace, None)?;
         }
-        let report = apply_single_file_patch_change(&target, path, base_hash, current_content)?;
+        let report = apply_single_file_patch_change(&target, path, base_hash, &current_content)?;
+        let receipt = report.receipt(EditProvenance::ApplyPatch { path: path.into() });
+        let receipt_v2 = patch_receipt_v2(&receipt, &before_content, &current_content);
         return Ok(format!(
-            "Applied search/replace blocks to {path}\n{}",
-            render_patch_vm_receipt(
-                &report.receipt(EditProvenance::ApplyPatch { path: path.into() })
-            )
+            "Applied search/replace blocks to {path}\n{}\n{}",
+            render_patch_vm_receipt(&receipt),
+            render_patch_vm_receipt_v2(&receipt_v2)
         ));
     }
 
     if let Some(line_replacement) = try_parse_line_replacement_shorthand(patch)? {
-        let mut current_content = std::fs::read_to_string(&target)
+        let before_content = std::fs::read_to_string(&target)
             .map_err(|error| anyhow::anyhow!("Failed to read file: {error}"))?;
-        let base_hash = hash_bytes(current_content.as_bytes());
+        let base_hash = hash_bytes(before_content.as_bytes());
+        let mut current_content = before_content.clone();
         let line_number = perform_line_replacement_shorthand(
             &mut current_content,
             &line_replacement.search,
             &line_replacement.replace,
         )?;
         stash_touched_path(&target);
-        let report = apply_single_file_patch_change(&target, path, base_hash, current_content)?;
+        let report = apply_single_file_patch_change(&target, path, base_hash, &current_content)?;
+        let receipt = report.receipt(EditProvenance::ApplyPatch { path: path.into() });
+        let receipt_v2 = patch_receipt_v2(&receipt, &before_content, &current_content);
         return Ok(format!(
-            "Applied single-line replacement shorthand to {path}: line {line_number}\n{}",
-            render_patch_vm_receipt(
-                &report.receipt(EditProvenance::ApplyPatch { path: path.into() })
-            )
+            "Applied single-line replacement shorthand to {path}: line {line_number}\n{}\n{}",
+            render_patch_vm_receipt(&receipt),
+            render_patch_vm_receipt_v2(&receipt_v2)
         ));
     }
 
@@ -105,14 +110,14 @@ fn apply_single_file_patch_change(
     target: &Path,
     display_path: &str,
     base_hash: quorp_patch_vm::FileHash,
-    updated_content: String,
+    updated_content: &str,
 ) -> anyhow::Result<PatchApplyReport> {
     let change = FileChange {
         path: target.to_path_buf(),
         display_path: display_path.to_string(),
         expected_hash: Some(base_hash),
         kind: FileChangeKind::Update {
-            content: updated_content.into_bytes(),
+            content: updated_content.as_bytes().to_vec(),
         },
     };
     let patch_id = PatchId::new(format!(
@@ -156,88 +161,36 @@ fn render_patch_vm_receipt(receipt: &PatchReceipt) -> String {
     )
 }
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::edit::write_full_file;
-
-    #[test]
-    fn apply_patch_edit_stashes_before_unified_diff_write() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let file = root.path().join("target.txt");
-        write_full_file(&file, "old\n").expect("bootstrap");
-        let mut stashed = Vec::new();
-
-        let summary = apply_patch_edit(
-            root.path(),
-            root.path(),
-            "target.txt",
-            "--- a/target.txt\n+++ b/target.txt\n@@ -1 +1 @@\n-old\n+new\n",
-            |path| stashed.push(path.to_path_buf()),
-        )
-        .expect("apply");
-
-        assert_eq!(std::fs::read_to_string(file).expect("read"), "new\n");
-        assert_eq!(
-            stashed,
-            vec![
-                root.path()
-                    .join("target.txt")
-                    .canonicalize()
-                    .expect("canonical target")
-            ]
-        );
-        assert!(summary.contains("Applied unified diff patch"));
-        assert!(summary.contains("M target.txt"));
-    }
-
-    #[test]
-    fn apply_patch_edit_rejects_malformed_hunks() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let file = root.path().join("target.txt");
-        write_full_file(&file, "old").expect("bootstrap");
-        let mut stashed = Vec::new();
-
-        let error = apply_patch_edit(
-            root.path(),
-            root.path(),
-            "target.txt",
-            "--- a/target.txt\n+++ b/target.txt\n@@ -1,2 +1,1 @@\n-old\n",
-            |path| stashed.push(path.to_path_buf()),
-        )
-        .expect_err("malformed hunk");
-
-        assert!(error.to_string().contains("Malformed hunk"));
-        assert!(stashed.is_empty());
-        assert_eq!(
-            std::fs::read_to_string(root.path().join("target.txt")).expect("read"),
-            "old"
-        );
-    }
-
-    #[test]
-    fn apply_patch_edit_search_replace_uses_patch_vm_receipt() {
-        let root = tempfile::tempdir().expect("tempdir");
-        let file = root.path().join("target.txt");
-        write_full_file(&file, "old\nkeep\n").expect("bootstrap");
-        let mut stashed = Vec::new();
-
-        let summary = apply_patch_edit(
-            root.path(),
-            root.path(),
-            "target.txt",
-            "<<<<<<< SEARCH\nold\n=======\nnew\n>>>>>>> REPLACE\n",
-            |path| stashed.push(path.to_path_buf()),
-        )
-        .expect("apply");
-
-        assert_eq!(
-            std::fs::read_to_string(file).expect("read"),
-            "new\n\nkeep\n"
-        );
-        assert_eq!(stashed.len(), 1);
-        assert!(summary.contains("Applied search/replace blocks"));
-        assert!(summary.contains("patch_vm_receipt"));
-        assert!(summary.contains("provenance: ApplyPatch"));
-    }
+fn render_patch_vm_receipt_v2(receipt: &PatchReceiptV2) -> String {
+    format!(
+        "patch_vm_receipt_v2:\nintent_kind: {}\nbefore_hash: {}\nafter_hash: {}\nnormalized_diff_hash: {}\nsmallest_safe_edit: {}\nverifier_packet_ids: {}",
+        receipt.intent_kind,
+        receipt.before_hash.0,
+        receipt.after_hash.0,
+        receipt.normalized_diff_hash,
+        receipt.smallest_safe_edit,
+        receipt.verifier_packet_ids.join(", ")
+    )
 }
+
+fn patch_receipt_v2(
+    receipt: &PatchReceipt,
+    before_content: &str,
+    after_content: &str,
+) -> PatchReceiptV2 {
+    let amplification = WriteAmplification::from_content_change(
+        edit_provenance_intent_kind(&receipt.provenance),
+        Some(before_content.as_bytes()),
+        after_content.as_bytes(),
+    );
+    PatchReceiptV2::from_receipt(
+        receipt,
+        hash_bytes(before_content.as_bytes()),
+        hash_bytes(after_content.as_bytes()),
+        smallest_safe_edit(&amplification),
+        Vec::new(),
+    )
+}
+#[cfg(test)]
+#[path = "../../../testing/quorp_tools/apply/tests.rs"]
+mod tests;

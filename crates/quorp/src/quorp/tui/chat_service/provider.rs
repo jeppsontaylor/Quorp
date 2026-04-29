@@ -84,9 +84,8 @@ pub(crate) fn nvidia_request_body_overrides(
     body
 }
 
-pub(crate) fn remote_request_headers(
+fn quorp_request_headers(
     request: &StreamRequest,
-    _provider: InteractiveProviderKind,
     routing_mode: &str,
 ) -> BTreeMap<String, String> {
     let action_contract_mode = if request.native_tool_calls {
@@ -136,6 +135,27 @@ pub(crate) fn remote_request_headers(
     if let Some(call_class) = request.capture_call_class.as_deref() {
         headers.insert("X-WarpOS-Call-Class".to_string(), call_class.to_string());
     }
+    headers
+}
+
+pub(crate) fn remote_request_headers(
+    request: &StreamRequest,
+    _provider: InteractiveProviderKind,
+    routing_mode: &str,
+) -> BTreeMap<String, String> {
+    quorp_request_headers(request, routing_mode)
+}
+
+pub(crate) fn local_request_headers(
+    request: &StreamRequest,
+    provider_model_id: &str,
+    routing_mode: &str,
+) -> BTreeMap<String, String> {
+    let mut headers = quorp_request_headers(request, routing_mode);
+    headers.insert(
+        "X-Quorp-Local-Model".to_string(),
+        provider_model_id.to_string(),
+    );
     headers
 }
 
@@ -189,12 +209,17 @@ pub(crate) fn chat_completions_url_for_provider(
             "{}/chat/completions",
             base_url.trim_end_matches('/')
         )),
+        InteractiveProviderKind::Local => Ok(format!(
+            "{}/chat/completions",
+            base_url.trim_end_matches('/')
+        )),
     }
 }
 
 pub(crate) fn provider_connection_name(provider: InteractiveProviderKind) -> &'static str {
     match provider {
         InteractiveProviderKind::Nvidia => "NVIDIA NIM",
+        InteractiveProviderKind::Local => "WarpOS capture probe",
     }
 }
 
@@ -202,7 +227,16 @@ pub(crate) fn resolve_client_config(
     request: &StreamRequest,
 ) -> anyhow::Result<ResolvedClientConfig> {
     let model_target = resolve_model_target(&request.model_id);
-    resolve_nvidia_client_config(request, &model_target.provider_model_id)
+    match crate::quorp::provider_config::resolved_provider_env()
+        .unwrap_or(InteractiveProviderKind::Nvidia)
+    {
+        InteractiveProviderKind::Local => {
+            resolve_local_client_config(request, &model_target.provider_model_id)
+        }
+        InteractiveProviderKind::Nvidia => {
+            resolve_nvidia_client_config(request, &model_target.provider_model_id)
+        }
+    }
 }
 
 pub(crate) fn resolve_nvidia_client_config(
@@ -234,6 +268,39 @@ pub(crate) fn resolve_nvidia_client_config(
             extra_body: nvidia_request_body_overrides(provider_model_id),
         },
         bearer_token: Some(runtime.api_key),
+        routing,
+    })
+}
+
+pub(crate) fn resolve_local_client_config(
+    request: &StreamRequest,
+    provider_model_id: &str,
+) -> anyhow::Result<ResolvedClientConfig> {
+    let runtime = provider_config::resolve_local_runtime(request.base_url_override.as_deref())?;
+    let routing = default_routing_decision(
+        InteractiveProviderKind::Local,
+        request.model_id.clone(),
+        provider_model_id.to_string(),
+        Some(runtime.base_url.clone()),
+        Some(runtime.auth_mode.clone()),
+        true,
+        runtime.proxy_visible_remote_egress_expected,
+    );
+    Ok(ResolvedClientConfig {
+        provider: InteractiveProviderKind::Local,
+        client: quorp_provider::openai_compatible_client::OpenAiCompatibleClientConfig {
+            base_url: runtime.base_url.clone(),
+            model_id: provider_model_id.to_string(),
+            connect_timeout: CONNECT_TIMEOUT,
+            read_timeout: READ_TIMEOUT,
+            extra_headers: local_request_headers(
+                request,
+                provider_model_id,
+                provider_config::resolved_routing_mode().label(),
+            ),
+            extra_body: serde_json::Map::new(),
+        },
+        bearer_token: Some("local".to_string()),
         routing,
     })
 }

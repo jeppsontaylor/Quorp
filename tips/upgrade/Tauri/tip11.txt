@@ -1,0 +1,1954 @@
+## Recommendation: build Quorp Desktop as a new Tauri 2 app at `apps/desktop`
+
+The strongest path is:
+
+```text
+apps/desktop/                 # Tauri + React/TypeScript desktop product
+  package.json
+  index.html
+  src/
+    app/
+    components/
+    features/
+    lib/
+    styles/
+  src-tauri/
+    Cargo.toml
+    tauri.conf.json
+    capabilities/
+    src/
+
+crates/quorp_desktop_core/     # Rust desktop service layer, no Tauri dependency
+crates/quorp_desktop_ipc/      # serde IPC DTOs shared by Tauri commands/events
+```
+
+Do **not** put the DMG app inside `crates/quorp`. That crate is currently the thin CLI binary wrapper calling `quorp_cli::dispatch()`; keeping the CLI stable is exactly what we want. The repository already has a serious Rust workspace with `quorp_cli`, `quorp_session`, `quorp_agent_core`, `quorp_permissions`, `quorp_sandbox`, `quorp_render`, `quorp_slash`, `quorp_verify`, and related crates, so the desktop app should be another product surface over the same core rather than a fork of the CLI. The root workspace already uses explicit members and shared crate dependencies, so adding a Tauri crate plus two small desktop-specific crates fits cleanly. 
+
+One note: I could not clone GitHub directly from the local container because DNS resolution failed, so I inspected the repo through the GitHub connector and web access instead. The repo evidence is still concrete: Quorp is currently a TUI-first Rust terminal binary, with CLI extracted into `quorp_cli`, session/runtime into `quorp_session`, typed runtime actions, Patch VM receipts, runtime event fanout, verification proof packets, and benchmark gates already present. 
+
+---
+
+# 1. Product architecture
+
+## The desktop stack
+
+Use:
+
+```text
+Tauri 2
+React
+TypeScript
+Vite
+TanStack Virtual
+Monaco Editor, lazy-loaded
+xterm.js, lazy-loaded only for terminal panes
+Zustand or a tiny custom external-store layer
+CSS variables + CSS modules, no heavy component framework
+Rust desktop core
+Existing Quorp crates
+```
+
+Tauri is the right choice because it lets Quorp keep Rust as the privileged backend while using a modern web GUI for the high-density interface. Tauri supports frontend frameworks while app logic lives in Rust, and its native web renderer approach keeps apps smaller than Electron-style desktop apps. ([Tauri][1])
+
+Do **not** use WebSockets internally. Use Tauri commands for request/response and Tauri channels for streaming runtime events. Tauri’s IPC command model is type-oriented, async commands keep the UI from freezing, and Tauri channels are specifically documented for streaming data. WebSockets should only appear later if Quorp adds a remote browser client or headless daemon mode. ([Tauri][2])
+
+Events are fine for global notifications, but for the agent stream use channels because Quorp needs high-volume, ordered, typed-ish streams: model requests, tool calls, diffs, validation, permission prompts, proof events, and cancellation updates. Tauri’s docs distinguish channels from app events; events are global and not type-safe, while channels are the better streaming primitive. ([Tauri][2])
+
+## Why React/TypeScript, despite Quorp being Rust-first
+
+The core remains Rust. The UI should not.
+
+A Codex-like desktop app needs fast virtualized scrollback, split panes, command palette, diff rendering, settings, tabs, lazy code editors, and rich keyboard interactions. React + TypeScript + Vite gets that shipped quickly and cleanly. A pure Rust GUI like Slint or egui would be attractive for purity, but it would slow down the “brilliant desktop IDE” path and make sophisticated diff/chat/sidebar/editor interactions harder to iterate.
+
+The right split is:
+
+```text
+Rust:
+  agent runtime
+  permission model
+  sandbox policy
+  provider calls
+  session persistence
+  proof receipts
+  subprocess/PTY handling
+  file access
+  secrets/keychain
+  trust policy
+
+TypeScript:
+  layout
+  command palette
+  virtualized event feed
+  diff viewer
+  settings UI
+  keyboard workflows
+  status dashboards
+  visual state
+```
+
+Monaco should be lazy-loaded because it is powerful but heavy. Use it for opened files and full diff review. For the main agent stream, render lightweight custom diff cards with virtualized rows instead of mounting Monaco for every patch. xterm.js should also be lazy-loaded and used only for true terminal sessions; it is a proven browser terminal component used by tools such as VS Code and has optional GPU/WebGL support. ([GitHub][3])
+
+---
+
+# 2. Exact repo changes
+
+## Root `Cargo.toml`
+
+Add these workspace members:
+
+```toml
+members = [
+    # existing members...
+    "crates/quorp_desktop_core",
+    "crates/quorp_desktop_ipc",
+    "apps/desktop/src-tauri",
+]
+```
+
+Add workspace dependencies only where needed:
+
+```toml
+[workspace.dependencies]
+quorp_desktop_core = { path = "crates/quorp_desktop_core" }
+quorp_desktop_ipc = { path = "crates/quorp_desktop_ipc" }
+```
+
+Keep `default-members = ["crates/quorp"]` for now. The desktop app should not become the default cargo target immediately, because the current CLI binary is the mature release surface. 
+
+## New crate: `crates/quorp_desktop_ipc`
+
+Purpose: serializable DTOs shared between Tauri commands and the frontend.
+
+```toml
+# crates/quorp_desktop_ipc/Cargo.toml
+[package]
+name = "quorp_desktop_ipc"
+description = "Typed IPC contracts for Quorp Desktop."
+edition.workspace = true
+version = "0.231.0"
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lib]
+path = "src/quorp_desktop_ipc.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+serde.workspace = true
+serde_json.workspace = true
+quorp_agent_core.workspace = true
+quorp_core.workspace = true
+quorp_permissions.workspace = true
+```
+
+```rust
+// crates/quorp_desktop_ipc/src/quorp_desktop_ipc.rs
+
+use std::path::PathBuf;
+
+use quorp_agent_core::{RuntimeEvent, StopReason};
+use serde::{Deserialize, Serialize};
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceId(pub String);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RunId(pub String);
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum WorkspaceTrust {
+    Untrusted,
+    ReadOnlyTrusted,
+    SandboxTrusted,
+    FullyTrusted,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorkspaceSummary {
+    pub id: WorkspaceId,
+    pub display_name: String,
+    pub root: PathBuf,
+    pub trust: WorkspaceTrust,
+    pub git_branch: Option<String>,
+    pub dirty_files: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopPermissionMode {
+    ReadOnly,
+    Ask,
+    AcceptEdits,
+    AutoSafe,
+    YoloSandbox,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DesktopSandboxMode {
+    Host,
+    TmpCopy,
+    GitWorktreePreferred,
+    ContainerNoNetwork,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentStartRequest {
+    pub workspace_id: WorkspaceId,
+    pub prompt: String,
+    pub model_id: Option<String>,
+    pub provider: Option<String>,
+    pub permission_mode: DesktopPermissionMode,
+    pub sandbox_mode: DesktopSandboxMode,
+    pub max_steps: Option<usize>,
+    pub max_seconds: Option<u64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AgentStartResponse {
+    pub run_id: RunId,
+    pub result_dir: PathBuf,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StatusSnapshot {
+    pub active_run_id: Option<RunId>,
+    pub permission_mode: DesktopPermissionMode,
+    pub sandbox_mode: DesktopSandboxMode,
+    pub context_used_tokens_estimate: u64,
+    pub context_budget_tokens: u64,
+    pub compaction_recommended: bool,
+    pub total_billed_tokens: u64,
+    pub current_tool: Option<String>,
+    pub last_validation: Option<String>,
+    pub dirty_files: usize,
+    pub pending_permission_count: usize,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(tag = "event", rename_all = "snake_case")]
+pub enum DesktopEvent {
+    WorkspaceAdded {
+        workspace: WorkspaceSummary,
+    },
+    WorkspaceUpdated {
+        workspace: WorkspaceSummary,
+    },
+    RunStarted {
+        run_id: RunId,
+        workspace_id: WorkspaceId,
+    },
+    Runtime {
+        run_id: RunId,
+        event: RuntimeEvent,
+    },
+    Status {
+        snapshot: StatusSnapshot,
+    },
+    PermissionRequested {
+        request_id: String,
+        run_id: RunId,
+        tool_name: String,
+        summary: String,
+        risk_tokens: Vec<String>,
+    },
+    RunFinished {
+        run_id: RunId,
+        reason: StopReason,
+    },
+    Error {
+        title: String,
+        detail: String,
+    },
+}
+```
+
+This lets the frontend ingest one stream format instead of reverse-engineering CLI text.
+
+## New crate: `crates/quorp_desktop_core`
+
+Purpose: desktop application state and agent orchestration, with no direct React/Tauri coupling.
+
+It should own:
+
+```text
+Workspace registry
+Trust state
+Recent folders
+Session registry
+Agent run handles
+Permission decisions
+Runtime event forwarding
+Diff cache
+Proof artifact lookup
+PTY session handles
+Provider/model settings
+Keychain-backed secrets
+```
+
+```toml
+# crates/quorp_desktop_core/Cargo.toml
+[package]
+name = "quorp_desktop_core"
+description = "Desktop application services for Quorp."
+edition.workspace = true
+version = "0.231.0"
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lib]
+path = "src/quorp_desktop_core.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+dirs.workspace = true
+quorp_agent_core.workspace = true
+quorp_config.workspace = true
+quorp_core.workspace = true
+quorp_desktop_ipc.workspace = true
+quorp_permissions.workspace = true
+quorp_sandbox.workspace = true
+quorp_session.workspace = true
+quorp_tools.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+sha2.workspace = true
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "process", "macros"] }
+walkdir.workspace = true
+```
+
+The desktop core should expose an app service:
+
+```rust
+// crates/quorp_desktop_core/src/quorp_desktop_core.rs
+
+use std::collections::BTreeMap;
+use std::path::{Path, PathBuf};
+use std::sync::{Arc, Mutex};
+
+use anyhow::Context as _;
+use quorp_desktop_ipc::{
+    AgentStartRequest, AgentStartResponse, DesktopEvent, WorkspaceId, WorkspaceSummary,
+    WorkspaceTrust,
+};
+
+pub trait DesktopEventEmitter: Send + Sync + 'static {
+    fn emit(&self, event: DesktopEvent);
+}
+
+#[derive(Debug, Default)]
+struct DesktopState {
+    workspaces: BTreeMap<String, WorkspaceSummary>,
+}
+
+#[derive(Clone)]
+pub struct DesktopAppService {
+    state: Arc<Mutex<DesktopState>>,
+    emitter: Arc<dyn DesktopEventEmitter>,
+}
+
+impl DesktopAppService {
+    pub fn new(emitter: Arc<dyn DesktopEventEmitter>) -> Self {
+        Self {
+            state: Arc::new(Mutex::new(DesktopState::default())),
+            emitter,
+        }
+    }
+
+    pub fn add_workspace(&self, root: PathBuf) -> anyhow::Result<WorkspaceSummary> {
+        let root = std::fs::canonicalize(&root)
+            .with_context(|| format!("failed to canonicalize workspace {}", root.display()))?;
+
+        let display_name = root
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or("workspace")
+            .to_string();
+
+        let id = WorkspaceId(workspace_id_for_path(&root));
+
+        let summary = WorkspaceSummary {
+            id: id.clone(),
+            display_name,
+            root,
+            trust: WorkspaceTrust::Untrusted,
+            git_branch: None,
+            dirty_files: 0,
+        };
+
+        {
+            let mut state = self.state.lock().expect("desktop state lock");
+            state.workspaces.insert(id.0.clone(), summary.clone());
+        }
+
+        self.emitter.emit(DesktopEvent::WorkspaceAdded {
+            workspace: summary.clone(),
+        });
+
+        Ok(summary)
+    }
+
+    pub async fn start_agent_run(
+        &self,
+        request: AgentStartRequest,
+    ) -> anyhow::Result<AgentStartResponse> {
+        // First production version should use native runtime wiring.
+        // Fast MVP can route through a ProcessAgentBackend behind the same trait.
+        start_agent_run_native(self.clone(), request).await
+    }
+}
+
+fn workspace_id_for_path(path: &Path) -> String {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(path.to_string_lossy().as_bytes());
+    format!("{:x}", hasher.finalize())
+}
+
+async fn start_agent_run_native(
+    _service: DesktopAppService,
+    request: AgentStartRequest,
+) -> anyhow::Result<AgentStartResponse> {
+    let run_id = quorp_desktop_ipc::RunId(format!(
+        "desktop-{}",
+        chrono::Utc::now().timestamp_millis()
+    ));
+
+    let result_dir = dirs::data_dir()
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("quorp")
+        .join("desktop-runs")
+        .join(&run_id.0);
+
+    std::fs::create_dir_all(&result_dir)
+        .with_context(|| format!("failed to create {}", result_dir.display()))?;
+
+    // TODO: construct AgentRunRequest and RuntimeEventFanout.
+    // Keep this function small; split native backend into src/agent/native.rs.
+
+    Ok(AgentStartResponse { run_id, result_dir })
+}
+```
+
+The key design choice: introduce an `AgentBackend` trait with two implementations.
+
+```rust
+pub trait AgentBackend: Send + Sync {
+    fn start(
+        &self,
+        request: AgentStartRequest,
+        emitter: Arc<dyn DesktopEventEmitter>,
+    ) -> anyhow::Result<AgentStartResponse>;
+}
+
+pub struct ProcessAgentBackend;
+pub struct NativeAgentBackend;
+```
+
+For **fast usability**, `ProcessAgentBackend` can spawn the existing `quorp run`/`quorp exec` path and tail `events.jsonl`. That works because Quorp’s headless runs already emit `request.json`, `metadata.json`, `summary.json`, `events.jsonl`, `proof-receipt.json`, and logs. 
+
+For the **real product**, `NativeAgentBackend` should call directly into the runtime/session stack and forward `RuntimeEvent` through a `RuntimeEventSink`. The runtime already has typed `RuntimeEvent`, `AgentRunRequest`, `AgentRunOutcome`, `CompletionClient`, `ToolExecutor`, `RuntimeEventSink`, and `RuntimeEventFanout`; this is exactly what a desktop bridge wants. 
+
+---
+
+# 3. Tauri app location and config
+
+## `apps/desktop/package.json`
+
+```json
+{
+  "name": "quorp-desktop",
+  "private": true,
+  "version": "0.231.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "typecheck": "tsc --noEmit",
+    "tauri": "tauri",
+    "desktop:dev": "tauri dev",
+    "desktop:build": "tauri build",
+    "desktop:dmg": "tauri build -- --bundles dmg",
+    "desktop:debug-app": "tauri build --debug -- --bundles app"
+  },
+  "dependencies": {
+    "@tauri-apps/api": "^2",
+    "@tanstack/react-virtual": "^3",
+    "@xterm/xterm": "^5",
+    "@xterm/addon-fit": "^0.10",
+    "monaco-editor": "^0.52",
+    "react": "^19",
+    "react-dom": "^19",
+    "zustand": "^5"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2",
+    "@vitejs/plugin-react": "^latest",
+    "typescript": "^latest",
+    "vite": "^latest"
+  }
+}
+```
+
+Use `pnpm` for speed and deterministic installs:
+
+```yaml
+# pnpm-workspace.yaml
+packages:
+  - "apps/desktop"
+```
+
+## `apps/desktop/src-tauri/Cargo.toml`
+
+```toml
+[package]
+name = "quorp_desktop"
+description = "Quorp desktop app."
+edition.workspace = true
+version = "0.231.0"
+publish.workspace = true
+license = "GPL-3.0-or-later"
+
+[lib]
+path = "src/lib.rs"
+
+[[bin]]
+name = "quorp-desktop"
+path = "src/main.rs"
+
+[lints]
+workspace = true
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+anyhow.workspace = true
+quorp_desktop_core.workspace = true
+quorp_desktop_ipc.workspace = true
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = ["macos-private-api"] }
+tauri-plugin-dialog = "2"
+tauri-plugin-opener = "2"
+tauri-plugin-window-state = "2"
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "macros"] }
+```
+
+Start with only these plugins. Avoid broad filesystem and shell plugins until the permission model is integrated. Tauri has its own permission/capability model for command privileges, and Quorp should use that as a second layer beneath Quorp’s own sandbox/permissions. ([Tauri][4])
+
+## `apps/desktop/src-tauri/build.rs`
+
+```rust
+fn main() {
+    tauri_build::build();
+}
+```
+
+## `apps/desktop/src-tauri/src/main.rs`
+
+```rust
+fn main() {
+    quorp_desktop::run();
+}
+```
+
+## `apps/desktop/src-tauri/src/lib.rs`
+
+```rust
+use std::path::PathBuf;
+use std::sync::Arc;
+
+use quorp_desktop_core::{DesktopAppService, DesktopEventEmitter};
+use quorp_desktop_ipc::{
+    AgentStartRequest, AgentStartResponse, DesktopEvent, StatusSnapshot, WorkspaceSummary,
+};
+use tauri::{AppHandle, Manager};
+use tauri::ipc::Channel;
+
+#[derive(Clone)]
+struct AppEmitter {
+    app: AppHandle,
+}
+
+impl DesktopEventEmitter for AppEmitter {
+    fn emit(&self, event: DesktopEvent) {
+        if let Err(error) = self.app.emit("desktop-event", event) {
+            log::warn!("failed to emit desktop event: {error}");
+        }
+    }
+}
+
+#[derive(Clone)]
+struct AppState {
+    service: DesktopAppService,
+}
+
+#[tauri::command]
+async fn workspace_add(
+    state: tauri::State<'_, AppState>,
+    path: PathBuf,
+) -> Result<WorkspaceSummary, String> {
+    state
+        .service
+        .add_workspace(path)
+        .map_err(|error| format!("{error:#}"))
+}
+
+#[tauri::command]
+async fn agent_start(
+    state: tauri::State<'_, AppState>,
+    request: AgentStartRequest,
+    events: Channel<DesktopEvent>,
+) -> Result<AgentStartResponse, String> {
+    // For high-volume run events, prefer this per-run Channel over global app events.
+    let response = state
+        .service
+        .start_agent_run(request)
+        .await
+        .map_err(|error| format!("{error:#}"))?;
+
+    if let Err(error) = events.send(DesktopEvent::RunStarted {
+        run_id: response.run_id.clone(),
+        workspace_id: quorp_desktop_ipc::WorkspaceId("pending".to_string()),
+    }) {
+        log::warn!("failed to send run-start event over channel: {error}");
+    }
+
+    Ok(response)
+}
+
+#[tauri::command]
+async fn status_snapshot(
+    _state: tauri::State<'_, AppState>,
+) -> Result<StatusSnapshot, String> {
+    // TODO: wire to DesktopAppService.
+    Err("status_snapshot not wired yet".to_string())
+}
+
+pub fn run() {
+    tauri::Builder::default()
+        .plugin(tauri_plugin_dialog::init())
+        .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_window_state::Builder::default().build())
+        .setup(|app| {
+            let emitter = Arc::new(AppEmitter {
+                app: app.handle().clone(),
+            });
+
+            app.manage(AppState {
+                service: DesktopAppService::new(emitter),
+            });
+
+            Ok(())
+        })
+        .invoke_handler(tauri::generate_handler![
+            workspace_add,
+            agent_start,
+            status_snapshot,
+        ])
+        .run(tauri::generate_context!())
+        .expect("failed to run Quorp Desktop");
+}
+```
+
+Important repo rule: avoid `let _ =` on fallible operations. The handoff explicitly calls that out, along with the 2,000 LOC cap and no `mod.rs` paths. Keep every desktop file under that cap from day one. 
+
+---
+
+# 4. Tauri config and DMG output
+
+## `apps/desktop/src-tauri/tauri.conf.json`
+
+```json
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Quorp",
+  "version": "0.231.0",
+  "identifier": "dev.quorp.app",
+  "build": {
+    "beforeDevCommand": "pnpm dev",
+    "devUrl": "http://localhost:5173",
+    "beforeBuildCommand": "pnpm build",
+    "frontendDist": "../dist"
+  },
+  "app": {
+    "windows": [
+      {
+        "label": "main",
+        "title": "Quorp",
+        "width": 1480,
+        "height": 960,
+        "minWidth": 1080,
+        "minHeight": 720,
+        "center": true,
+        "resizable": true,
+        "fullscreen": false,
+        "backgroundColor": "#090d12",
+        "titleBarStyle": "Overlay",
+        "hiddenTitle": true
+      }
+    ],
+    "security": {
+      "csp": "default-src 'self'; img-src 'self' asset: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src ipc: http://ipc.localhost"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["app", "dmg"],
+    "category": "DeveloperTool",
+    "shortDescription": "Terminal-first coding IDE and autonomous coding-agent runtime.",
+    "longDescription": "Quorp is a Rust-native coding IDE and autonomous agent runtime for long-form repository work.",
+    "icon": [
+      "icons/32x32.png",
+      "icons/128x128.png",
+      "icons/128x128@2x.png",
+      "icons/icon.icns"
+    ],
+    "macOS": {
+      "minimumSystemVersion": "12.0",
+      "hardenedRuntime": true,
+      "entitlements": "Entitlements.plist",
+      "dmg": {
+        "appPosition": {
+          "x": 180,
+          "y": 170
+        },
+        "applicationFolderPosition": {
+          "x": 480,
+          "y": 170
+        },
+        "windowSize": {
+          "width": 660,
+          "height": 400
+        }
+      }
+    }
+  }
+}
+```
+
+Tauri can produce a DMG directly with:
+
+```bash
+cd apps/desktop
+pnpm tauri build -- --bundles dmg
+```
+
+The Tauri macOS docs describe DMG as the common outside-App-Store installer wrapper around the `.app` bundle and show the same `cargo tauri build --bundles dmg` / `npm run tauri build -- --bundles dmg` style commands. ([Tauri][5])
+
+## Local testing without delaying on signing
+
+For fast testing on your Mac:
+
+```bash
+cd apps/desktop
+pnpm install
+pnpm desktop:dev
+```
+
+Then:
+
+```bash
+pnpm desktop:debug-app
+```
+
+For a local DMG:
+
+```bash
+pnpm desktop:dmg
+open apps/desktop/src-tauri/target/release/bundle/dmg
+```
+
+Unsigned builds are fine for local iteration, but do not distribute them as the public release. When downloaded from the internet, unsigned or improperly signed macOS apps hit Gatekeeper friction. Tauri’s signing docs explicitly call out Developer ID signing to avoid the “broken” warning, and Apple’s notarization flow is the standard outside-App-Store trust path. ([Tauri][6])
+
+For local-only ad hoc signing:
+
+```bash
+codesign --force --deep --sign - \
+  apps/desktop/src-tauri/target/release/bundle/macos/Quorp.app
+```
+
+For release signing later:
+
+```bash
+security find-identity -v -p codesigning
+
+export APPLE_SIGNING_IDENTITY="Developer ID Application: Your Name (TEAMID)"
+export APPLE_ID="you@example.com"
+export APPLE_TEAM_ID="TEAMID"
+export APPLE_PASSWORD="app-specific-password"
+
+cd apps/desktop
+pnpm tauri build -- --bundles dmg
+
+xcrun notarytool submit \
+  src-tauri/target/release/bundle/dmg/Quorp_*.dmg \
+  --apple-id "$APPLE_ID" \
+  --team-id "$APPLE_TEAM_ID" \
+  --password "$APPLE_PASSWORD" \
+  --wait
+
+xcrun stapler staple src-tauri/target/release/bundle/dmg/Quorp_*.dmg
+spctl -a -vvv -t install src-tauri/target/release/bundle/dmg/Quorp_*.dmg
+```
+
+Also add macOS PATH repair immediately. GUI apps launched from Finder often do not inherit shell dotfile PATHs, and the Tauri docs call this out directly. Quorp must reliably find `git`, `cargo`, `rustup`, `node`, `python`, and other project tools from the desktop app. ([Tauri][5])
+
+---
+
+# 5. Desktop layout spec
+
+The app should feel like a high-agency coding mission-control surface, not a generic chat window.
+
+## Main window
+
+```text
+┌──────────────────────────────────────────────────────────────────────────────┐
+│ traffic lights | Quorp | workspace | branch | model | permission | sandbox  │
+├───────────────┬───────────────────────────────────────────────┬──────────────┤
+│ LEFT SIDEBAR  │ CENTER AGENT STREAM                           │ RIGHT PANEL  │
+│               │                                               │              │
+│ Workspaces    │  virtualized event feed                       │ Diff         │
+│ Files         │  assistant summaries                          │ Status       │
+│ Tasks         │  tool calls                                   │ Context      │
+│ Sessions      │  shell output                                 │ Permissions  │
+│ Rules         │  validation cards                             │ Proof        │
+│               │  diff cards                                   │ Memory       │
+│               │  recovery cards                               │ Settings     │
+│               │                                               │              │
+│               │ ┌───────────────────────────────────────────┐ │              │
+│               │ │ composer / slash palette / attachments    │ │              │
+│               │ └───────────────────────────────────────────┘ │              │
+├───────────────┴───────────────────────────────────────────────┴──────────────┤
+│ status bar: run id | tokens | context pressure | verification | sandbox root │
+└──────────────────────────────────────────────────────────────────────────────┘
+```
+
+## Toolbar
+
+The top bar should show:
+
+```text
+Workspace: Quorp
+Branch: main
+Model: qwen3-coder / provider profile
+Mode: Auto Safe
+Sandbox: Git worktree
+Context: 63% / compact in 18k
+Run: Step 7 · validating
+Buttons: Plan | Act | Verify | Compact | Stop
+```
+
+This maps naturally to existing runtime concepts: `RuntimeEvent` already reports run start, model request start/finish, tool call start/finish, validation start/finish, recovery events, policy denials, checkpoints, and run finish. 
+
+## Left sidebar
+
+Tabs:
+
+```text
+Workspaces
+Files
+Tasks
+Sessions
+Rules
+```
+
+### Workspaces tab
+
+Codex-style folder management:
+
+```text
++ Add Folder…
+
+Quorp
+  /Users/you/dev/Quorp
+  branch main
+  trust: Sandbox Trusted
+  dirty: 3
+
+another-repo
+  /Users/you/dev/another-repo
+  trust: Untrusted
+```
+
+On first folder add, show a trust prompt:
+
+```text
+This folder can contain malicious instructions, scripts, hooks, and config.
+
+Default: Read-only + sandboxed commands.
+[Open read-only] [Trust sandboxed writes] [Trust fully] [Cancel]
+```
+
+Default should be **read-only + sandboxed**.
+
+### Files tab
+
+A lightweight tree with:
+
+```text
+src/
+crates/
+agent/
+benchmark/
+Cargo.toml
+```
+
+Use virtualized lists. Do not recursively render huge repositories directly into DOM.
+
+### Tasks tab
+
+Show task DAG/checklist:
+
+```text
+● Current objective
+  ◐ inspect runtime bridge
+  ◐ implement desktop event stream
+  ○ add diff viewer
+  ○ run desktop smoke test
+
+Validation
+  ✓ cargo check
+  ◐ pnpm typecheck
+  ○ tauri build dmg
+```
+
+### Sessions tab
+
+```text
+Today
+  Desktop MVP run
+  Runtime bridge experiment
+
+Pinned
+  Quorp release planning
+```
+
+### Rules tab
+
+Expose active/draft/rejected rules later, but include the surface now.
+
+## Center stream
+
+The center stream is the core product.
+
+Use virtualized cards:
+
+```text
+Assistant
+  I’m going to inspect the runtime and wire a desktop bridge.
+
+Tool call
+  read_file crates/quorp_agent_core/src/runtime.rs
+  ✓ 12ms
+
+Shell
+  cargo check --workspace
+  running…
+
+Diff
+  crates/quorp_desktop_core/src/quorp_desktop_core.rs
+  - old line with bright red background
+  + new line with bright green background
+
+Validation
+  cargo check --workspace
+  ✓ passed in 18.4s
+
+Recovery
+  Parser recovery queued: malformed native tool call
+```
+
+Important visual rules:
+
+```css
+.diff-line {
+  font-family: var(--font-mono);
+  white-space: pre;
+}
+
+.diff-line.add {
+  background: color-mix(in srgb, #00ff6a 22%, transparent);
+}
+
+.diff-line.remove {
+  background: color-mix(in srgb, #ff3347 26%, transparent);
+}
+
+.diff-line.add .gutter {
+  color: #00ff6a;
+}
+
+.diff-line.remove .gutter {
+  color: #ff3347;
+}
+```
+
+The stream must not hold every rendered card forever. Keep the raw event ledger in Rust or on disk, keep a compact event index in the frontend, and virtualize visible rows.
+
+## Bottom composer
+
+Sticky bottom center:
+
+```text
+┌────────────────────────────────────────────────────────────────────┐
+│ Ask Quorp to…                                                      │
+│                                                                    │
+│ /plan  /verify  /diff  /permissions  /compact  /tasks              │
+├────────────────────────────────────────────────────────────────────┤
+│ Model qwen3-coder  Mode Auto Safe  Sandbox Worktree  Attach + Run │
+└────────────────────────────────────────────────────────────────────┘
+```
+
+Composer controls:
+
+```text
+Permission mode:
+  Read-only
+  Ask
+  Accept edits
+  Auto-safe
+  Yolo sandbox
+
+Sandbox:
+  Tmp copy
+  Git worktree preferred
+  Container no-network
+  Host, manual only
+
+Model:
+  provider
+  model
+  base URL
+  max tokens
+  compaction policy
+```
+
+Do not put “full-permission host” in the quick selector. Existing Quorp policy already distinguishes `YoloSandbox` and denies host execution for that mode; the desktop UI should preserve that safety invariant. 
+
+## Right inspector
+
+Tabs:
+
+```text
+Diff
+Status
+Context
+Permissions
+Proof
+Memory
+Rules
+Settings
+```
+
+### `/status` panel
+
+Show:
+
+```text
+Run
+  id: desktop-...
+  phase: executing tool
+  step: 8
+  elapsed: 02:11
+  stop reason: none
+
+Context
+  estimate: 142k / 220k
+  pressure: 64%
+  compaction: not needed
+  preserved: objective, constraints, tasks, failed attempts, validation state
+
+Permissions
+  mode: auto-safe
+  sandbox: git-worktree
+  pending prompts: 0
+  denied risky command: none
+
+Validation
+  last: cargo test -p quorp_desktop_core
+  status: pass
+  proof dag: available
+
+Workspace
+  branch: main
+  changed files: 5
+  checkpoint: checkpoint-003
+```
+
+### `/permissions` panel
+
+Expose Quorp’s real classifier output:
+
+```text
+Command: cargo test -p quorp_desktop_core
+Capability: RunCommand
+Risk tokens: none
+Decision: Allow
+
+Command: curl https://example.com
+Capability: Network
+Risk tokens: Network
+Decision: Prompt
+```
+
+The classifier already understands shell meta, compound commands, dependency installs, network, Docker, git remote mutation, find-delete/find-exec, secrets reads, and generated executables. 
+
+### `/sandbox` panel
+
+Show:
+
+```text
+Current backend: Git worktree
+Sandbox root: /tmp/quorp/desktop-.../workspace
+Network: disabled for container profile
+Env: scrubbed
+Source workspace protected: yes
+```
+
+Quorp already has host, git-worktree, tmp-copy, and container command-plan support with `--network=none`, dropped capabilities, no-new-privileges, and environment filtering. 
+
+---
+
+# 6. Mac menu items
+
+## App menu: `Quorp`
+
+```text
+About Quorp
+Check for Updates…
+Settings…                         ⌘,
+Services
+Hide Quorp                         ⌘H
+Hide Others                        ⌥⌘H
+Quit Quorp                         ⌘Q
+```
+
+## File
+
+```text
+Add Folder…                        ⇧⌘O
+Add Recent Folder
+New Session                        ⌘N
+Save Session                       ⌘S
+Export Session…
+Close Workspace                    ⇧⌘W
+Open Run Artifacts…
+Open Config Folder…
+```
+
+## Agent
+
+```text
+Start / Send                       ⌘↩
+Stop Agent                         ⌘.
+Resume Run…
+Plan Mode                          ⇧⌘P
+Act Mode                           ⇧⌘A
+Verify                             ⇧⌘V
+Compact Context                    ⇧⌘C
+Create Checkpoint                  ⇧⌘K
+Rollback to Checkpoint             ⇧⌘R
+```
+
+## Permissions
+
+```text
+Read-only
+Ask Every Time
+Accept Edits
+Auto-safe
+Yolo Sandbox
+
+Sandbox Mode
+  Git Worktree Preferred
+  Temporary Copy
+  Container, No Network
+  Host, Manual Only
+
+Review Pending Permission…
+Clear Session Allows
+Edit Project Allowlist…
+```
+
+## View
+
+```text
+Command Palette                    ⌘K
+Toggle Sidebar                     ⌘B
+Toggle Inspector                   ⌥⌘I
+Toggle Terminal                    ⌃`
+Toggle Diff Panel                  ⇧⌘D
+Focus Composer                     ⌘L
+Increase Font Size                 ⌘+
+Decrease Font Size                 ⌘-
+No Color Mode
+High Contrast Mode
+```
+
+## Tools
+
+```text
+Doctor
+Run Validation
+Open Proof Viewer
+Open Replay Viewer
+Memory
+Rules
+MCP Servers
+Benchmark Replay
+Raw Event Log
+```
+
+## Help
+
+```text
+Quorp Help
+Keyboard Shortcuts
+Open Logs
+Report Issue
+```
+
+The in-app command palette should mirror `quorp_slash`. The repo already has a slash registry with `help`, `clear`, `model`, `provider`, `plan`, `act`, `permissions`, `memory`, `rules`, `status`, `compact`, `diff`, `verify`, `sandbox`, `tasks`, `checkpoint`, `rollback`, and more. Reusing that command vocabulary makes CLI and desktop feel like one product. 
+
+---
+
+# 7. Frontend implementation details
+
+## Source layout
+
+```text
+apps/desktop/src/
+  app/
+    App.tsx
+    DesktopShell.tsx
+    menuCommands.ts
+  features/
+    agent/
+      AgentStream.tsx
+      AgentComposer.tsx
+      agentStore.ts
+      agentTypes.ts
+      useAgentRun.ts
+    workspace/
+      WorkspaceSidebar.tsx
+      workspaceStore.ts
+    diff/
+      DiffCard.tsx
+      DiffInspector.tsx
+      diffParser.ts
+    permissions/
+      PermissionPill.tsx
+      PermissionPanel.tsx
+    status/
+      StatusPanel.tsx
+      StatusBar.tsx
+    settings/
+      SettingsPanel.tsx
+    terminal/
+      TerminalPane.lazy.tsx
+    editor/
+      MonacoEditor.lazy.tsx
+  lib/
+    ipc.ts
+    events.ts
+    keys.ts
+    virtualList.ts
+  styles/
+    tokens.css
+    layout.css
+    diff.css
+```
+
+## IPC wrapper
+
+```ts
+// apps/desktop/src/lib/ipc.ts
+
+import { invoke, Channel } from "@tauri-apps/api/core";
+
+export type WorkspaceId = { 0: string };
+export type RunId = { 0: string };
+
+export type DesktopPermissionMode =
+  | "read_only"
+  | "ask"
+  | "accept_edits"
+  | "auto_safe"
+  | "yolo_sandbox";
+
+export type DesktopSandboxMode =
+  | "host"
+  | "tmp_copy"
+  | "git_worktree_preferred"
+  | "container_no_network";
+
+export interface AgentStartRequest {
+  workspace_id: WorkspaceId;
+  prompt: string;
+  model_id?: string | null;
+  provider?: string | null;
+  permission_mode: DesktopPermissionMode;
+  sandbox_mode: DesktopSandboxMode;
+  max_steps?: number | null;
+  max_seconds?: number | null;
+}
+
+export interface AgentStartResponse {
+  run_id: RunId;
+  result_dir: string;
+}
+
+export type DesktopEvent =
+  | { event: "workspace_added"; workspace: unknown }
+  | { event: "workspace_updated"; workspace: unknown }
+  | { event: "run_started"; run_id: RunId; workspace_id: WorkspaceId }
+  | { event: "runtime"; run_id: RunId; event: RuntimeEvent }
+  | { event: "status"; snapshot: unknown }
+  | { event: "permission_requested"; request_id: string; run_id: RunId; tool_name: string; summary: string; risk_tokens: string[] }
+  | { event: "run_finished"; run_id: RunId; reason: string }
+  | { event: "error"; title: string; detail: string };
+
+export interface RuntimeEvent {
+  event: string;
+  [key: string]: unknown;
+}
+
+export async function addWorkspace(path: string) {
+  return invoke("workspace_add", { path });
+}
+
+export async function startAgentRun(
+  request: AgentStartRequest,
+  onEvent: (event: DesktopEvent) => void,
+): Promise<AgentStartResponse> {
+  const channel = new Channel<DesktopEvent>();
+  channel.onmessage = onEvent;
+
+  return invoke<AgentStartResponse>("agent_start", {
+    request,
+    events: channel,
+  });
+}
+```
+
+## Store
+
+```ts
+// apps/desktop/src/features/agent/agentStore.ts
+
+import { create } from "zustand";
+import type { DesktopEvent, RunId } from "../../lib/ipc";
+
+export interface AgentStreamItem {
+  id: string;
+  runId: string;
+  kind: string;
+  createdAt: number;
+  payload: unknown;
+}
+
+interface AgentState {
+  activeRunId: string | null;
+  items: AgentStreamItem[];
+  ingest: (event: DesktopEvent) => void;
+  clear: () => void;
+}
+
+const MAX_RETAINED_ITEMS = 5_000;
+
+export const useAgentStore = create<AgentState>((set) => ({
+  activeRunId: null,
+  items: [],
+  ingest: (event) => {
+    set((state) => {
+      const next = eventToItem(event);
+      if (!next) return state;
+
+      const items =
+        state.items.length >= MAX_RETAINED_ITEMS
+          ? state.items.slice(state.items.length - MAX_RETAINED_ITEMS + 1)
+          : state.items.slice();
+
+      items.push(next);
+
+      return {
+        activeRunId: next.runId,
+        items,
+      };
+    });
+  },
+  clear: () => set({ activeRunId: null, items: [] }),
+}));
+
+function eventToItem(event: DesktopEvent): AgentStreamItem | null {
+  if (event.event !== "runtime") return null;
+
+  const runId = unwrapRunId(event.run_id);
+
+  return {
+    id: `${runId}:${Date.now()}:${Math.random().toString(16).slice(2)}`,
+    runId,
+    kind: String(event.event.event ?? "runtime"),
+    createdAt: Date.now(),
+    payload: event.event,
+  };
+}
+
+function unwrapRunId(runId: RunId): string {
+  return runId[0];
+}
+```
+
+## Virtualized stream
+
+```tsx
+// apps/desktop/src/features/agent/AgentStream.tsx
+
+import { useMemo, useRef } from "react";
+import { useVirtualizer } from "@tanstack/react-virtual";
+import { useAgentStore } from "./agentStore";
+import { RuntimeCard } from "./RuntimeCard";
+
+export function AgentStream() {
+  const parentRef = useRef<HTMLDivElement | null>(null);
+  const items = useAgentStore((state) => state.items);
+
+  const virtualizer = useVirtualizer({
+    count: items.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 96,
+    overscan: 12,
+    getItemKey: (index) => items[index]?.id ?? index,
+  });
+
+  const virtualItems = virtualizer.getVirtualItems();
+
+  return (
+    <div ref={parentRef} className="agent-stream">
+      <div
+        className="agent-stream-spacer"
+        style={{ height: `${virtualizer.getTotalSize()}px` }}
+      >
+        {virtualItems.map((virtualRow) => {
+          const item = items[virtualRow.index];
+
+          return (
+            <div
+              key={virtualRow.key}
+              className="agent-stream-row"
+              style={{
+                transform: `translateY(${virtualRow.start}px)`,
+              }}
+              data-index={virtualRow.index}
+              ref={virtualizer.measureElement}
+            >
+              <RuntimeCard item={item} />
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}
+```
+
+## Layout CSS
+
+```css
+/* apps/desktop/src/styles/layout.css */
+
+:root {
+  --bg: #090d12;
+  --panel: #0d141c;
+  --panel-2: #111b25;
+  --border: #1c2a38;
+  --text: #d9e4ee;
+  --muted: #7e8da0;
+  --accent: #4ee8ff;
+  --ok: #00ff6a;
+  --warn: #ffd166;
+  --danger: #ff3347;
+  --font-ui: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  --font-mono: "SF Mono", ui-monospace, Menlo, Consolas, monospace;
+}
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  background: var(--bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  overflow: hidden;
+}
+
+.desktop-shell {
+  width: 100%;
+  height: 100%;
+  display: grid;
+  grid-template-rows: 44px minmax(0, 1fr) 24px;
+}
+
+.topbar {
+  display: grid;
+  grid-template-columns: auto 1fr auto;
+  align-items: center;
+  gap: 12px;
+  padding: 0 14px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel) 92%, black);
+  -webkit-app-region: drag;
+}
+
+.topbar button,
+.composer button,
+.sidebar button {
+  -webkit-app-region: no-drag;
+}
+
+.main-grid {
+  min-height: 0;
+  display: grid;
+  grid-template-columns: 276px minmax(0, 1fr) 376px;
+}
+
+.sidebar {
+  min-height: 0;
+  border-right: 1px solid var(--border);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.center {
+  min-width: 0;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: minmax(0, 1fr) auto;
+  background: var(--bg);
+}
+
+.inspector {
+  min-height: 0;
+  border-left: 1px solid var(--border);
+  background: var(--panel);
+  overflow: hidden;
+}
+
+.agent-stream {
+  min-height: 0;
+  overflow: auto;
+  contain: strict;
+}
+
+.agent-stream-spacer {
+  position: relative;
+  width: 100%;
+}
+
+.agent-stream-row {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: 100%;
+}
+
+.composer {
+  border-top: 1px solid var(--border);
+  background: color-mix(in srgb, var(--panel-2) 88%, black);
+  padding: 12px;
+}
+
+.statusbar {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  padding: 0 10px;
+  border-top: 1px solid var(--border);
+  background: #070a0f;
+  color: var(--muted);
+  font-size: 12px;
+}
+```
+
+---
+
+# 8. Wiring runtime events into desktop
+
+Quorp’s runtime already has the right primitives:
+
+```text
+AgentRunRequest
+AgentRunOutcome
+RuntimeEvent
+RuntimeEventSink
+RuntimeEventFanout
+CompletionClient
+ToolExecutor
+AgentCheckpoint
+AgentTaskStateSnapshot
+```
+
+That means the desktop app should not parse ANSI renderer output. The existing `quorp_render` crate is valuable design evidence and may provide palette/session concepts, but the desktop should subscribe to semantic runtime events and render native web UI components. `quorp_render` is explicitly unit-testable rendering logic and does not directly touch stdout, which is good, but it is still optimized for terminal output. 
+
+The desktop bridge should look like:
+
+```text
+React composer
+  ↓ invoke("agent_start")
+Tauri command
+  ↓
+quorp_desktop_core::DesktopAppService
+  ↓
+NativeAgentBackend
+  ↓
+quorp_agent_core runtime
+  ↓ RuntimeEventSink
+Tauri Channel<DesktopEvent>
+  ↓
+React virtualized event stream
+```
+
+Implement:
+
+```rust
+use std::sync::Arc;
+
+use quorp_agent_core::{RuntimeEvent, RuntimeEventSink};
+use quorp_desktop_ipc::{DesktopEvent, RunId};
+
+pub struct ChannelRuntimeSink {
+    run_id: RunId,
+    sender: tauri::ipc::Channel<DesktopEvent>,
+}
+
+impl RuntimeEventSink for ChannelRuntimeSink {
+    fn emit(&self, event: RuntimeEvent) {
+        let desktop_event = DesktopEvent::Runtime {
+            run_id: self.run_id.clone(),
+            event,
+        };
+
+        if let Err(error) = self.sender.send(desktop_event) {
+            log::warn!("failed to forward runtime event to desktop channel: {error}");
+        }
+    }
+}
+```
+
+For high volume, batch events every 16–50 ms:
+
+```rust
+pub struct BatchedRuntimeSink {
+    run_id: RunId,
+    sender: tauri::ipc::Channel<Vec<DesktopEvent>>,
+    buffer: parking_lot::Mutex<Vec<DesktopEvent>>,
+}
+```
+
+Start with unbatched for MVP; add batching once the UI is streaming.
+
+---
+
+# 9. Permissions and sandbox behavior
+
+Desktop defaults:
+
+```text
+New workspace:
+  trust: Untrusted
+  permission: Read-only
+  sandbox: Tmp copy / git-worktree preferred
+
+Normal coding:
+  permission: Ask or Auto-safe
+  sandbox: Git worktree preferred
+
+Full-auto:
+  permission: Yolo sandbox
+  sandbox: Git worktree or container no-network
+  host: disallowed
+
+Manual trusted repo:
+  permission: Accept edits
+  sandbox: Host only after explicit trust
+```
+
+This aligns with existing Quorp code. The repo already supports `read-only`, `ask`, `accept-edits`, `auto-safe`, and `yolo-sandbox`; `--yolo` is explicitly sandboxed full-auto and rejected with direct host sandboxing. 
+
+The UI should make risky actions visible:
+
+```text
+Permission prompt
+
+Tool:
+  run_command
+
+Command:
+  cargo add tokio
+
+Capability:
+  RunCommand
+
+Risk:
+  DependencyInstall
+  FilesystemWrite
+
+Decision:
+  [Deny] [Allow once] [Allow this session] [Allow project rule]
+```
+
+Project rules must be stored in reviewable files, not hidden JS state. Session-only allows go in app state. Project-level allows go through Quorp’s existing allowlist/config path after confirmation.
+
+---
+
+# 10. Build a usable desktop quickly
+
+## Day 1: scaffold and local app
+
+Add:
+
+```text
+apps/desktop
+apps/desktop/src-tauri
+crates/quorp_desktop_core
+crates/quorp_desktop_ipc
+```
+
+Wire:
+
+```text
+Add Folder…
+workspace sidebar
+global event listener
+empty agent stream
+settings shell
+permission/sandbox chips
+DMG build command
+```
+
+Commands:
+
+```bash
+cd apps/desktop
+pnpm install
+pnpm desktop:dev
+pnpm desktop:debug-app
+```
+
+Acceptance:
+
+```bash
+cargo check --workspace
+cd apps/desktop && pnpm typecheck
+cd apps/desktop && pnpm tauri build --debug -- --bundles app
+```
+
+## Day 2–3: process-backed agent MVP
+
+Implement `ProcessAgentBackend`:
+
+```text
+spawn existing quorp binary
+run quorp exec / quorp run
+write result dir
+tail events.jsonl
+map events into DesktopEvent
+show stream cards
+show status
+allow cancel
+open proof receipt
+```
+
+This is the fastest path to a usable Mac app because it reuses the existing CLI/headless run behavior. The CLI already supports `run`, `exec`, replay/proof commands, benchmark commands, permissions commands, scan/index commands, and more. 
+
+Acceptance:
+
+```text
+Add folder
+Send prompt
+See model/tool/validation stream
+Cancel run
+Open result_dir
+Open proof-receipt.json
+Build unsigned DMG locally
+```
+
+## Week 1: native runtime backend
+
+Replace or supplement process backend with `NativeAgentBackend`.
+
+Wire:
+
+```text
+AgentRunRequest
+CompletionClient
+ToolExecutor
+RuntimeEventSink
+RuntimeEventFanout
+cancellation Arc<AtomicBool>
+checkpoint/resume
+```
+
+Acceptance:
+
+```text
+No subprocess needed for normal runs
+Events stream through Tauri channel
+Status panel updates from runtime events
+Permission prompts block/resume correctly
+Sandbox root visible
+Diff cards render write actions
+```
+
+## Week 2: brilliant UX
+
+Add:
+
+```text
+virtualized stream
+diff inspector
+status inspector
+permission inspector
+context pressure panel
+model/provider settings
+lazy Monaco editor
+lazy xterm terminal
+command palette
+keyboard shortcuts
+session replay viewer
+```
+
+Acceptance:
+
+```text
+10,000 event synthetic stream stays smooth
+large diff does not freeze UI
+Monaco loads only when opening editor/diff inspector
+xterm loads only when opening terminal
+memory use remains bounded during long runs
+```
+
+---
+
+# 11. Concrete `justfile` additions
+
+```make
+desktop-dev:
+    cd apps/desktop && pnpm desktop:dev
+
+desktop-typecheck:
+    cd apps/desktop && pnpm typecheck
+
+desktop-build-debug:
+    cd apps/desktop && pnpm tauri build --debug -- --bundles app
+
+desktop-dmg:
+    cd apps/desktop && pnpm tauri build -- --bundles dmg
+
+desktop-test:
+    cargo test -p quorp_desktop_core -p quorp_desktop_ipc
+    cd apps/desktop && pnpm typecheck
+
+desktop-fast:
+    cargo check --workspace
+    cd apps/desktop && pnpm typecheck
+```
+
+---
+
+# 12. Important implementation risks
+
+## 1. Do not expose benchmark-specific repair behavior as a desktop default
+
+While inspecting runtime modules through GitHub, I saw benchmark-repair/playbook-oriented runtime code in the runtime path. That may be useful for benchmark harnesses, but desktop full-auto behavior must be general. Add a visible runtime flag:
+
+```rust
+pub enum RuntimeProfile {
+    GeneralDesktop,
+    BenchmarkHarness,
+}
+```
+
+Desktop should use `GeneralDesktop`.
+
+## 2. Do not trust repo-authored desktop settings by default
+
+A malicious repo can contain config, instructions, scripts, and tool outputs. Desktop trust state should live in the app config directory, not inside the repo. Project config can be read only after the user grants trust.
+
+## 3. Do not run full-auto on host
+
+The desktop UI should make unsafe combinations impossible:
+
+```text
+YoloSandbox + Host = disabled
+AutoSafe + Host = allowed only after trust prompt
+ReadOnly + Host = okay for read-only
+Ask + Host = okay with prompts
+```
+
+## 4. Do not stream unbounded DOM
+
+The agent stream must be virtualized. Keep raw events in Rust/run artifacts and use a bounded frontend store.
+
+## 5. Do not make the frontend parse terminal ANSI
+
+Use semantic events. ANSI rendering is for CLI/TUI. Desktop needs richer typed cards.
+
+---
+
+# 13. Final target UX
+
+The first polished Quorp Desktop should open like this:
+
+```text
+Quorp
+
+[+ Add Folder]  [Command Palette]  [Settings]
+
+Left:
+  Workspaces
+  Files
+  Tasks
+  Sessions
+
+Center:
+  Agent stream
+  Tool calls
+  Diffs
+  Validation
+  Recovery
+  Composer
+
+Right:
+  Diff
+  Status
+  Permissions
+  Context
+  Proof
+  Rules
+  Memory
+```
+
+The permission chip should always be visible. The sandbox chip should always be visible. The context budget should always be visible. The stop button should always be visible during a run.
+
+The desktop app should feel faster and more inspectable than Codex-style layouts because Quorp has an advantage those apps often hide: proof receipts, runtime event fanout, sandbox leases, task snapshots, permission classification, validation state, and run artifacts are already real system concepts in the Rust codebase. The desktop product should make those visible, beautiful, and controllable.
+
+[1]: https://v2.tauri.app/ "Tauri 2.0 | Tauri"
+[2]: https://v2.tauri.app/es/develop/calling-rust/ "Calling Rust from the Frontend | Tauri"
+[3]: https://github.com/xtermjs/xterm.js/?utm_source=chatgpt.com "GitHub - xtermjs/xterm.js: A terminal for the web · GitHub"
+[4]: https://v2.tauri.app/security/permissions/ "Permissions | Tauri"
+[5]: https://v2.tauri.app/distribute/dmg/ "DMG | Tauri"
+[6]: https://tauri.app/distribute/sign/macos/ "macOS Code Signing | Tauri"
+

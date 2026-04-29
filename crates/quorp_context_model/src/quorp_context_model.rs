@@ -9,6 +9,15 @@ use quorp_ids::{ChunkId, PackId, RuleId};
 use quorp_repo_graph::{LineRange, SymbolPath};
 use serde::{Deserialize, Serialize};
 
+mod context_budget;
+mod state_packet;
+
+pub use context_budget::{ContextBudgetTelemetry, ContextPressureLevel};
+pub use state_packet::{
+    DecisionRecord, FailureRecord, MemoryReference, MissionStatePacket, PatchStateSnapshot,
+    ProvenanceRecord, RuleReference, SecurityBoundaryRecord, TaskDagSnapshot, TaskNodeSnapshot,
+};
+
 /// Token-budget envelope for one compile call.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize)]
 pub struct TokenBudget {
@@ -129,19 +138,6 @@ pub struct ContextPack {
     pub budget_used: u32,
     pub metadata: PackMetadata,
 }
-
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn budget_round_trips() {
-        let b = TokenBudget {
-            total: 64_000,
-            per_item_cap: 8_000,
-            reserve_for_output: 4_000,
-        };
-        let json = serde_json::to_string(&b).unwrap();
-        let _back: TokenBudget = serde_json::from_str(&json).unwrap();
-    }
-}
+#[path = "../../../testing/quorp_context_model/quorp_context_model/tests.rs"]
+mod tests;

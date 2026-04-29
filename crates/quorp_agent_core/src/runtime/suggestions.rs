@@ -642,6 +642,12 @@ pub(crate) fn render_agent_repair_memory(memory: &AgentRepairMemory) -> String {
             truncate_visible_text(excerpt, 120)
         ));
     }
+    if let Some(packet) = memory.last_failure_packet.as_ref() {
+        parts.push(format!(
+            "last_failure_packet={}",
+            truncate_visible_text(&packet.summary, 120)
+        ));
+    }
     if !memory.ranked_implementation_targets.is_empty() {
         parts.push(format!(
             "ranked_targets={}",
