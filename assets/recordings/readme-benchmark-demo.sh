@@ -1,0 +1,45 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+line() {
+  printf '%s\n' "$1"
+  sleep 0.12
+}
+
+line '$ ./target/debug/quorp benchmark run --path benchmark/challenges/rust-swebench-top5/04-cargo-dist-create-release --result-dir .quorp/readme-captures/benchmark-cargo-dist --sandbox tmp-copy'
+line '[sandbox] copy challenge bundle -> .quorp/readme-captures/benchmark-cargo-dist/sandbox'
+line '[sandbox] materialize cargo-dist proof workspace'
+line '[attempt] start attempt 1 for create-release setup'
+line '[run] model=qwen/qwen3-coder-480b-a35b-instruct'
+line '[status] thinking'
+line '[phase] thinking'
+line '[context] step=1 pressure=Yellow used=70%'
+line '[model] step=1 request=1 prompt=2576 tokens'
+line '[tool] step=1 list_directory . ok'
+line '[context] step=2 pressure=Yellow used=74%'
+line '[model] step=2 request=2 prompt=2728 tokens'
+line '[tool] step=2 read_file cargo-dist/src/config.rs ok'
+line '[tool] step=2 read_file cargo-dist/src/backend/ci/github.rs ok'
+line '[tool] step=2 read_file cargo-dist/src/tasks.rs ok'
+line '[tool] step=2 read_file cargo-dist/src/init.rs ok'
+line '[context] step=3 pressure=Red used=119%'
+line '[model] step=3 request=3 tokens=7434'
+line '[context] step=4 packet=packet-4-4 removed=4 retained=8'
+line '[phase] editing :: cargo test --quiet -p cargo-dist --test integration-tests axolotlsay_edit_existing -- --exact'
+line '[tool] step=4 run failed'
+line '[context] step=5 packet=packet-5-5 removed=7 retained=8'
+line '[fatal] repair loop stalled'
+line '[done] steps=4 billed_tokens=37025 duration_ms=84781'
+line '[report] attempts=1 success=false tokens=37025'
+line ''
+line '$ ./target/debug/quorp benchmark score --run-dir .quorp/readme-captures/benchmark-cargo-dist'
+line '# Rust SWE Scoreboard'
+line '- Suite: rust-swebench-top5'
+line '- Runs scanned: 1'
+line '- Solved score: 0/1'
+line '- Diagnostic classified: 1/1'
+line '- Most common blocker: repair_loop_stalled'
+line '- Total requests: 6'
+line '- Total billed tokens: 37025'
+line '- Proof lanes: deterministic, evaluation, fast'
+line '- report: .quorp/readme-captures/benchmark-cargo-dist/benchmark-report.json'
