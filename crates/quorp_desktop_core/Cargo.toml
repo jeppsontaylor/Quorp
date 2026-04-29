@@ -1,0 +1,44 @@
+[package]
+name = "quorp_desktop_core"
+version = "0.1.0"
+edition.workspace = true
+publish.workspace = true
+license = "GPL-3.0-or-later"
+authors = ["Quorp Team <hi@quorp.dev>"]
+
+[lib]
+path = "src/quorp_desktop_core.rs"
+
+[lints]
+workspace = true
+
+[dependencies]
+quorp_desktop_ipc = { workspace = true }
+quorp_agent_core = { workspace = true }
+quorp_session = { workspace = true }
+quorp_sandbox = { workspace = true }
+quorp_permissions = { workspace = true }
+quorp_config = { workspace = true }
+quorp_core = { workspace = true }
+quorp_provider = { workspace = true }
+quorp_ids = { workspace = true }
+quorp_memory = { workspace = true }
+quorp_memory_model = { workspace = true }
+
+anyhow = { workspace = true }
+base64 = "=0.22.1"
+chrono = { workspace = true, features = ["serde"] }
+dirs = { workspace = true }
+dunce = { workspace = true }
+keyring = { version = "=3.6.3", features = ["apple-native"] }
+log = { workspace = true }
+parking_lot = "=0.12.5"
+reqwest = { workspace = true, features = ["json"] }
+serde = { workspace = true, features = ["derive"] }
+serde_json = { workspace = true }
+sha2 = { workspace = true }
+thiserror = "=2.0.18"
+tokio = { workspace = true, features = ["rt-multi-thread", "macros", "sync", "time", "fs", "io-util"] }
+
+[dev-dependencies]
+tempfile = { workspace = true }

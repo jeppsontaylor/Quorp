@@ -478,6 +478,7 @@ dependencies = [
  "iana-time-zone",
  "js-sys",
  "num-traits",
+ "serde",
  "wasm-bindgen",
  "windows-link",
 ]
@@ -1691,6 +1692,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "keyring"
+version = "3.6.3"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "eebcc3aff044e5944a8fbaf69eb277d11986064cba30c468730e8b9909fb551c"
+dependencies = [
+ "log",
+ "security-framework 2.11.1",
+ "security-framework 3.7.0",
+ "zeroize",
+]
+
+[[package]]
 name = "kqueue"
 version = "1.1.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1923,7 +1936,7 @@ dependencies = [
  "openssl-probe",
  "openssl-sys",
  "schannel",
- "security-framework",
+ "security-framework 3.7.0",
  "security-framework-sys",
  "tempfile",
 ]
@@ -2507,7 +2520,14 @@ dependencies = [
  "futures",
  "ignore",
  "log",
+ "quorp_context",
+ "quorp_context_model",
  "quorp_core",
+ "quorp_patch_model",
+ "quorp_patch_vm",
+ "quorp_repair",
+ "quorp_verify",
+ "quorp_verify_model",
  "serde",
  "serde_json",
  "sha2",
@@ -2658,6 +2678,47 @@ dependencies = [
 ]
 
 [[package]]
+name = "quorp_desktop_core"
+version = "0.1.0"
+dependencies = [
+ "anyhow",
+ "base64",
+ "chrono",
+ "dirs",
+ "dunce",
+ "keyring",
+ "log",
+ "parking_lot",
+ "quorp_agent_core",
+ "quorp_config",
+ "quorp_core",
+ "quorp_desktop_ipc",
+ "quorp_ids",
+ "quorp_memory",
+ "quorp_memory_model",
+ "quorp_permissions",
+ "quorp_provider",
+ "quorp_sandbox",
+ "quorp_session",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "sha2",
+ "tempfile",
+ "thiserror 2.0.18",
+ "tokio",
+]
+
+[[package]]
+name = "quorp_desktop_ipc"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "quorp_ids"
 version = "0.1.0"
 dependencies = [
@@ -2798,6 +2859,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "quorp_repair"
+version = "0.1.0"
+dependencies = [
+ "serde",
+ "serde_json",
+]
+
+[[package]]
 name = "quorp_repo_graph"
 version = "0.1.0"
 dependencies = [
@@ -2854,13 +2923,16 @@ name = "quorp_sandbox"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
  "libc",
  "log",
  "portable-pty",
  "quorp_config",
  "quorp_core",
  "serde",
+ "serde_json",
  "tempfile",
+ "thiserror 2.0.18",
  "util",
  "walkdir",
 ]
@@ -2958,6 +3030,7 @@ dependencies = [
  "quorp_agent_core",
  "quorp_core",
  "quorp_ids",
+ "quorp_patch_model",
  "quorp_patch_vm",
  "regex",
  "schemars",
@@ -3465,6 +3538,19 @@ name = "scopeguard"
 version = "1.2.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
+
+[[package]]
+name = "security-framework"
+version = "2.11.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "897b2245f0b511c87893af39b033e5ca9cce68824c4d7e7630b5a1d339658d02"
+dependencies = [
+ "bitflags 2.11.0",
+ "core-foundation 0.9.4",
+ "core-foundation-sys",
+ "libc",
+ "security-framework-sys",
+]
 
 [[package]]
 name = "security-framework"

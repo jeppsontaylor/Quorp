@@ -17,6 +17,7 @@ notify = "=8.2.0"
 quorp_agent_core = { path = "../quorp_agent_core" }
 quorp_core.workspace = true
 quorp_ids.workspace = true
+quorp_patch_model.workspace = true
 quorp_patch_vm.workspace = true
 regex.workspace = true
 schemars = { workspace = true, features = ["derive"] }

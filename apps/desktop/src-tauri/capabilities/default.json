@@ -1,0 +1,13 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Default capability set for Quorp Desktop main window. NOTE: do NOT add `shell:*` or `fs:*` capabilities here — every privileged operation is exposed via a typed `quorp:*` Rust command. The CI lint script `script/quorp-desktop-capabilities-lint` greps this file and fails the build if those names appear.",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "dialog:default",
+    "opener:default",
+    "store:default",
+    "window-state:default"
+  ]
+}

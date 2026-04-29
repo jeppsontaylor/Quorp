@@ -14,6 +14,8 @@ members = [
     "crates/quorp_context",
     "crates/quorp_context_model",
     "crates/quorp_core",
+    "crates/quorp_desktop_core",
+    "crates/quorp_desktop_ipc",
     "crates/quorp_ids",
     "crates/quorp_mcp",
     "crates/quorp_memory",
@@ -22,6 +24,7 @@ members = [
     "crates/quorp_patch_vm",
     "crates/quorp_permissions",
     "crates/quorp_plan_mode",
+    "crates/quorp_repair",
     "crates/quorp_provider",
     "crates/quorp_lsp",
     "crates/quorp_render",
@@ -46,6 +49,15 @@ members = [
     "crates/ztracing_macro",
 ]
 default-members = ["crates/quorp"]
+# Tauri shell lives at apps/desktop/src-tauri but is intentionally
+# excluded from the cargo workspace. It pulls in Tauri/wry which only
+# build cleanly on macOS in our toolchain matrix; CI runs
+# `cargo check --workspace` on Linux without touching it. The shell
+# crate has its own Cargo.lock and is built via `pnpm tauri dev` /
+# `script/quorp-desktop-build-dmg`.
+exclude = [
+    "apps/desktop/src-tauri",
+]
 
 [workspace.package]
 publish = false
@@ -96,6 +108,8 @@ quorp_config = { path = "crates/quorp_config" }
 quorp_context = { path = "crates/quorp_context" }
 quorp_context_model = { path = "crates/quorp_context_model" }
 quorp_core = { path = "crates/quorp_core" }
+quorp_desktop_core = { path = "crates/quorp_desktop_core" }
+quorp_desktop_ipc = { path = "crates/quorp_desktop_ipc" }
 quorp_ids = { path = "crates/quorp_ids" }
 quorp_mcp = { path = "crates/quorp_mcp" }
 quorp_memory = { path = "crates/quorp_memory" }
@@ -104,6 +118,7 @@ quorp_patch_model = { path = "crates/quorp_patch_model" }
 quorp_patch_vm = { path = "crates/quorp_patch_vm" }
 quorp_permissions = { path = "crates/quorp_permissions" }
 quorp_plan_mode = { path = "crates/quorp_plan_mode" }
+quorp_repair = { path = "crates/quorp_repair" }
 quorp_provider = { path = "crates/quorp_provider" }
 quorp_lsp = { path = "crates/quorp_lsp" }
 quorp_render = { path = "crates/quorp_render" }

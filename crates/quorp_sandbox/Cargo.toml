@@ -11,13 +11,16 @@ workspace = true
 
 [dependencies]
 anyhow.workspace = true
+chrono = { workspace = true, features = ["serde"] }
 log.workspace = true
 libc.workspace = true
 quorp_config.workspace = true
 quorp_core.workspace = true
 portable-pty.workspace = true
 serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
 tempfile.workspace = true
+thiserror = "=2.0.18"
 util.workspace = true
 walkdir.workspace = true
 
