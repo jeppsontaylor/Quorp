@@ -1,15 +1,11 @@
 <p align="center">
-  <img src="assets/images/quorp-mascot.png" alt="Quorp mascot" width="520" />
+  <img src="assets/images/quorp_video_header.gif" alt="QUORP banner" width="100%" />
 </p>
 
 <h1 align="center">Quorp</h1>
 
 <p align="center">
   <strong>A high-performance, TUI-first text editor and agentic interface.</strong>
-</p>
-
-<p align="center">
-  <img src="assets/images/quorp-mascot-header.gif" alt="Animated Quorp mascot icon" width="96" />
 </p>
 
 <p align="center">
