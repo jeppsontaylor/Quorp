@@ -1,0 +1,99 @@
+#!/usr/bin/env bash
+# Build a signed and notarized Quorp Desktop DMG. Requires a
+# Developer ID Application certificate plus an App Store Connect
+# API key for notarytool. Designed to run from CI (see
+# .github/workflows/desktop-release.yml) but works locally if the
+# env vars below are set.
+#
+# Required env:
+#   APPLE_SIGNING_IDENTITY  e.g. "Developer ID Application: Acme Corp (TEAMID12)"
+#   APPLE_TEAM_ID           "TEAMID12"
+#   APPLE_API_KEY_ID        notarytool key id (10 chars)
+#   APPLE_API_ISSUER        notarytool issuer UUID
+#   APPLE_API_KEY_PATH      absolute path to AuthKey_*.p8
+#
+# Optional env:
+#   QUORP_DESKTOP_NOTARY_RETRIES  (default: 3) — notarytool retry count
+
+set -euo pipefail
+
+require() {
+  local name=$1
+  if [[ -z "${!name:-}" ]]; then
+    echo "[quorp-desktop-build-dmg-signed] required env var \$$name is missing" >&2
+    exit 1
+  fi
+}
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "[quorp-desktop-build-dmg-signed] this script only runs on macOS" >&2
+  exit 1
+fi
+
+require APPLE_SIGNING_IDENTITY
+require APPLE_TEAM_ID
+require APPLE_API_KEY_ID
+require APPLE_API_ISSUER
+require APPLE_API_KEY_PATH
+
+if [[ ! -f "$APPLE_API_KEY_PATH" ]]; then
+  echo "[quorp-desktop-build-dmg-signed] notarytool key not found at $APPLE_API_KEY_PATH" >&2
+  exit 1
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+desktop_root="$repo_root/apps/desktop"
+retries="${QUORP_DESKTOP_NOTARY_RETRIES:-3}"
+
+cd "$desktop_root"
+
+echo "[quorp-desktop-build-dmg-signed] installing frontend dependencies"
+pnpm install --frozen-lockfile || pnpm install
+
+echo "[quorp-desktop-build-dmg-signed] running typecheck"
+pnpm typecheck
+
+echo "[quorp-desktop-build-dmg-signed] building frontend"
+pnpm build
+
+echo "[quorp-desktop-build-dmg-signed] tauri build (Developer ID, app + dmg)"
+TAURI_SIGNING_IDENTITY="$APPLE_SIGNING_IDENTITY" pnpm tauri build --bundles app,dmg
+
+bundle_dir="$desktop_root/src-tauri/target/release/bundle"
+dmg_path="$(ls "$bundle_dir/dmg/"*.dmg | head -n1)"
+
+if [[ -z "${dmg_path:-}" ]]; then
+  echo "[quorp-desktop-build-dmg-signed] no DMG produced under $bundle_dir/dmg/" >&2
+  exit 1
+fi
+
+echo "[quorp-desktop-build-dmg-signed] codesign verify (deep)"
+codesign --verify --strict --deep --verbose=2 "$dmg_path" || true
+
+echo "[quorp-desktop-build-dmg-signed] submitting to notarytool: $dmg_path"
+attempt=0
+until xcrun notarytool submit "$dmg_path" \
+  --key "$APPLE_API_KEY_PATH" \
+  --key-id "$APPLE_API_KEY_ID" \
+  --issuer "$APPLE_API_ISSUER" \
+  --team-id "$APPLE_TEAM_ID" \
+  --wait \
+  --timeout 30m \
+  --output-format json; do
+  attempt=$((attempt + 1))
+  if (( attempt >= retries )); then
+    echo "[quorp-desktop-build-dmg-signed] notarytool failed after $attempt attempts" >&2
+    exit 1
+  fi
+  sleep_for=$(( 30 * attempt ))
+  echo "[quorp-desktop-build-dmg-signed] notarytool retry $attempt of $retries in ${sleep_for}s"
+  sleep "$sleep_for"
+done
+
+echo "[quorp-desktop-build-dmg-signed] stapling: $dmg_path"
+xcrun stapler staple "$dmg_path"
+
+echo "[quorp-desktop-build-dmg-signed] spctl --assess (Gatekeeper)"
+spctl --assess --type open --context context:primary-signature -v "$dmg_path"
+
+echo "[quorp-desktop-build-dmg-signed] done. Notarized DMG at: $dmg_path"

@@ -1,0 +1,23 @@
+@import "./tokens.css";
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html,
+  body,
+  #root {
+    height: 100%;
+    margin: 0;
+    background-color: var(--quorp-bg-base);
+    color: var(--quorp-fg-primary);
+    font-family: var(--quorp-font-ui);
+  }
+
+  *:focus-visible {
+    outline: 2px solid var(--quorp-focus-ring);
+    outline-offset: 2px;
+    border-radius: var(--quorp-radius-sm);
+  }
+}

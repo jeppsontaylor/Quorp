@@ -1,0 +1,152 @@
+/* Quorp design tokens. All colors mix in OKLab so HC and No-Color
+ * variants flip cleanly through CSS custom properties without
+ * touching component code. Tailwind utilities reference these via
+ * tailwind.config.ts. */
+
+:root,
+[data-theme="quorp-dark"] {
+  --quorp-bg-base: oklch(18% 0.01 260);
+  --quorp-bg-surface: oklch(22% 0.012 260);
+  --quorp-bg-surface-elevated: oklch(25% 0.014 260);
+  --quorp-bg-overlay: oklch(15% 0.02 260 / 0.72);
+  --quorp-border-subtle: color-mix(in oklab, var(--quorp-bg-surface) 70%, white 30%);
+  --quorp-border-strong: color-mix(in oklab, var(--quorp-bg-surface) 50%, white 50%);
+
+  --quorp-fg-primary: oklch(96% 0.01 260);
+  --quorp-fg-secondary: oklch(78% 0.015 260);
+  --quorp-fg-muted: oklch(60% 0.02 260);
+  --quorp-fg-disabled: oklch(45% 0.02 260);
+
+  --quorp-diff-add-fg: oklch(88% 0.18 145);
+  --quorp-diff-add-bg: color-mix(in oklab, var(--quorp-diff-add-fg) 18%, var(--quorp-bg-surface));
+  --quorp-diff-add-bg-strong: color-mix(in oklab, var(--quorp-diff-add-fg) 32%, var(--quorp-bg-surface));
+  --quorp-diff-del-fg: oklch(72% 0.20 25);
+  --quorp-diff-del-bg: color-mix(in oklab, var(--quorp-diff-del-fg) 18%, var(--quorp-bg-surface));
+  --quorp-diff-del-bg-strong: color-mix(in oklab, var(--quorp-diff-del-fg) 32%, var(--quorp-bg-surface));
+  --quorp-diff-context-bg: var(--quorp-bg-surface);
+  --quorp-diff-gutter-bg: color-mix(in oklab, var(--quorp-bg-surface) 80%, black 20%);
+
+  --quorp-status-success: oklch(80% 0.16 150);
+  --quorp-status-info: oklch(82% 0.13 240);
+  --quorp-status-warning: oklch(85% 0.16 85);
+  --quorp-status-danger: oklch(72% 0.20 25);
+  --quorp-status-attention: oklch(80% 0.18 50);
+
+  --quorp-risk-low: var(--quorp-status-success);
+  --quorp-risk-medium: var(--quorp-status-warning);
+  --quorp-risk-high: var(--quorp-status-attention);
+  --quorp-risk-critical: var(--quorp-status-danger);
+
+  --quorp-focus-ring: oklch(82% 0.15 235);
+  --quorp-focus-ring-strong: oklch(88% 0.20 235);
+
+  --quorp-font-mono: ui-monospace, "JetBrains Mono", "SF Mono", Menlo, monospace;
+  --quorp-font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", Inter, system-ui, sans-serif;
+
+  --quorp-radius-sm: 4px;
+  --quorp-radius-md: 8px;
+  --quorp-radius-lg: 12px;
+}
+
+@media (prefers-contrast: more) {
+  :root,
+  [data-theme="quorp-dark"] {
+    --quorp-diff-add-bg-strong: color-mix(in oklab, var(--quorp-diff-add-fg) 55%, var(--quorp-bg-surface));
+    --quorp-diff-del-bg-strong: color-mix(in oklab, var(--quorp-diff-del-fg) 55%, var(--quorp-bg-surface));
+    --quorp-border-subtle: var(--quorp-border-strong);
+    --quorp-fg-secondary: var(--quorp-fg-primary);
+  }
+}
+
+[data-theme="quorp-high-contrast"] {
+  --quorp-bg-base: oklch(8% 0 0);
+  --quorp-bg-surface: oklch(15% 0 0);
+  --quorp-bg-surface-elevated: oklch(20% 0 0);
+  --quorp-fg-primary: oklch(100% 0 0);
+  --quorp-fg-secondary: oklch(96% 0 0);
+  --quorp-fg-muted: oklch(80% 0 0);
+  --quorp-border-subtle: oklch(70% 0 0);
+  --quorp-border-strong: oklch(90% 0 0);
+  --quorp-diff-add-bg-strong: color-mix(in oklab, var(--quorp-diff-add-fg) 60%, var(--quorp-bg-surface));
+  --quorp-diff-del-bg-strong: color-mix(in oklab, var(--quorp-diff-del-fg) 60%, var(--quorp-bg-surface));
+}
+
+[data-theme="quorp-light"] {
+  --quorp-bg-base: oklch(98% 0.005 260);
+  --quorp-bg-surface: oklch(95% 0.006 260);
+  --quorp-bg-surface-elevated: oklch(92% 0.008 260);
+  --quorp-bg-overlay: oklch(85% 0.01 260 / 0.72);
+  --quorp-fg-primary: oklch(20% 0.01 260);
+  --quorp-fg-secondary: oklch(35% 0.012 260);
+  --quorp-fg-muted: oklch(55% 0.012 260);
+  --quorp-fg-disabled: oklch(70% 0.012 260);
+  --quorp-border-subtle: color-mix(in oklab, var(--quorp-bg-surface) 70%, black 30%);
+  --quorp-border-strong: color-mix(in oklab, var(--quorp-bg-surface) 50%, black 50%);
+  --quorp-diff-add-fg: oklch(40% 0.20 145);
+  --quorp-diff-add-bg: color-mix(in oklab, var(--quorp-diff-add-fg) 12%, var(--quorp-bg-surface));
+  --quorp-diff-add-bg-strong: color-mix(in oklab, var(--quorp-diff-add-fg) 24%, var(--quorp-bg-surface));
+  --quorp-diff-del-fg: oklch(45% 0.22 25);
+  --quorp-diff-del-bg: color-mix(in oklab, var(--quorp-diff-del-fg) 12%, var(--quorp-bg-surface));
+  --quorp-diff-del-bg-strong: color-mix(in oklab, var(--quorp-diff-del-fg) 24%, var(--quorp-bg-surface));
+  --quorp-diff-context-bg: var(--quorp-bg-surface);
+  --quorp-diff-gutter-bg: color-mix(in oklab, var(--quorp-bg-surface) 80%, white 20%);
+  --quorp-status-success: oklch(45% 0.18 150);
+  --quorp-status-info: oklch(45% 0.16 240);
+  --quorp-status-warning: oklch(55% 0.18 85);
+  --quorp-status-danger: oklch(45% 0.22 25);
+  --quorp-status-attention: oklch(50% 0.20 50);
+  --quorp-focus-ring: oklch(50% 0.18 235);
+  --quorp-focus-ring-strong: oklch(40% 0.22 235);
+}
+
+@media (prefers-color-scheme: light) {
+  [data-theme="quorp-system"] {
+    --quorp-bg-base: oklch(98% 0.005 260);
+    --quorp-bg-surface: oklch(95% 0.006 260);
+    --quorp-bg-surface-elevated: oklch(92% 0.008 260);
+    --quorp-bg-overlay: oklch(85% 0.01 260 / 0.72);
+    --quorp-fg-primary: oklch(20% 0.01 260);
+    --quorp-fg-secondary: oklch(35% 0.012 260);
+    --quorp-fg-muted: oklch(55% 0.012 260);
+    --quorp-fg-disabled: oklch(70% 0.012 260);
+    --quorp-border-subtle: color-mix(in oklab, var(--quorp-bg-surface) 70%, black 30%);
+    --quorp-border-strong: color-mix(in oklab, var(--quorp-bg-surface) 50%, black 50%);
+    --quorp-diff-add-fg: oklch(40% 0.20 145);
+    --quorp-diff-add-bg: color-mix(in oklab, var(--quorp-diff-add-fg) 12%, var(--quorp-bg-surface));
+    --quorp-diff-add-bg-strong: color-mix(in oklab, var(--quorp-diff-add-fg) 24%, var(--quorp-bg-surface));
+    --quorp-diff-del-fg: oklch(45% 0.22 25);
+    --quorp-diff-del-bg: color-mix(in oklab, var(--quorp-diff-del-fg) 12%, var(--quorp-bg-surface));
+    --quorp-diff-del-bg-strong: color-mix(in oklab, var(--quorp-diff-del-fg) 24%, var(--quorp-bg-surface));
+    --quorp-status-success: oklch(45% 0.18 150);
+    --quorp-status-info: oklch(45% 0.16 240);
+    --quorp-status-warning: oklch(55% 0.18 85);
+    --quorp-status-danger: oklch(45% 0.22 25);
+    --quorp-focus-ring: oklch(50% 0.18 235);
+    --quorp-focus-ring-strong: oklch(40% 0.22 235);
+  }
+}
+
+[data-theme="quorp-no-color"] {
+  --quorp-diff-add-bg: transparent;
+  --quorp-diff-del-bg: transparent;
+  --quorp-diff-add-bg-strong: transparent;
+  --quorp-diff-del-bg-strong: transparent;
+  --quorp-diff-add-fg: var(--quorp-fg-primary);
+  --quorp-diff-del-fg: var(--quorp-fg-primary);
+  --quorp-status-success: var(--quorp-fg-primary);
+  --quorp-status-info: var(--quorp-fg-primary);
+  --quorp-status-warning: var(--quorp-fg-primary);
+  --quorp-status-danger: var(--quorp-fg-primary);
+  --quorp-status-attention: var(--quorp-fg-primary);
+  --quorp-risk-low: var(--quorp-fg-secondary);
+  --quorp-risk-medium: var(--quorp-fg-primary);
+  --quorp-risk-high: var(--quorp-fg-primary);
+  --quorp-risk-critical: var(--quorp-fg-primary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  * {
+    animation-duration: 0.001s !important;
+    transition-duration: 0.001s !important;
+  }
+}

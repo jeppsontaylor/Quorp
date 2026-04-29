@@ -1,0 +1,102 @@
+#!/usr/bin/env bash
+# Pre-flight Doctor checks for the Quorp Desktop dev environment.
+# Independent of the in-app Doctor panel — designed to run from a
+# fresh terminal or CI runner before `pnpm tauri dev`.
+#
+# Modes:
+#   default  — fail on any required-tool miss (Xcode CLT, sandbox-exec,
+#              node, pnpm, cargo). Used by CI gates.
+#   --soft   — warn instead of fail when pnpm is missing. The bootstrap
+#              script uses this so it can self-install pnpm via
+#              corepack and re-run the doctor afterwards.
+
+set -euo pipefail
+
+soft=0
+if [[ "${1:-}" == "--soft" ]]; then
+  soft=1
+fi
+
+ok() { printf "[ok]   %s\n" "$*"; }
+warn() { printf "[warn] %s\n" "$*"; }
+fail() {
+  if (( soft == 1 )); then
+    warn "$*"
+  else
+    printf "[fail] %s\n" "$*" >&2
+    exit 1
+  fi
+}
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  warn "this script targets macOS; some checks will be skipped"
+fi
+
+if [[ "$(uname -s)" == "Darwin" ]]; then
+  if xcode-select -p >/dev/null 2>&1; then
+    ok "Xcode CLT present at $(xcode-select -p)"
+  else
+    fail "Xcode CLT missing — run: xcode-select --install"
+  fi
+
+  if [[ -x /usr/bin/sandbox-exec ]]; then
+    ok "/usr/bin/sandbox-exec present"
+  else
+    fail "/usr/bin/sandbox-exec missing"
+  fi
+
+  if security find-identity -v -p codesigning 2>/dev/null | grep -q "Developer ID Application"; then
+    ok "Developer ID Application certificate present"
+  else
+    warn "no Developer ID — local DMGs build ad-hoc; signed builds need one"
+  fi
+fi
+
+if command -v node >/dev/null 2>&1; then
+  ok "node present ($(node -v))"
+else
+  fail "node missing — install Node 20+ (corepack enable)"
+fi
+
+if command -v pnpm >/dev/null 2>&1; then
+  ok "pnpm present ($(pnpm --version))"
+elif command -v corepack >/dev/null 2>&1; then
+  fail "pnpm missing — bootstrap can self-install via corepack (run ./script/quorp-desktop-bootstrap), or run: corepack enable && corepack prepare pnpm@latest --activate"
+else
+  fail "pnpm missing and no corepack — install Node 20+ which ships corepack"
+fi
+
+if command -v cargo >/dev/null 2>&1; then
+  ok "cargo present ($(cargo --version))"
+else
+  fail "cargo missing — install Rust via rustup"
+fi
+
+login_path=""
+if command -v zsh >/dev/null 2>&1; then
+  login_path="$(/bin/zsh -lc 'printf %s "$PATH"' 2>/dev/null || true)"
+fi
+if [[ -n "$login_path" ]]; then
+  current="$PATH"
+  IFS=":" read -ra login_parts <<< "$login_path"
+  IFS=":" read -ra current_parts <<< "$current"
+  missing=()
+  for entry in "${login_parts[@]}"; do
+    [[ -z "$entry" ]] && continue
+    found=0
+    for cur in "${current_parts[@]}"; do
+      if [[ "$cur" == "$entry" ]]; then
+        found=1
+        break
+      fi
+    done
+    (( found == 0 )) && missing+=("$entry")
+  done
+  if (( ${#missing[@]} == 0 )); then
+    ok "PATH matches login shell"
+  else
+    warn "login shell adds ${#missing[@]} entries this terminal lacks (e.g., ${missing[0]:-})"
+  fi
+fi
+
+ok "doctor checks complete"

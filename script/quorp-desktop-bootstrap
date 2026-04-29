@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# One-shot bootstrap for first-time Quorp Desktop developers.
+#
+# 1. Pre-flight Doctor (soft mode — pnpm-missing is fixable here)
+# 2. Self-install pnpm via corepack if absent
+# 3. Re-run Doctor in strict mode to confirm
+# 4. pnpm install (frontend deps)
+# 5. cargo check on the workspace + Tauri shell
+#
+# Safe to re-run.
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+desktop_root="$repo_root/apps/desktop"
+
+echo "[bootstrap] repo root: $repo_root"
+
+# 1. Soft pre-flight: surface every issue, but don't bail on
+#    missing pnpm (we install it next).
+if ! "$repo_root/script/quorp-desktop-doctor" --soft; then
+  echo "[bootstrap] doctor reported hard failures — fix the [fail] entries above and re-run." >&2
+  exit 1
+fi
+
+# 2. Self-install pnpm if it's missing. We prefer `corepack` (the
+#    Node-shipped package-manager bootstrapper) but fall back to
+#    `npm install -g pnpm` when corepack isn't on PATH (e.g. Homebrew
+#    node installs that don't auto-link the bundled corepack).
+if ! command -v pnpm >/dev/null 2>&1; then
+  installed=0
+  if command -v corepack >/dev/null 2>&1; then
+    echo "[bootstrap] pnpm missing; installing via corepack…"
+    corepack enable
+    corepack prepare pnpm@9 --activate
+    installed=1
+  elif command -v npm >/dev/null 2>&1; then
+    echo "[bootstrap] pnpm missing; installing via npm…"
+    npm install -g pnpm@9 || npm install -g pnpm
+    installed=1
+  fi
+  if (( installed == 0 )); then
+    echo "[bootstrap] pnpm missing and neither corepack nor npm are on PATH — install Node 20+ first" >&2
+    exit 1
+  fi
+  if ! command -v pnpm >/dev/null 2>&1; then
+    echo "[bootstrap] pnpm install ran but pnpm is still not on PATH; check that the global npm bin dir is exported (npm config get prefix)" >&2
+    exit 1
+  fi
+fi
+
+# 3. Strict Doctor re-run to confirm everything is in order. Pipe to
+#    stderr so the user sees full output if it fails; on success we
+#    just print a one-liner.
+if "$repo_root/script/quorp-desktop-doctor" >/dev/null 2>&1; then
+  echo "[bootstrap] doctor re-check: ok"
+else
+  echo "[bootstrap] doctor still reporting failures after pnpm install:" >&2
+  "$repo_root/script/quorp-desktop-doctor" >&2 || true
+  exit 1
+fi
+
+# 4. Frontend deps.
+cd "$desktop_root"
+if [[ ! -d node_modules ]]; then
+  echo "[bootstrap] installing frontend dependencies (first run)…"
+  pnpm install || pnpm install --no-frozen-lockfile
+else
+  echo "[bootstrap] frontend node_modules already present; skipping install"
+fi
+
+# 5. Sanity-check Rust workspace.
+echo "[bootstrap] verifying cargo workspace builds"
+cd "$repo_root"
+cargo check --workspace --quiet
+
+# 6. Sanity-check the Tauri shell crate (excluded from the workspace
+#    so cargo check --workspace does NOT exercise it).
+echo "[bootstrap] verifying Tauri shell builds"
+cd "$desktop_root/src-tauri"
+cargo check --quiet
+
+cat <<'NEXT'
+
+[bootstrap] all green.
+
+Next steps:
+
+  • Launch the dev app with hot-reload:
+      ./script/quorp-desktop-dev
+
+  • Build a local ad-hoc-signed DMG:
+      ./script/quorp-desktop-build-dmg
+
+  • Configure your NIM API key from the running app:
+      Settings → Provider → paste key → Save → Validate model
+
+  • Run a sandboxed benchmark fixture:
+      Left rail → Benchmarks → "Run in sandbox"
+
+NEXT

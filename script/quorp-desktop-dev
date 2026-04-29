@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Launch the Quorp desktop in dev mode (`pnpm tauri dev`).
+# Installs frontend deps if `node_modules/` is missing.
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root/apps/desktop"
+
+if ! command -v pnpm >/dev/null 2>&1; then
+  echo "[quorp-desktop-dev] pnpm not found; install with 'corepack enable' or 'npm i -g pnpm'" >&2
+  exit 1
+fi
+
+if [[ ! -d node_modules ]]; then
+  echo "[quorp-desktop-dev] installing frontend dependencies (first run)…"
+  pnpm install --frozen-lockfile || pnpm install
+fi
+
+exec pnpm tauri dev

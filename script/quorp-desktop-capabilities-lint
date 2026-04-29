@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+# CI lint: forbid `shell:*` and `fs:*` Tauri capabilities.
+# All privileged operations must go through typed `quorp:*` Rust
+# commands. Adding broad plugin permissions would let the frontend
+# bypass our trust gating.
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+caps="$repo_root/apps/desktop/src-tauri/capabilities"
+
+if [[ ! -d "$caps" ]]; then
+  echo "[quorp-desktop-capabilities-lint] no capabilities directory; nothing to lint"
+  exit 0
+fi
+
+violations=$(grep -rEn '"(shell|fs):' "$caps" || true)
+if [[ -n "$violations" ]]; then
+  echo "[quorp-desktop-capabilities-lint] FORBIDDEN capability detected:" >&2
+  echo "$violations" >&2
+  exit 1
+fi
+
+echo "[quorp-desktop-capabilities-lint] ok ($caps)"

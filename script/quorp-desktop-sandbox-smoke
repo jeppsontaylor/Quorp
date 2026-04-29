@@ -1,0 +1,107 @@
+#!/usr/bin/env bash
+# Verify that the Quorp desktop Apple-sandbox path can:
+#   1. spawn `cargo --version` under a generated profile (sanity)
+#   2. read /etc/passwd under the default profile (system.sb base allows it)
+#   3. fail to write /etc/passwd under the default profile (boundary holds)
+#
+# Exits 0 on full success, non-zero on any deviation. Run this on macOS
+# only; on other platforms it short-circuits with a friendly notice.
+
+set -euo pipefail
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "[quorp-desktop-sandbox-smoke] not macOS — skipping"
+  exit 0
+fi
+
+if [[ ! -x /usr/bin/sandbox-exec ]]; then
+  echo "[quorp-desktop-sandbox-smoke] /usr/bin/sandbox-exec missing on this host" >&2
+  exit 1
+fi
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+run_id="smoke-$$"
+sandbox_root="/private/tmp/quorp/${run_id}"
+work_dir="${sandbox_root}/work"
+profile_path="${sandbox_root}/profile.sb"
+
+cleanup() {
+  rm -rf "${sandbox_root}" || true
+}
+trap cleanup EXIT
+
+mkdir -p "${work_dir}"
+chmod 700 "${sandbox_root}"
+
+# Generate a profile mirroring AppleSandboxSettings::default():
+#   - import system.sb
+#   - allow default
+#   - deny network
+#   - deny writes outside the run root, allow inside
+cat > "${profile_path}" <<EOF
+(version 1)
+(import "system.sb")
+(allow default)
+(deny network*)
+(deny mach-lookup (global-name "com.apple.mDNSResponder"))
+(deny file-write*
+       (subpath "/Applications") (subpath "/Library") (subpath "/Network")
+       (subpath "/System") (subpath "/Users") (subpath "/Volumes")
+       (subpath "/bin") (subpath "/cores") (subpath "/dev") (subpath "/etc")
+       (subpath "/home") (subpath "/opt")
+       (subpath "/private/etc") (subpath "/private/var")
+       (subpath "/sbin") (subpath "/usr") (subpath "/var"))
+(allow file-write*
+       (subpath "${sandbox_root}")
+       (subpath "/tmp/quorp/${run_id}"))
+(deny mach-priv-host-port)
+(deny system-fsctl)
+(deny system-privilege)
+(deny job-creation)
+EOF
+
+ok() { printf "[ok]   %s\n" "$1"; }
+fail() { printf "[fail] %s\n" "$1" >&2; exit 1; }
+
+# (1) sanity — cargo --version
+if /usr/bin/sandbox-exec -f "${profile_path}" cargo --version >/dev/null 2>&1; then
+  ok "cargo --version under profile"
+else
+  fail "cargo --version refused by profile"
+fi
+
+# (2) /etc/passwd read should succeed (system.sb base allows it)
+if /usr/bin/sandbox-exec -f "${profile_path}" /bin/cat /etc/passwd >/dev/null 2>&1; then
+  ok "read /etc/passwd allowed (as expected)"
+else
+  fail "read /etc/passwd was denied — profile too tight"
+fi
+
+# (3) /etc/passwd write must fail
+if /usr/bin/sandbox-exec -f "${profile_path}" /bin/sh -c 'echo evil >> /etc/passwd' 2>/dev/null; then
+  fail "write to /etc/passwd was ALLOWED — sandbox boundary is broken"
+else
+  ok "write to /etc/passwd denied"
+fi
+
+# (4) write inside the work dir must succeed
+if /usr/bin/sandbox-exec -f "${profile_path}" /bin/sh -c "echo hi > ${work_dir}/test.txt"; then
+  if [[ "$(cat "${work_dir}/test.txt")" == "hi" ]]; then
+    ok "write inside work dir allowed and persisted"
+  else
+    fail "write succeeded but content unreadable"
+  fi
+else
+  fail "write inside work dir denied — profile too tight"
+fi
+
+# (5) network-off: ping cloudflare should fail
+if /usr/bin/sandbox-exec -f "${profile_path}" /usr/bin/curl -sS --max-time 3 https://1.1.1.1 >/dev/null 2>&1; then
+  fail "outbound network was ALLOWED — sandbox boundary is broken"
+else
+  ok "outbound network denied"
+fi
+
+echo "[quorp-desktop-sandbox-smoke] all checks passed"

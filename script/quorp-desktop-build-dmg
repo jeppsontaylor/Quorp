@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+# Build a Quorp Desktop DMG with ad-hoc signing. Suitable for local
+# distribution to testers; the resulting bundle does NOT pass
+# Gatekeeper's notarization check. For a signed/notarized DMG, use
+# `script/quorp-desktop-build-dmg-signed` instead.
+
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+desktop_root="$repo_root/apps/desktop"
+
+if [[ "$(uname -s)" != "Darwin" ]]; then
+  echo "[quorp-desktop-build-dmg] this script only runs on macOS" >&2
+  exit 1
+fi
+
+if ! command -v pnpm >/dev/null 2>&1; then
+  echo "[quorp-desktop-build-dmg] pnpm not found; install with 'corepack enable' or 'npm i -g pnpm'" >&2
+  exit 1
+fi
+
+cd "$desktop_root"
+
+echo "[quorp-desktop-build-dmg] installing frontend dependencies"
+pnpm install --frozen-lockfile || pnpm install
+
+echo "[quorp-desktop-build-dmg] running typecheck"
+pnpm typecheck
+
+echo "[quorp-desktop-build-dmg] building frontend bundle"
+pnpm build
+
+echo "[quorp-desktop-build-dmg] running tauri build (ad-hoc signed, app + dmg)"
+# tauri.conf.json sets `signingIdentity: "-"`, which selects ad-hoc
+# signing; explicit env var keeps that intent visible in CI logs.
+TAURI_SIGNING_IDENTITY="-" pnpm tauri build --bundles app,dmg
+
+bundle_dir="$desktop_root/src-tauri/target/release/bundle"
+echo "[quorp-desktop-build-dmg] artifacts:"
+find "$bundle_dir" -type f \( -name "*.dmg" -o -name "*.app" -prune \) 2>/dev/null | head -20 || true
+
+echo "[quorp-desktop-build-dmg] done. Output under: $bundle_dir"
